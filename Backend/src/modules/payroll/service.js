@@ -53,7 +53,10 @@ async function calculate(actor, period, req) {
       [start]
     );
     const { rows: attendance } = await client.query(
-      `SELECT employee_id, COUNT(*) FILTER (WHERE status <> 'VANG_KHONG_PHEP') AS work_days, COALESCE(SUM(ot_hours), 0) AS ot
+      `SELECT employee_id,
+              COUNT(*)::int AS total_logs,
+              COUNT(*) FILTER (WHERE status <> 'VANG_KHONG_PHEP')::int AS work_days,
+              COALESCE(SUM(ot_hours), 0) AS ot
          FROM attendance_logs
         WHERE work_date >= $1::date AND work_date < ($1::date + INTERVAL '1 month')
         GROUP BY employee_id`,
@@ -65,11 +68,17 @@ async function calculate(actor, period, req) {
     for (const emp of employees) {
       const base = Number(emp.base_salary) || 0;
       const att = byEmployee.get(emp.id);
-      const logged = att ? Number(att.work_days) : 0;
+      const hasRecordedLogs = Boolean(att && Number(att.total_logs) > 0);
+      const loggedWorkDays = att ? Number(att.work_days) : 0;
       const otHours = att ? Number(att.ot) : 0;
-      // No attendance at all means the month has not been recorded yet: pay the standard days, prorated for joiners/leavers.
-      const workDays = logged > 0 ? logged : fallbackWorkDays(period, emp.joined_date, emp.termination_date);
-      const p = computePayslip({ base, workDays, otHours, allowances: DEFAULT_ALLOWANCES });
+      // F09: If attendance rows exist for this employee in the month, preserve 0 work_days when all rows are VANG_KHONG_PHEP.
+      // Only fall back to standard/prorated days when the employee has no attendance records at all in the month.
+      const workDays = hasRecordedLogs
+        ? loggedWorkDays
+        : fallbackWorkDays(period, emp.joined_date, emp.termination_date);
+      const p = workDays === 0 && otHours === 0
+        ? computePayslip({ base: 0, workDays: 0, otHours: 0, allowances: 0 })
+        : computePayslip({ base, workDays, otHours, allowances: DEFAULT_ALLOWANCES });
 
       await client.query(
         `INSERT INTO payslips (period_id, employee_id, base_salary, actual_work_days, standard_work_days, ot_hours, ot_pay,
