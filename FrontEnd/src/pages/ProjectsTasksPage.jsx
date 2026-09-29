@@ -41,6 +41,7 @@ import SquadChatDrawer from '../components/chat/SquadChatDrawer';
 import {
   mapServerTask,
   mapServerTaskList,
+  mapServerTaskLogs,
   computeProjectsTasksMetrics,
   buildCreateProjectPayload,
 } from '../utils/projectsTasksState';
@@ -109,7 +110,29 @@ export default function ProjectsTasksPage() {
   const [viewMode, setViewMode] = useState('kanban'); // 'kanban' | 'table'
 
   // Map raw task from API to standard task model (returns null when server task id is missing)
-  const mapTask = (t, prjName) => mapServerTask(t, prjName, currentRole?.name || '');
+  const mapTask = (t, prjName) => mapServerTask(t, prjName);
+  const [taskLogsState, setTaskLogsState] = useState({ taskId: null, loading: false, error: null, items: [] });
+
+  const loadTaskLogs = async (taskId) => {
+    if (!taskId) return [];
+    setTaskLogsState({ taskId, loading: true, error: null, items: [] });
+    try {
+      const res = await projectService.getTaskLogs(taskId);
+      if (!res?.success || !Array.isArray(res.data)) {
+        throw new Error(res?.message || 'Không thể tải lịch sử nhiệm vụ từ máy chủ.');
+      }
+      const mappedLogs = mapServerTaskLogs(res.data);
+      setTaskLogsState({ taskId, loading: false, error: null, items: mappedLogs });
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, logs: mappedLogs } : t)));
+      setSelectedTaskForUpdate((prev) => (prev && prev.id === taskId ? { ...prev, logs: mappedLogs } : prev));
+      setSelectedTaskForReview((prev) => (prev && prev.id === taskId ? { ...prev, logs: mappedLogs } : prev));
+      return mappedLogs;
+    } catch (err) {
+      const errMsg = err?.message || 'Không thể tải lịch sử nhiệm vụ từ máy chủ.';
+      setTaskLogsState({ taskId, loading: false, error: errMsg, items: [] });
+      return [];
+    }
+  };
 
   // Fetch real projects, employees, and departments from PostgreSQL via API
   useEffect(() => {
@@ -230,7 +253,7 @@ export default function ProjectsTasksPage() {
           const allTasks = [];
           results.forEach((res, idx) => {
             if (res?.success && Array.isArray(res.data)) {
-              const mapped = mapServerTaskList(res.data, projects[idx]?.name, currentRole?.name || '');
+              const mapped = mapServerTaskList(res.data, projects[idx]?.name);
               allTasks.push(...mapped);
             }
           });
@@ -239,7 +262,7 @@ export default function ProjectsTasksPage() {
           const res = await projectService.getTasks(selectedProjectId).catch(() => null);
           if (res?.success && Array.isArray(res.data) && isMounted) {
             const currentPrj = projects.find(p => p.id === selectedProjectId);
-            setTasks(mapServerTaskList(res.data, currentPrj?.name, currentRole?.name || ''));
+            setTasks(mapServerTaskList(res.data, currentPrj?.name));
           }
         }
       } catch (err) {
@@ -429,7 +452,7 @@ export default function ProjectsTasksPage() {
         assignee_id: member?.id || newTask.assigneeId,
         deadline: newTask.deadline,
         priority: newTask.priority,
-        kpi_weight: Number(newTask.kpiWeight) || 20,
+        kpi_weight: newTask.kpiWeight !== '' && newTask.kpiWeight !== null && newTask.kpiWeight !== undefined && Number.isFinite(Number(newTask.kpiWeight)) && Number(newTask.kpiWeight) >= 0 ? Number(newTask.kpiWeight) : 0,
         stage: 'todo',
       });
 
@@ -464,6 +487,7 @@ export default function ProjectsTasksPage() {
     setUpdateProgress(task.progress);
     setUpdateStage(task.stage);
     setUpdateNote(task.submissionNote || '');
+    loadTaskLogs(task.id);
   };
 
   const handleSaveUpdateTask = async (e) => {
@@ -475,8 +499,11 @@ export default function ProjectsTasksPage() {
       return;
     }
 
+    const targetTaskId = selectedTaskForUpdate.id;
+    let latestServerTask = null;
+
     try {
-      const res = await projectService.updateTask(selectedTaskForUpdate.id, {
+      const res = await projectService.updateTask(targetTaskId, {
         progress: Number(updateProgress),
         deliverableNote: updateNote,
       });
@@ -484,43 +511,39 @@ export default function ProjectsTasksPage() {
         alert(res?.message || 'Không thể cập nhật tiến độ nhiệm vụ trên máy chủ.');
         return;
       }
+      latestServerTask = res.data || null;
 
       if (selectedTaskForUpdate.stage !== updateStage) {
-        const stageRes = await projectService.updateTaskStage(selectedTaskForUpdate.id, updateStage, updateNote);
+        const stageRes = await projectService.updateTaskStage(targetTaskId, updateStage, updateNote);
         if (!stageRes?.success) {
           alert(stageRes?.message || 'Không thể chuyển trạng thái nhiệm vụ trên máy chủ.');
           return;
         }
+        latestServerTask = stageRes.data || latestServerTask;
       }
     } catch (err) {
       alert(err?.message || 'Lỗi khi cập nhật nhiệm vụ trên máy chủ.');
       return;
     }
 
-    const updated = tasks.map((t) => {
-      if (t.id === selectedTaskForUpdate.id) {
-        const newLogs = [...t.logs];
-        if (updateNote.trim()) {
-          newLogs.push({
-            time: new Date().toLocaleDateString('vi-VN') + ' ' + new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-            author: currentRole.name || 'Nhân sự thực hiện',
-            note: updateNote,
-          });
-        }
-        return {
-          ...t,
-          progress: Number(updateProgress),
-          stage: updateStage,
-          submissionNote: updateNote || t.submissionNote,
-          logs: newLogs,
-        };
-      }
-      return t;
-    });
+    const refreshedLogs = await loadTaskLogs(targetTaskId);
 
-    setTasks(updated);
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== targetTaskId) return t;
+        const mapped = latestServerTask ? mapTask(latestServerTask, t.projectName) : null;
+        return {
+          ...(mapped || t),
+          progress: mapped ? mapped.progress : Number(updateProgress),
+          stage: mapped ? mapped.stage : updateStage,
+          submissionNote: mapped ? mapped.submissionNote : (updateNote || t.submissionNote),
+          logs: refreshedLogs,
+        };
+      })
+    );
+
     setSelectedTaskForUpdate(null);
-    if (updateStage === 'review' || updateProgress === 100) {
+    if (updateStage === 'review' || Number(updateProgress) === 100) {
       try {
         confetti({ particleCount: 40, spread: 50 });
       } catch (_) {}
@@ -530,45 +553,42 @@ export default function ProjectsTasksPage() {
   const handleOpenReviewTask = (task) => {
     setSelectedTaskForReview(task);
     setManagerReviewNote('');
+    loadTaskLogs(task.id);
   };
 
   const handleManagerApprove = async (isApproved) => {
     if (!selectedTaskForReview) return;
 
+    const targetTaskId = selectedTaskForReview.id;
     const decision = isApproved ? 'accept' : 'reject';
+    let reviewedServerTask = null;
     try {
-      const res = await projectService.reviewTask(selectedTaskForReview.id, decision, managerReviewNote);
+      const res = await projectService.reviewTask(targetTaskId, decision, managerReviewNote);
       if (!res?.success) {
         alert(res?.message || 'Không thể nghiệm thu nhiệm vụ trên máy chủ.');
         return;
       }
+      reviewedServerTask = res.data || null;
     } catch (err) {
       alert(err?.message || 'Lỗi khi nghiệm thu nhiệm vụ trên máy chủ.');
       return;
     }
 
-    const updated = tasks.map((t) => {
-      if (t.id === selectedTaskForReview.id) {
-        const newLogs = [...t.logs];
-        newLogs.push({
-          time: new Date().toLocaleDateString('vi-VN') + ' ' + new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-          author: `${currentRole.name || 'Quản trị viên'} (Trưởng phòng)`,
-          note: isApproved
-            ? `Nghiệm thu ĐẠT yêu cầu: ${managerReviewNote || 'Chất lượng xuất sắc, hoàn thành đúng tiến độ sprint.'}`
-            : `Yêu cầu bổ sung và chỉnh sửa: ${managerReviewNote || 'Cần bổ sung tài liệu và kiểm thử lại.'}`,
-        });
+    const refreshedLogs = await loadTaskLogs(targetTaskId);
 
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== targetTaskId) return t;
+        const mapped = reviewedServerTask ? mapTask(reviewedServerTask, t.projectName) : null;
         return {
-          ...t,
-          stage: isApproved ? 'done' : 'in_progress',
-          progress: isApproved ? 100 : Math.min(t.progress, 85),
-          logs: newLogs,
+          ...(mapped || t),
+          stage: mapped ? mapped.stage : (isApproved ? 'done' : 'in_progress'),
+          progress: mapped ? mapped.progress : (isApproved ? 100 : Math.min(t.progress, 90)),
+          logs: refreshedLogs,
         };
-      }
-      return t;
-    });
+      })
+    );
 
-    setTasks(updated);
     setSelectedTaskForReview(null);
     if (isApproved) {
       try {
@@ -1622,8 +1642,8 @@ export default function ProjectsTasksPage() {
                   <label className="block font-bold text-slate-700 mb-1">Trọng Số KPI Đánh Giá (%)</label>
                   <input
                     type="number"
-                    min="5"
-                    max="50"
+                    min="0"
+                    max="100"
                     value={newTask.kpiWeight}
                     onChange={(e) => setNewTask({ ...newTask, kpiWeight: e.target.value })}
                     className="w-full h-10 px-3 rounded-xl border border-slate-200 text-xs"
@@ -1713,6 +1733,7 @@ export default function ProjectsTasksPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-200/60">
                   <span>Người thực hiện: <strong className="text-slate-900">{selectedTaskForUpdate.assigneeName}</strong></span>
                   <span>Người giao: {selectedTaskForUpdate.creator}</span>
+                  <span>Trọng số KPI: <strong className="text-slate-900" data-testid="task-detail-kpi-weight">{selectedTaskForUpdate.kpiWeight}%</strong></span>
                   <span>Hạn chót: <strong className="text-slate-900">{selectedTaskForUpdate.deadline}</strong></span>
                 </div>
               </div>
@@ -1802,23 +1823,62 @@ export default function ProjectsTasksPage() {
                   />
                 </div>
 
-                {/* History logs */}
-                {selectedTaskForUpdate.logs && selectedTaskForUpdate.logs.length > 0 && (
-                  <div>
-                    <span className="block font-bold text-slate-700 mb-2">Lịch Sử Trao Đổi và Tiến Độ</span>
-                    <div className="space-y-2 max-h-36 overflow-y-auto p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                {/* History logs (R33: Real server task_logs from GET /api/tasks/:id/logs) */}
+                <div data-testid="task-logs-section">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="block font-bold text-slate-700">Lịch Sử Trao Đổi và Tiến Độ</span>
+                    <span className="text-[10px] font-semibold text-slate-400">Nguồn: CSDL task_logs</span>
+                  </div>
+                  {taskLogsState.loading && taskLogsState.taskId === selectedTaskForUpdate.id ? (
+                    <div
+                      data-testid="task-logs-loading"
+                      className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-slate-500 text-[11px]"
+                    >
+                      Đang tải lịch sử nhiệm vụ từ máy chủ...
+                    </div>
+                  ) : taskLogsState.error && taskLogsState.taskId === selectedTaskForUpdate.id ? (
+                    <div
+                      data-testid="task-logs-error"
+                      className="p-3 bg-red-50 rounded-xl border border-red-200 text-red-700 text-[11px] flex items-center justify-between gap-2"
+                    >
+                      <span>{taskLogsState.error}</span>
+                      <button
+                        type="button"
+                        data-testid="task-logs-retry-btn"
+                        onClick={() => loadTaskLogs(selectedTaskForUpdate.id)}
+                        className="px-2.5 py-1 rounded-lg bg-white border border-red-200 text-red-700 font-bold hover:bg-red-100 shrink-0"
+                      >
+                        Thử lại
+                      </button>
+                    </div>
+                  ) : (selectedTaskForUpdate.logs || []).length === 0 ? (
+                    <div
+                      data-testid="task-logs-empty"
+                      className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-slate-500 text-[11px] italic"
+                    >
+                      Chưa có lịch sử cập nhật hoặc chuyển trạng thái trên máy chủ.
+                    </div>
+                  ) : (
+                    <div
+                      data-testid="task-logs-list"
+                      className="space-y-2 max-h-36 overflow-y-auto p-3 bg-slate-50 rounded-xl border border-slate-200/80"
+                    >
                       {selectedTaskForUpdate.logs.map((log, idx) => (
-                        <div key={idx} className="text-[11px] pb-1.5 border-b border-slate-200/60 last:border-0">
+                        <div
+                          key={log.id || idx}
+                          data-testid="task-log-item"
+                          className="text-[11px] pb-1.5 border-b border-slate-200/60 last:border-0"
+                        >
                           <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                            <strong className="text-slate-700">{log.author}</strong>
-                            <span>{log.time}</span>
+                            <strong className="text-slate-700" data-testid="task-log-author">{log.author}</strong>
+                            <span data-testid="task-log-time">{log.time}</span>
                           </div>
-                          <div className="text-slate-600 mt-0.5">{log.note}</div>
+                          <div className="text-slate-600 mt-0.5" data-testid="task-log-note">{log.note}</div>
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                   <button

@@ -6,13 +6,15 @@ import { fileURLToPath } from 'node:url';
 import {
   mapServerTask,
   mapServerTaskList,
+  mapServerTaskLog,
+  mapServerTaskLogs,
   computeProjectsTasksMetrics,
   buildCreateProjectPayload,
 } from '../src/utils/projectsTasksState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-describe('R28 & R30 — ProjectsTasksPage & PayrollPage / Sidebar verification', () => {
+describe('R28, R30 & R33 — ProjectsTasksPage & PayrollPage / Sidebar verification', () => {
   it('R28: rejects tasks missing a valid server id instead of fabricating random TSK-* IDs', () => {
     assert.equal(mapServerTask(null, 'Dự án A'), null);
     assert.equal(mapServerTask({}, 'Dự án A'), null);
@@ -26,8 +28,7 @@ describe('R28 & R30 — ProjectsTasksPage & PayrollPage / Sidebar verification',
         stage: 'in_progress',
         progress: 60,
       },
-      'Dự án A',
-      'Trần Quản Lý'
+      'Dự án A'
     );
     assert.ok(valid);
     assert.equal(valid.id, 'TSK-101');
@@ -107,5 +108,74 @@ describe('R28 & R30 — ProjectsTasksPage & PayrollPage / Sidebar verification',
     assert.equal(payrollPageSrc.includes('payroll-role-restricted'), true);
     assert.equal(sidebarSrc.includes('Phê duyệt quỹ lương'), false);
     assert.equal(sidebarSrc.includes('Quản trị bảng lương & quyết toán'), true);
+  });
+
+  it('R33: preserves kpi_weight = 0 as 0, removes fabricated 09:00 logs, avoids current-date fallback when created_at is missing, and keeps creator/author independent of viewer', () => {
+    const rawTask = {
+      id: 'TSK-R33-01',
+      project_id: 'PRJ-01',
+      title: 'Task không tính KPI',
+      kpi_weight: 0,
+      created_at: null,
+      creator_name: null,
+      creator_id: 'NV-002',
+      stage: 'todo',
+      progress: 0,
+    };
+
+    const viewByAlice = mapServerTask(rawTask, 'Dự án Core', 'Alice Viewer');
+    const viewByBob = mapServerTask(rawTask, 'Dự án Core', 'Bob Viewer');
+
+    // kpi_weight = 0 must remain 0 (not coerced to 20)
+    assert.equal(viewByAlice.kpiWeight, 0);
+    assert.equal(viewByBob.kpiWeight, 0);
+
+    // Missing created_at must remain null (never today's date)
+    assert.equal(viewByAlice.createdAt, null);
+
+    // No fabricated logs ('09:00' or 'Nhiệm vụ được đồng bộ trực tiếp từ CSDL PostgreSQL.')
+    assert.deepEqual(viewByAlice.logs, []);
+    assert.deepEqual(viewByBob.logs, []);
+
+    // Creator must be identical regardless of who views the task
+    assert.equal(viewByAlice.creator, viewByBob.creator);
+    assert.equal(viewByAlice.creator.includes('Alice Viewer'), false);
+    assert.equal(viewByBob.creator.includes('Bob Viewer'), false);
+  });
+
+  it('R33: mapServerTaskLogs maps real server task_logs accurately with missing created_at handled without current-date fallback', () => {
+    const rawLogs = [
+      {
+        id: 11,
+        task_id: 'TSK-R33-01',
+        actor_id: 'NV-005',
+        actor_name: 'Phạm Hoàng Tuấn',
+        action: 'STAGE_CHANGE',
+        from_stage: 'todo',
+        to_stage: 'in_progress',
+        note: 'Bắt đầu code',
+        created_at: '2026-10-15T02:30:00.000Z',
+      },
+      {
+        id: 12,
+        task_id: 'TSK-R33-01',
+        actor_id: 'NV-002',
+        actor_name: 'Trần Văn Quản Lý',
+        action: 'REVIEW_ACCEPTED',
+        from_stage: 'review',
+        to_stage: 'done',
+        note: 'Đạt chuẩn nghiệm thu',
+        created_at: null,
+      },
+    ];
+
+    const mapped = mapServerTaskLogs(rawLogs);
+    assert.equal(mapped.length, 2);
+    assert.equal(mapped[0].author, 'Phạm Hoàng Tuấn');
+    assert.match(mapped[0].note, /Chuyển trạng thái: Cần làm → Đang thực hiện — Bắt đầu code/);
+    assert.equal(mapped[1].author, 'Trần Văn Quản Lý');
+    assert.equal(mapped[1].time, 'Chưa ghi nhận thời gian');
+    assert.match(mapped[1].note, /Nghiệm thu đạt: Chờ nghiệm thu → Hoàn thành — Đạt chuẩn nghiệm thu/);
+    assert.equal(mapServerTaskLog(null), null);
   });
 });
