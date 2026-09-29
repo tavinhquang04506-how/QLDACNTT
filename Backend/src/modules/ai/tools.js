@@ -626,6 +626,7 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
       ok: true,
       scope: 'department',
       departmentId: myDept,
+      asOfDate: clock.date,
       overview: data.overview,
       departmentStats: data.departmentStats,
       source: {
@@ -641,6 +642,7 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
   return {
     ok: true,
     scope: 'all',
+    asOfDate: clock.date,
     overview: data.overview,
     departmentStats: data.departmentStats,
     source: {
@@ -781,6 +783,8 @@ async function getScopedPerformance(actor, args = {}, executor = db) {
       fullName: emp.full_name,
       departmentId: emp.department_id,
       jobTitle: emp.job_title,
+      queriedPeriod: args.period ? String(args.period).trim() : null,
+      evaluationYear: clock.year,
       missingReview: reviews.length === 0,
       latestReview: latest
         ? {
@@ -846,8 +850,17 @@ async function searchPolicies(actor, args = {}, executor = db) {
   const rawQuery = String(args.query || '').trim();
   const qLower = rawQuery.toLowerCase();
 
-  if (args.period !== undefined && args.period !== null && String(args.period).trim() !== '') {
-    if (!isValidPeriodMonth(String(args.period).trim())) {
+  const CURRENT_POLICY_ALIASES = new Set([
+    'current', 'latest', 'now', 'today', 'active', 'present',
+    'hien_hanh', 'hiện hành', 'hien_tai', 'hiện tại', 'hien nay', 'hiện nay',
+  ]);
+  const rawArgPeriod =
+    args.period !== undefined && args.period !== null ? String(args.period).trim() : '';
+  const cleanArgPeriod =
+    rawArgPeriod && !CURRENT_POLICY_ALIASES.has(rawArgPeriod.toLowerCase()) ? rawArgPeriod : '';
+
+  if (cleanArgPeriod !== '') {
+    if (!isValidPeriodMonth(cleanArgPeriod)) {
       return {
         ok: false,
         errorCode: 'INVALID_ARGUMENT',
@@ -855,8 +868,14 @@ async function searchPolicies(actor, args = {}, executor = db) {
       };
     }
   }
-  if (args.effectiveDate !== undefined && args.effectiveDate !== null && String(args.effectiveDate).trim() !== '') {
-    if (!isValidIsoDate(String(args.effectiveDate).trim())) {
+
+  const rawArgEffDate =
+    args.effectiveDate !== undefined && args.effectiveDate !== null ? String(args.effectiveDate).trim() : '';
+  const cleanArgEffDate =
+    rawArgEffDate && !CURRENT_POLICY_ALIASES.has(rawArgEffDate.toLowerCase()) ? rawArgEffDate : '';
+
+  if (cleanArgEffDate !== '') {
+    if (!isValidIsoDate(cleanArgEffDate)) {
       return {
         ok: false,
         errorCode: 'INVALID_ARGUMENT',
@@ -866,10 +885,10 @@ async function searchPolicies(actor, args = {}, executor = db) {
   }
 
   const targetPeriod =
-    args.period && String(args.period).trim()
-      ? String(args.period).trim()
-      : args.effectiveDate && String(args.effectiveDate).trim()
-      ? String(args.effectiveDate).trim().slice(0, 7)
+    cleanArgPeriod
+      ? cleanArgPeriod
+      : cleanArgEffDate
+      ? cleanArgEffDate.slice(0, 7)
       : extractPeriodFromQuery(rawQuery);
 
   const { rows: allDocs } = await executor.query(
