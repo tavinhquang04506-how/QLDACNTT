@@ -1,24 +1,33 @@
-# RELEASE BACKLOG & STATUS TRACKER (`b45bd89` / `9c25e85` → `R31–R34` Follow-up)
+# RELEASE BACKLOG & STATUS TRACKER (`b45bd89` / `9c25e85` / `fe918e1` → `R35–R36` AI Gate Follow-up)
 
-- **Baseline Commits**: `b45bd89` (Plan 10) → `9c25e85` (Review 11)
-- **Implementation Branch**: `bugfix/remediation-r31-r34-review-fixes` (merged into `develop` with `--no-ff`)
+- **Baseline Commits**: `b45bd89` (Plan 10) → `9c25e85` (Review 11) → `fe918e1` (Review 12)
+- **Implementation Branch**: `bugfix/remediation-r35-r36-ai-gate` (merged into `develop` with `--no-ff`)
 - **Primary DB (`nexus_hrms`)**: Preserved untouched (`32` tables, `DEPLOYMENT_PENDING` for migrations `010`/`011` until operator maintenance window)
 - **Test DB (`nexus_hrms_test`)**: Verified via `assertSafeTestDatabase` (`current_database() = 'nexus_hrms_test'`, `34` tables, `READY`)
 
 ---
 
-## 1. Findings `R31–R34` (Report `11-REVIEW-9c25e85-VA-VIEC-CON-LAI.md`)
+## 1. Findings `R35–R36` (Report `12-REVIEW-fe918e1-AI-GATE.md`)
 
 | ID | Priority | Module / Files | Description | Status | Verification Evidence |
 |---|---|---|---|---|---|
-| **R31** | **P1** | `Backend/src/middleware/auth.js`, `Backend/src/modules/ai/routes.js`, `Backend/src/modules/ai/service.js` | Authoritative DB scope resolution (`resolveActorScopeFromDb`: `userId`, `employeeId`, `roleCode`, `departmentId`) on every `POST /api/ai/copilot` request and inside `runCopilot`; canonical `buildScopeFingerprint` comparing `null` transitions, `employeeId` rebinding, and role changes; immediate `conversationStore` invalidation and `scopeGeneration` guard preventing stale in-flight requests from overwriting newer scopes | **VERIFIED** | `Backend/tests/api/r31-r34-review-fixes.test.js` (`R31`), `docs/remediation/evidence/r31-r34-verification-after-fix.log` |
-| **R32** | **P1** | `Backend/src/modules/ai/service.js`, `Backend/src/modules/ai/tools.js` | Mandatory tool-grounding & numeric/status evidence verification before returning HR/policy answers: blocks ungrounded responses when model skips tools (`UNGROUNDED_ANSWER_REJECTED`), when tools return error/forbidden/empty/unpublished (`ok=false`, `found=false`, `hasRecord=false`, `published=false`), when model numbers contradict tool data (`ANSWER_SOURCE_MISMATCH`), or when `maxToolRounds` is exhausted (`TOOL_ROUNDS_EXCEEDED`); preserves normal greetings/clarification prompts without tools | **VERIFIED** (Code & Mocked Route/Service E2E) / **BLOCKED** (Live Gemini API without key) | `Backend/tests/api/r31-r34-review-fixes.test.js` (`R32`), `Backend/tests/api/g4-ai-copilot-eval.test.js` (`32/32 PASS`) |
+| **R35** | **P1** | `Backend/src/modules/ai/service.js`, `FrontEnd/src/utils/aiCopilotState.js`, `FrontEnd/src/modals/analytics/AiCopilotDrawerModal.jsx` | Fail-closed tool-less boundary (`isAllowedToollessExchange`: only pure greetings/courtesy or pure clarification prompts with zero numbers—digits or written number words in Vietnamese accented/unaccented or English—and zero HR factual claims are allowed when `toolsUsed.length === 0`); structured tool evidence (`structuredEvidence`: `{ tool, entity, period, fields, sourceId }`) and semantic field/entity/period binding validator (`validateSemanticFieldBindings`) rejecting cross-field swaps (`total_days` / `used_days` / `remaining_days` / `available` / `year` in leave balances; `netSalary` / `grossIncome` / `baseSalary` / `pit` / `period` / `employeeId` in payslips) with `verified: false`, `refused: true`, `refusalCodes: ['ANSWER_SOURCE_MISMATCH']`; explicit UI rendering of `VERIFIED`, `REFUSED` (`refusalCodes`), and `UNVERIFIED` states in `AiCopilotDrawerModal.jsx` | **VERIFIED** (Code, Unit, HTTP Route Integration & Browser UI E2E) / **BLOCKED** (Live Gemini API without key) | `Backend/tests/api/r35-r36-ai-gate.test.js` (`R35`), `FrontEnd/tests/aiCopilotState.test.js`, `Backend/scripts/e2e-browser-verify.js` (`ASSERT 10`), `docs/remediation/evidence/r35-r36-ai-gate-test.log` |
+| **R36** | **P1** | `Backend/src/modules/ai/routes.js`, `Backend/src/modules/ai/service.js`, `FrontEnd/src/modals/analytics/AiCopilotDrawerModal.jsx` | Mandatory pre-release DB scope & account active-status re-verification (`resolveActorScopeFromDb(resolvedActor, db, { forceRefresh: true, requireDbUser: true })`) immediately before issuing the response at the end of `runCopilot`: if `departmentId` (`DEPT-IT -> null` or `DEPT-IT -> DEPT-SALES`), `roleCode` (`LINE_MANAGER -> EMPLOYEE`), or `employeeId` changes while the provider is in-flight (with or without a concurrent Request B), discards the stale answer, clears stale history while preserving `ownerUserId`, and returns `verified: false`, `refused: true`, `refusalCodes: ['SCOPE_CHANGED_DURING_REQUEST']`, `scopeChangedDuringRequest: true`; if `is_active = false`, user row is deleted, or role changes to `KIOSK` mid-flight, wipes conversation history and fails closed (`401`/`403`) | **VERIFIED** | `Backend/tests/api/r35-r36-ai-gate.test.js` (`R36` barrier-synchronized concurrency suite), `docs/remediation/evidence/r35-r36-ai-gate-test.log` |
+
+---
+
+## 2. Findings `R31–R34` (Report `11-REVIEW-9c25e85-VA-VIEC-CON-LAI.md`)
+
+| ID | Priority | Module / Files | Description | Status | Verification Evidence |
+|---|---|---|---|---|---|
+| **R31** | **P1** | `Backend/src/middleware/auth.js`, `Backend/src/modules/ai/routes.js`, `Backend/src/modules/ai/service.js` | Authoritative DB scope resolution (`resolveActorScopeFromDb`: `userId`, `employeeId`, `roleCode`, `departmentId`) on every `POST /api/ai/copilot` request and inside `runCopilot`; canonical `buildScopeFingerprint` comparing `null` transitions, `employeeId` rebinding, and role changes; immediate `conversationStore` invalidation and `scopeGeneration` guard preventing stale in-flight requests from overwriting newer scopes | **VERIFIED** | `Backend/tests/api/r31-r34-review-fixes.test.js` (`R31`), `Backend/tests/api/r35-r36-ai-gate.test.js` (`R36`) |
+| **R32** | **P1** | `Backend/src/modules/ai/service.js`, `Backend/src/modules/ai/tools.js` | Mandatory tool-grounding & numeric/status evidence verification before returning HR/policy answers: blocks ungrounded responses when model skips tools (`verified: false`, `refused: true`, `refusalCodes: ['UNGROUNDED_ANSWER_REJECTED']`), when tools return error/forbidden/empty/unpublished (`ok=false`, `found=false`, `hasRecord=false`, `published=false`), when model numbers contradict tool data (`refusalCodes: ['ANSWER_SOURCE_MISMATCH']`), or when `maxToolRounds` is exhausted (`refusalCodes: ['TOOL_ROUNDS_EXCEEDED']`); preserves normal greetings/clarification prompts without tools (`verified: false`, `refused: false`, `refusalCodes: []`) | **VERIFIED** (Code & Mocked Route/Service E2E) / **BLOCKED** (Live Gemini API without key) | `Backend/tests/api/r31-r34-review-fixes.test.js` (`R32`), `Backend/tests/api/r35-r36-ai-gate.test.js` (`R35`), `Backend/tests/api/g4-ai-copilot-eval.test.js` (`32/32 PASS`) |
 | **R33** | **P2** | `FrontEnd/src/utils/projectsTasksState.js`, `FrontEnd/src/pages/ProjectsTasksPage.jsx`, `Backend/src/modules/tasks/service.js` | Removed fabricated `'09:00'` / `'Nhiệm vụ được đồng bộ trực tiếp từ CSDL PostgreSQL.'` log, current-date fallback on missing `created_at`, and viewer-dependent `currentRoleName` fallback; preserved valid `kpi_weight = 0` as `0`; wired `GET /api/tasks/:id/logs` (`projectService.getTaskLogs`) with loading/empty/error/retry states and post-mutation reload; recorded `PROGRESS_UPDATE` & stage notes in `task_logs` | **VERIFIED** | `FrontEnd/tests/projectsTasksState.test.js`, `Backend/tests/api/r31-r34-review-fixes.test.js` (`R33`), `Backend/scripts/e2e-browser-verify.js` (`ASSERT 9`) |
 | **R34** | **P2** | `docs/remediation/UAT_MATRIX.md`, `Backend/tests/api/r31-r34-review-fixes.test.js` | Corrected `UAT_MATRIX.md` routes (`GET /api/attendance/qr` → `POST /api/attendance/kiosk/punch` for `KIOSK`; `POST /api/ai/copilot` for AI Copilot); separated `UI E2E`, `API/DB Integration`, and `Service/Unit` evidence levels; separated positive role flows from negative permission checks; added positive `KIOSK` QR check-in/check-out + replay-rejection integration test | **VERIFIED** | `Backend/tests/api/r31-r34-review-fixes.test.js` (`R34`), `docs/remediation/UAT_MATRIX.md` |
 
 ---
 
-## 2. Findings `R27–R30` (Plan `10-KE-HOACH-TONG-THE-HOAN-THIEN-b45bd89.md`)
+## 3. Findings `R27–R30` (Plan `10-KE-HOACH-TONG-THE-HOAN-THIEN-b45bd89.md`)
 
 | ID | Priority | Module / Files | Description | Status | Verification Evidence |
 |---|---|---|---|---|---|
@@ -29,7 +38,7 @@
 
 ---
 
-## 3. Historical Findings `R01–R26` Summary
+## 4. Historical Findings `R01–R26` Summary
 
 | Group | IDs | Summary | Status | Notes / Remaining Conditions |
 |---|---|---|---|---|
@@ -41,8 +50,8 @@
 
 ---
 
-## 4. Original Audit Items `F01–F32` Status Summary
+## 5. Original Audit Items `F01–F32` Status Summary
 
-- **VERIFIED (`26/32`)**: `F01, F02, F05, F06, F07, F08, F09, F10, F11, F14, F16, F17, F19, F20, F21, F22, F23, F24, F25, F26, F27, F28, F29, F30, F31, F32`.
-- **PARTIAL — Pending Business Policy Sign-off (`4/32`)**: `F03, F04, F12, F13` (tracked in `docs/remediation/POLICY_DECISIONS.md`).
-- **BLOCKED — Pending Live `GEMINI_API_KEY` (`2/32`)**: `F15, F18` (all mocked provider, tool-calling, RBAC, injection, `R29` clock/policy-version, `R31` DB scope invalidation, and `R32` grounding enforcement tests pass; live external Gemini call awaits operator API key per `docs/remediation/AI_SETUP_AND_UAT.md`).
+- **VERIFIED (`24/32`)**: `F01, F02, F04, F05, F07, F08, F10, F11, F12, F14, F15, F16, F18, F19, F20, F21, F23, F24, F27, F28, F29, F30, F31, F32`.
+- **PARTIAL — Pending Business Policy Sign-off & Primary DB Maintenance Window (`6/32`)**: `F03, F06, F09, F13, F17, F26` (tracked in `docs/remediation/POLICY_DECISIONS.md` and `docs/remediation/OPERATOR_RUNBOOK.md`).
+- **BLOCKED — Pending Live `GEMINI_API_KEY` (`2/32`)**: `F22, F25` (all mocked provider, tool-calling, RBAC, injection, `R29` clock/policy-version, `R31` DB scope invalidation, `R32` grounding enforcement, `R35` semantic field/period/entity binding, and `R36` pre-release DB scope/active-status re-verification tests pass; live external Gemini call awaits operator API key per `docs/remediation/AI_SETUP_AND_UAT.md`).
