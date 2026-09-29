@@ -1,8 +1,198 @@
 // ============================================
 // utils/payrollPeriodState.js
 // R20: Strict period resolution & state readiness guard (no fallback to apiPeriods[0])
-// R22: Multi-page payslip loader & completeness verification for 501+ records
+// R22 + R26: Multi-page payslip loader with duplicate ID/employee detection, pagination metadata validation & snapshot consistency
+// R24: Adjustment source conflict state & resolution payload builders
+// R25: Honest period status mapping (no client-only fake CEO approval state)
 // ============================================
+
+export const ADJUSTMENT_FIELD_LABELS = {
+  actualWorkDays: 'Ngày công hưởng lương',
+  baseSalary: 'Lương cơ bản hợp đồng',
+  otHours: 'Số giờ làm thêm (OT)',
+  allowances: 'Phụ cấp theo chính sách',
+  bonus: 'Thưởng hiệu suất / KPI',
+  note: 'Ghi chú điều chỉnh',
+};
+
+export function formatConflictFieldValue(field, value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  if (field === 'actualWorkDays') return `${num} ngày`;
+  if (field === 'otHours') return `${num} giờ`;
+  return `${num.toLocaleString('vi-VN')} đ`;
+}
+
+export function getConflictItemKey(conflict) {
+  if (!conflict || typeof conflict !== 'object') return '';
+  const empId = conflict.employeeId || conflict.employee_id || '';
+  return `${String(empId).trim()}::${String(conflict.field || '').trim()}`;
+}
+
+export function normalizeConflictItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const employeeId = String(raw.employeeId || raw.employee_id || '').trim();
+  const employeeName = String(raw.employeeName || raw.full_name || raw.name || employeeId).trim();
+  const field = String(raw.field || '').trim();
+  return {
+    ...raw,
+    employeeId,
+    employee_id: employeeId,
+    employeeName,
+    full_name: employeeName,
+    field,
+    fieldLabel: raw.fieldLabel || ADJUSTMENT_FIELD_LABELS[field] || field,
+    previousSourceValue: raw.previousSourceValue !== undefined ? Number(raw.previousSourceValue) : null,
+    currentSourceValue: raw.currentSourceValue !== undefined ? Number(raw.currentSourceValue) : null,
+    manualValue: raw.manualValue !== undefined ? Number(raw.manualValue) : null,
+    staleDecisionRejected: Boolean(raw.staleDecisionRejected),
+  };
+}
+
+export function extractConflictsFromError(err) {
+  if (!err || typeof err !== 'object') return [];
+  const candidates = [
+    err?.details?.conflicts,
+    err?.details,
+    err?.response?.data?.details?.conflicts,
+    err?.response?.data?.details,
+    err?.conflicts,
+  ];
+  for (const cand of candidates) {
+    if (Array.isArray(cand)) {
+      return cand.map(normalizeConflictItem).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+export function areAllConflictsResolved(conflicts = [], decisions = {}) {
+  if (!Array.isArray(conflicts) || conflicts.length === 0) return false;
+  if (!decisions || typeof decisions !== 'object') return false;
+  return conflicts.every((c) => {
+    const key = getConflictItemKey(c);
+    const choice = decisions[key];
+    return choice === 'KEEP_MANUAL' || choice === 'USE_SOURCE';
+  });
+}
+
+export function buildConflictResolutionPayload(conflicts = [], decisions = {}) {
+  if (!Array.isArray(conflicts) || conflicts.length === 0) {
+    throw new Error('Không có mục xung đột nào để gửi đối soát.');
+  }
+  if (!areAllConflictsResolved(conflicts, decisions)) {
+    throw new Error(
+      'Vui lòng chọn rõ "Giữ điều chỉnh thủ công" hoặc "Dùng dữ liệu nguồn mới" cho tất cả các mục xung đột trước khi xác nhận.'
+    );
+  }
+
+  const adjustmentResolutions = {};
+  const expectedSourceValues = {};
+
+  for (const raw of conflicts) {
+    const c = normalizeConflictItem(raw);
+    const empId = c.employeeId;
+    const field = c.field;
+    const key = getConflictItemKey(c);
+    const decision = decisions[key];
+    const currentSourceNum = Number(c.currentSourceValue);
+
+    if (!adjustmentResolutions[empId]) adjustmentResolutions[empId] = {};
+    if (!expectedSourceValues[empId]) expectedSourceValues[empId] = {};
+
+    adjustmentResolutions[empId][field] = {
+      action: decision,
+      ...(Number.isFinite(currentSourceNum)
+        ? { expectedCurrentSourceValue: currentSourceNum }
+        : {}),
+    };
+    if (Number.isFinite(currentSourceNum)) {
+      expectedSourceValues[empId][field] = currentSourceNum;
+    }
+  }
+
+  return {
+    adjustmentResolutions,
+    expectedSourceValues,
+  };
+}
+
+/**
+ * R24: When a 409 ADJUSTMENT_SOURCE_CONFLICT returns while the modal is already open
+ * (e.g., because the underlying source changed AGAIN during review), invalidate any decision
+ * whose `currentSourceValue` changed or was flagged `staleDecisionRejected`.
+ * Initializes unselected decisions to `null` (never auto-selects a default).
+ */
+export function reconcileConflictModalState(prevConflicts = [], arg2 = {}, arg3 = []) {
+  const prevDecisions = Array.isArray(arg2) ? (arg3 && typeof arg3 === 'object' ? arg3 : {}) : (arg2 || {});
+  const rawNextConflicts = Array.isArray(arg2) ? arg2 : (Array.isArray(arg3) ? arg3 : []);
+
+  const normalizedPrev = (Array.isArray(prevConflicts) ? prevConflicts : [])
+    .map(normalizeConflictItem)
+    .filter(Boolean);
+  const normalizedNext = rawNextConflicts
+    .map(normalizeConflictItem)
+    .filter(Boolean);
+
+  const prevByKey = new Map(normalizedPrev.map((c) => [getConflictItemKey(c), c]));
+  const nextByKey = new Map(normalizedNext.map((c) => [getConflictItemKey(c), c]));
+  const mergedItems = [];
+  const seenKeys = new Set();
+  const nextDecisions = {};
+  const invalidatedKeys = [];
+
+  // Preserve previous conflict items (and their valid decisions) because a 409 rolls back the whole calculate() transaction
+  for (const prevItem of normalizedPrev) {
+    const key = getConflictItemKey(prevItem);
+    seenKeys.add(key);
+    const nextItem = nextByKey.get(key);
+    const prevChoice = prevDecisions?.[key];
+    if (nextItem) {
+      mergedItems.push(nextItem);
+      const sourceChangedAgain =
+        Boolean(nextItem.staleDecisionRejected) ||
+        Math.abs(Number(nextItem.currentSourceValue) - Number(prevItem.currentSourceValue)) > 0.001;
+      if (sourceChangedAgain) {
+        invalidatedKeys.push(key);
+        nextDecisions[key] = null;
+      } else if (prevChoice === 'KEEP_MANUAL' || prevChoice === 'USE_SOURCE') {
+        nextDecisions[key] = prevChoice;
+      } else {
+        nextDecisions[key] = null;
+      }
+    } else {
+      mergedItems.push(prevItem);
+      nextDecisions[key] =
+        prevChoice === 'KEEP_MANUAL' || prevChoice === 'USE_SOURCE' ? prevChoice : null;
+    }
+  }
+
+  // Append any brand-new conflict items that were not in prevConflicts
+  for (const nextItem of normalizedNext) {
+    const key = getConflictItemKey(nextItem);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    mergedItems.push(nextItem);
+    const prevChoice = prevDecisions?.[key];
+    if (Boolean(nextItem.staleDecisionRejected)) {
+      invalidatedKeys.push(key);
+      nextDecisions[key] = null;
+    } else if (prevChoice === 'KEEP_MANUAL' || prevChoice === 'USE_SOURCE') {
+      nextDecisions[key] = prevChoice;
+    } else {
+      nextDecisions[key] = null;
+    }
+  }
+
+  return {
+    conflictItems: mergedItems,
+    conflicts: mergedItems,
+    decisions: nextDecisions,
+    invalidatedKeys,
+    changedWhileOpenCount: invalidatedKeys.length,
+  };
+}
 
 export function parsePeriodCode(periodStr) {
   if (!periodStr) return new Date().toISOString().slice(0, 7);
@@ -59,7 +249,7 @@ export function buildPeriodSelectOptions(apiPeriods = [], selectedPeriod = '', d
         ? 'Đã chốt'
         : p.status === 'DA_CHUYEN_KHOAN'
         ? 'Đã chi trả'
-        : 'Đang xử lý';
+        : 'Dự thảo';
     byCode.set(p.period, {
       code: p.period,
       value: formatted,
@@ -100,9 +290,9 @@ export function buildPeriodSelectOptions(apiPeriods = [], selectedPeriod = '', d
 }
 
 /**
- * R20: Compute period-scoped view state.
- * Guarantees that when switching from Period A to Period B (uncreated, loading, slow, or failed),
- * Period A's payslips/ID/totals/anomalies are NEVER retained or used for actions under Period B's label.
+ * R20 + R25: Compute period-scoped view state.
+ * - R20: Never retains Period A's payslips/ID/totals/anomalies when switching to Period B.
+ * - R25: Never reports a fake client-only "CEO Đã Phê Duyệt Chi Trả" status; strictly reflects server status.
  */
 export function computePeriodViewState({
   currentPeriodCode,
@@ -114,7 +304,6 @@ export function computePeriodViewState({
   periodError = '',
   apiPayslips = [],
   anomalies = [],
-  isCeoApproved = false,
 }) {
   const isPeriodExists = Boolean(
     currentPeriodObj &&
@@ -130,17 +319,23 @@ export function computePeriodViewState({
       String(loadedPeriodId) === String(currentPeriodObj.id)
   );
 
-  const periodPayslips = isLoadedForCurrentPeriod && Array.isArray(apiPayslips)
-    ? apiPayslips.filter(
-        (p) =>
-          p &&
-          p.period === currentPeriodCode &&
-          (p.period_id == null || String(p.period_id) === String(currentPeriodObj.id))
-      )
-    : [];
+  const periodPayslips =
+    isLoadedForCurrentPeriod && Array.isArray(apiPayslips)
+      ? apiPayslips.filter(
+          (p) =>
+            p &&
+            p.period === currentPeriodCode &&
+            (p.period_id == null || String(p.period_id) === String(currentPeriodObj.id))
+        )
+      : [];
+
+  const uniqueEmployeeCount = new Set(
+    periodPayslips.map((p) => (p?.employee_id != null ? String(p.employee_id).trim() : '')).filter(Boolean)
+  ).size;
 
   const isTotalConsistent =
-    loadedExpectedTotal == null || periodPayslips.length === Number(loadedExpectedTotal);
+    periodPayslips.length === uniqueEmployeeCount &&
+    (loadedExpectedTotal == null || periodPayslips.length === Number(loadedExpectedTotal));
 
   const isPeriodDataReady = Boolean(isLoadedForCurrentPeriod && isTotalConsistent);
   const canActOnPeriod = isPeriodDataReady;
@@ -184,10 +379,12 @@ export function computePeriodViewState({
     payrollStatus = 'Lỗi tải dữ liệu kỳ lương';
   } else if (!isPeriodExists) {
     payrollStatus = 'Chưa khởi tạo kỳ lương';
-  } else if (isCeoApproved && isPeriodDataReady) {
-    payrollStatus = 'CEO Đã Phê Duyệt Chi Trả';
+  } else if (currentPeriodObj.status === 'DA_CHUYEN_KHOAN') {
+    payrollStatus = 'Đã chuyển khoản chi trả';
+  } else if (currentPeriodObj.status === 'DA_CHOT') {
+    payrollStatus = 'Đã khóa sổ & Quyết toán';
   } else {
-    payrollStatus = currentPeriodObj.status || 'Chờ xử lý kỳ lương';
+    payrollStatus = 'Đang xử lý dự thảo';
   }
 
   return {
@@ -204,23 +401,169 @@ export function computePeriodViewState({
   };
 }
 
+function createLoaderError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
 /**
- * R22: Fetch all pages of payslips for a period using pagination metadata (`page`, `limit`, `total`, `totalPages`).
- * Never truncates at 500 records. Throws an explicit error if any page fails or if the total collected rows
- * do not match `pagination.total`.
+ * R22 + R26: Fetch all pages of payslips for a period using pagination metadata (`page`, `limit`, `total`, `totalPages`, `snapshotToken`, `aggregates`).
+ * - Never truncates at 500 records.
+ * - Rejects missing or inconsistent pagination metadata (`total`, `totalPages`, `page`, `period`).
+ * - Rejects duplicate `employee_id` or duplicate payslip `id` within or across pages.
+ * - Rejects any row missing `period` or belonging to a different `period` / `period_id`.
+ * - Rejects mixed versions if `snapshotToken` or `aggregates.totalNet` changes between page requests,
+ *   or if `expectedSnapshotToken` / `expectedTotalNet` does not match the fetched dataset.
  */
 export async function fetchAllPayslipsForPeriod(
   getPayslipsFn,
-  { period, pageSize = 500, extraParams = {} } = {}
+  {
+    period,
+    pageSize = 500,
+    extraParams = {},
+    expectedSnapshotToken = null,
+    expectedTotalNet = null,
+  } = {}
 ) {
   if (typeof getPayslipsFn !== 'function') {
-    throw new Error('Hàm tải phiếu lương không hợp lệ.');
+    throw createLoaderError('INVALID_LOADER_FN', 'Hàm tải phiếu lương không hợp lệ.');
   }
   if (!period) {
-    throw new Error('Thiếu mã kỳ lương (period) khi tải danh sách phiếu lương.');
+    throw createLoaderError('MISSING_PERIOD', 'Thiếu mã kỳ lương (period) khi tải danh sách phiếu lương.');
   }
 
   const safeLimit = Math.min(Math.max(1, Number(pageSize) || 500), 500);
+
+  const validateAndExtractPagination = (res, expectedPage, expectedTotalFromPage1 = null) => {
+    const pagination = res?.pagination || res?.meta?.pagination || null;
+    if (
+      !pagination ||
+      typeof pagination !== 'object' ||
+      pagination.total === undefined ||
+      pagination.total === null ||
+      !Number.isFinite(Number(pagination.total)) ||
+      Number(pagination.total) < 0
+    ) {
+      throw createLoaderError(
+        'INVALID_PAGINATION_METADATA',
+        `Thiếu hoặc sai định dạng metadata phân trang (pagination.total) ở trang ${expectedPage} của kỳ ${period}.`
+      );
+    }
+    if (
+      pagination.page !== undefined &&
+      pagination.page !== null &&
+      Number(pagination.page) !== expectedPage
+    ) {
+      throw createLoaderError(
+        'PAGINATION_PAGE_MISMATCH',
+        `Metadata trang trả về (${pagination.page}) không khớp trang yêu cầu (${expectedPage}) của kỳ ${period}.`
+      );
+    }
+    if (
+      pagination.period !== undefined &&
+      pagination.period !== null &&
+      String(pagination.period) !== String(period)
+    ) {
+      throw createLoaderError(
+        'PAGINATION_PERIOD_MISMATCH',
+        `Metadata kỳ lương trả về (${pagination.period}) không khớp kỳ yêu cầu (${period}) ở trang ${expectedPage}.`
+      );
+    }
+
+    const total = Number(pagination.total);
+    if (expectedTotalFromPage1 !== null && total !== expectedTotalFromPage1) {
+      throw createLoaderError(
+        'PAGINATION_TOTAL_CHANGED',
+        `Tổng số bản ghi của kỳ ${period} đã thay đổi trong lúc tải trang ${expectedPage} (${expectedTotalFromPage1} -> ${total}). Đã hủy thao tác để tránh trộn dữ liệu.`
+      );
+    }
+    const minRequiredPages = total === 0 ? 1 : Math.ceil(total / safeLimit);
+    const totalPages =
+      pagination.totalPages !== undefined && pagination.totalPages !== null
+        ? Number(pagination.totalPages)
+        : minRequiredPages;
+
+    if (!Number.isFinite(totalPages) || totalPages < minRequiredPages) {
+      throw createLoaderError(
+        'INVALID_PAGINATION_METADATA',
+        `Metadata totalPages (${pagination.totalPages}) không hợp lệ so với total=${total}, limit=${safeLimit} ở trang ${expectedPage} của kỳ ${period}.`
+      );
+    }
+
+    return {
+      pagination,
+      total,
+      totalPages: Math.max(1, totalPages),
+      snapshotToken: pagination.snapshotToken || pagination.revision || null,
+      aggregates:
+        pagination.aggregates && typeof pagination.aggregates === 'object'
+          ? pagination.aggregates
+          : null,
+    };
+  };
+
+  const seenEmployeeIds = new Set();
+  const seenPayslipIds = new Set();
+  let seenPeriodId = null;
+  const allRows = [];
+
+  const validateAndCollectPageRows = (rows, pageNum) => {
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') {
+        throw createLoaderError(
+          'INVALID_PAYSLIP_ROW',
+          `Dữ liệu phiếu lương không hợp lệ ở trang ${pageNum} của kỳ ${period}.`
+        );
+      }
+      if (!r.period || String(r.period) !== String(period)) {
+        throw createLoaderError(
+          'ROW_PERIOD_MISMATCH',
+          `Phát hiện phiếu lương thuộc kỳ "${r.period || 'N/A'}" khi đang tải kỳ "${period}" (trang ${pageNum}).`
+        );
+      }
+      if (r.period_id !== undefined && r.period_id !== null) {
+        const pidStr = String(r.period_id);
+        if (seenPeriodId === null) {
+          seenPeriodId = pidStr;
+        } else if (seenPeriodId !== pidStr) {
+          throw createLoaderError(
+            'ROW_PERIOD_ID_MISMATCH',
+            `Phát hiện phiếu lương không cùng mã kỳ (period_id ${pidStr} != ${seenPeriodId}) ở trang ${pageNum} của kỳ ${period}.`
+          );
+        }
+      }
+
+      const empId = r.employee_id !== undefined && r.employee_id !== null ? String(r.employee_id).trim() : '';
+      if (!empId) {
+        throw createLoaderError(
+          'MISSING_EMPLOYEE_ID',
+          `Phát hiện phiếu lương thiếu mã nhân viên (employee_id) ở trang ${pageNum} của kỳ ${period}.`
+        );
+      }
+      if (seenEmployeeIds.has(empId)) {
+        throw createLoaderError(
+          'DUPLICATE_PAYSLIP_EMPLOYEE',
+          `Phát hiện trùng lặp nhân viên "${empId}" khi tải phân trang kỳ ${period} (trang ${pageNum}). Đã hủy thao tác để tránh trùng lặp dữ liệu.`
+        );
+      }
+      seenEmployeeIds.add(empId);
+
+      if (r.id !== undefined && r.id !== null && String(r.id).trim() !== '') {
+        const slipId = String(r.id).trim();
+        if (seenPayslipIds.has(slipId)) {
+          throw createLoaderError(
+            'DUPLICATE_PAYSLIP_ID',
+            `Phát hiện trùng lặp mã phiếu lương (id=${slipId}) khi tải phân trang kỳ ${period} (trang ${pageNum}).`
+          );
+        }
+        seenPayslipIds.add(slipId);
+      }
+
+      allRows.push(r);
+    }
+  };
+
   const firstRes = await getPayslipsFn({
     ...extraParams,
     period,
@@ -229,24 +572,33 @@ export async function fetchAllPayslipsForPeriod(
   });
 
   if (!firstRes || firstRes.success === false || !Array.isArray(firstRes.data)) {
-    throw new Error(
+    throw createLoaderError(
+      'PAGE_LOAD_FAILED',
       firstRes?.message || `Không thể tải danh sách phiếu lương trang 1 của kỳ ${period}.`
     );
   }
 
-  const pagination = firstRes.pagination || firstRes.meta?.pagination || null;
-  const expectedTotal =
-    pagination && pagination.total !== undefined && pagination.total !== null
-      ? Number(pagination.total)
-      : null;
-  const totalPages =
-    pagination && pagination.totalPages !== undefined && pagination.totalPages !== null
-      ? Math.max(1, Number(pagination.totalPages))
-      : expectedTotal !== null
-      ? Math.max(1, Math.ceil(expectedTotal / safeLimit))
-      : 1;
+  const page1Meta = validateAndExtractPagination(firstRes, 1);
+  const {
+    pagination: basePagination,
+    total: expectedTotal,
+    totalPages,
+    snapshotToken: baseSnapshotToken,
+    aggregates: baseAggregates,
+  } = page1Meta;
 
-  const allRows = [...firstRes.data];
+  if (
+    expectedSnapshotToken &&
+    baseSnapshotToken &&
+    String(baseSnapshotToken) !== String(expectedSnapshotToken)
+  ) {
+    throw createLoaderError(
+      'SNAPSHOT_CHANGED_DURING_EXPORT',
+      `Dữ liệu bảng lương kỳ ${period} đã thay đổi trên máy chủ so với phiên bản đang hiển thị. Vui lòng tải lại kỳ lương trước khi kết xuất.`
+    );
+  }
+
+  validateAndCollectPageRows(firstRes.data, 1);
 
   for (let page = 2; page <= totalPages; page += 1) {
     const pageRes = await getPayslipsFn({
@@ -256,36 +608,97 @@ export async function fetchAllPayslipsForPeriod(
       limit: safeLimit,
     });
     if (!pageRes || pageRes.success === false || !Array.isArray(pageRes.data)) {
-      throw new Error(
+      throw createLoaderError(
+        'PAGE_LOAD_FAILED',
         pageRes?.message ||
           `Lỗi tải danh sách phiếu lương trang ${page}/${totalPages} của kỳ ${period}. Đã hủy thao tác để tránh thiếu dữ liệu.`
       );
     }
-    allRows.push(...pageRes.data);
+
+    const pageMeta = validateAndExtractPagination(pageRes, page, expectedTotal);
+
+    if (pageMeta.total !== expectedTotal) {
+      throw createLoaderError(
+        'PAGINATION_TOTAL_CHANGED',
+        `Tổng số bản ghi của kỳ ${period} đã thay đổi trong lúc tải trang ${page}/${totalPages} (${expectedTotal} -> ${pageMeta.total}). Đã hủy thao tác để tránh trộn dữ liệu.`
+      );
+    }
+    if (pageMeta.totalPages !== totalPages) {
+      throw createLoaderError(
+        'PAGINATION_TOTAL_PAGES_CHANGED',
+        `Số trang của kỳ ${period} đã thay đổi trong lúc tải trang ${page} (${totalPages} -> ${pageMeta.totalPages}).`
+      );
+    }
+    if (
+      (baseSnapshotToken !== null || pageMeta.snapshotToken !== null) &&
+      String(baseSnapshotToken || '') !== String(pageMeta.snapshotToken || '')
+    ) {
+      throw createLoaderError(
+        'SNAPSHOT_CHANGED_DURING_PAGINATION',
+        `Dữ liệu bảng lương kỳ ${period} đã thay đổi giữa trang 1 và trang ${page} (snapshot không nhất quán). Đã hủy thao tác để tránh trộn dữ liệu khác phiên bản.`
+      );
+    }
+    if (
+      baseAggregates &&
+      pageMeta.aggregates &&
+      baseAggregates.totalNet !== undefined &&
+      pageMeta.aggregates.totalNet !== undefined &&
+      Math.abs(Number(baseAggregates.totalNet) - Number(pageMeta.aggregates.totalNet)) > 0.01
+    ) {
+      throw createLoaderError(
+        'SNAPSHOT_AGGREGATE_CHANGED',
+        `Tổng quỹ lương kỳ ${period} trên máy chủ đã thay đổi trong lúc tải trang ${page}. Đã hủy thao tác để tránh trộn dữ liệu.`
+      );
+    }
+
+    validateAndCollectPageRows(pageRes.data, page);
   }
 
-  if (expectedTotal !== null && allRows.length !== expectedTotal) {
-    throw new Error(
-      `Số lượng phiếu lương tải về (${allRows.length}) không khớp tổng số bản ghi của kỳ ${period} (${expectedTotal}).`
+  if (allRows.length !== expectedTotal || seenEmployeeIds.size !== expectedTotal) {
+    throw createLoaderError(
+      'ROW_COUNT_MISMATCH',
+      `Số lượng phiếu lương hợp lệ tải về (${allRows.length} dòng, ${seenEmployeeIds.size} nhân viên duy nhất) không khớp tổng số bản ghi của kỳ ${period} (${expectedTotal}).`
     );
   }
 
-  const mismatchedRow = allRows.find((r) => r && r.period && r.period !== period);
-  if (mismatchedRow) {
-    throw new Error(
-      `Phát hiện phiếu lương thuộc kỳ ${mismatchedRow.period} khi đang tải kỳ ${period}.`
+  const collectedNetSum = allRows.reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
+  if (
+    baseAggregates &&
+    baseAggregates.totalNet !== undefined &&
+    baseAggregates.totalNet !== null &&
+    Math.abs(collectedNetSum - Number(baseAggregates.totalNet)) > 0.01
+  ) {
+    throw createLoaderError(
+      'SNAPSHOT_AMOUNT_MISMATCH',
+      `Tổng thực lĩnh của các trang tải về (${collectedNetSum.toLocaleString('vi-VN')} đ) không khớp tổng snapshot máy chủ (${Number(baseAggregates.totalNet).toLocaleString('vi-VN')} đ). Dữ liệu đã thay đổi giữa các trang tải.`
+    );
+  }
+
+  if (
+    expectedTotalNet !== null &&
+    expectedTotalNet !== undefined &&
+    Math.abs(collectedNetSum - Number(expectedTotalNet)) > 0.01
+  ) {
+    throw createLoaderError(
+      'EXPECTED_TOTAL_NET_MISMATCH',
+      `Tổng thực lĩnh khi kết xuất (${collectedNetSum.toLocaleString('vi-VN')} đ) đã thay đổi so với dữ liệu kỳ đang hiển thị (${Number(expectedTotalNet).toLocaleString('vi-VN')} đ). Vui lòng tải lại kỳ lương.`
     );
   }
 
   return {
     data: allRows,
-    total: expectedTotal !== null ? expectedTotal : allRows.length,
+    total: expectedTotal,
     totalPages,
-    pagination: pagination || {
-      total: allRows.length,
+    totalNet: collectedNetSum,
+    snapshotToken: baseSnapshotToken,
+    aggregates: baseAggregates || { totalNet: collectedNetSum },
+    pagination: {
+      ...basePagination,
+      total: expectedTotal,
       page: 1,
       limit: safeLimit,
       totalPages,
+      snapshotToken: baseSnapshotToken,
     },
   };
 }

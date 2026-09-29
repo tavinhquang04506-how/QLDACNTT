@@ -247,24 +247,46 @@ async function collectPayrollSources(executor, period, { lockEmployees = false }
 }
 
 function resolveAdjustmentConflictDecision(options = {}, reqBody = {}, empId, field) {
+  const expectedMap = options?.expectedSourceValues || reqBody?.expectedSourceValues || null;
+  let expectedCurrentSourceValue =
+    expectedMap && typeof expectedMap === 'object' && expectedMap[empId] && typeof expectedMap[empId] === 'object'
+      ? expectedMap[empId][field]
+      : undefined;
+
   const map = options?.adjustmentResolutions || reqBody?.adjustmentResolutions || null;
   if (map && typeof map === 'object') {
     const empEntry = map[empId];
     if (typeof empEntry === 'string' && (empEntry === 'USE_SOURCE' || empEntry === 'KEEP_MANUAL')) {
-      return empEntry;
+      return { decision: empEntry, expectedCurrentSourceValue };
     }
     if (empEntry && typeof empEntry === 'object') {
+      if (empEntry.action === 'USE_SOURCE' || empEntry.action === 'KEEP_MANUAL') {
+        if (empEntry.expectedCurrentSourceValue !== undefined) {
+          expectedCurrentSourceValue = empEntry.expectedCurrentSourceValue;
+        }
+        return { decision: empEntry.action, expectedCurrentSourceValue };
+      }
       const fieldEntry = empEntry[field];
       if (fieldEntry === 'USE_SOURCE' || fieldEntry === 'KEEP_MANUAL') {
-        return fieldEntry;
+        return { decision: fieldEntry, expectedCurrentSourceValue };
+      }
+      if (
+        fieldEntry &&
+        typeof fieldEntry === 'object' &&
+        (fieldEntry.action === 'USE_SOURCE' || fieldEntry.action === 'KEEP_MANUAL')
+      ) {
+        if (fieldEntry.expectedCurrentSourceValue !== undefined) {
+          expectedCurrentSourceValue = fieldEntry.expectedCurrentSourceValue;
+        }
+        return { decision: fieldEntry.action, expectedCurrentSourceValue };
       }
     }
   }
   const globalDecision = options?.conflictResolution || reqBody?.conflictResolution || null;
   if (globalDecision === 'USE_SOURCE' || globalDecision === 'KEEP_MANUAL') {
-    return globalDecision;
+    return { decision: globalDecision, expectedCurrentSourceValue };
   }
-  return null;
+  return { decision: null, expectedCurrentSourceValue };
 }
 
 async function findPeriod(executor, id, { lock = false } = {}) {
@@ -407,8 +429,19 @@ async function calculate(actor, period, req, options = {}) {
         const manualDiffersFromNewSource = Math.abs(manualVal - curSourceVal) > 0.001;
 
         if (sourceChangedSinceEdit && manualDiffersFromNewSource) {
-          const decision = resolveAdjustmentConflictDecision(options, req?.body, empId, chk.field);
-          if (!decision) {
+          const { decision, expectedCurrentSourceValue } = resolveAdjustmentConflictDecision(
+            options,
+            req?.body,
+            empId,
+            chk.field
+          );
+          const sourceChangedAgainDuringReview =
+            expectedCurrentSourceValue !== undefined &&
+            expectedCurrentSourceValue !== null &&
+            Number.isFinite(Number(expectedCurrentSourceValue)) &&
+            Math.abs(curSourceVal - Number(expectedCurrentSourceValue)) > 0.001;
+
+          if (!decision || sourceChangedAgainDuringReview) {
             unresolvedConflicts.push({
               employee_id: empId,
               full_name: empSrc.full_name || empId,
@@ -416,7 +449,12 @@ async function calculate(actor, period, req, options = {}) {
               manualValue: manualVal,
               previousSourceValue: prevSourceVal,
               currentSourceValue: curSourceVal,
-              message: `Điều chỉnh thủ công "${chk.field}" (${manualVal}) của nhân sự ${empId} mâu thuẫn với dữ liệu nguồn mới (${prevSourceVal} -> ${curSourceVal}). Vui lòng chọn đối soát KEEP_MANUAL hoặc USE_SOURCE.`,
+              expectedCurrentSourceValue:
+                expectedCurrentSourceValue !== undefined ? Number(expectedCurrentSourceValue) : undefined,
+              staleDecisionRejected: Boolean(decision && sourceChangedAgainDuringReview),
+              message: sourceChangedAgainDuringReview
+                ? `Dữ liệu nguồn của "${chk.field}" (${empId}) vừa tiếp tục thay đổi (${expectedCurrentSourceValue} -> ${curSourceVal}) trong lúc đối soát. Vui lòng kiểm tra giá trị mới và xác nhận lại.`
+                : `Điều chỉnh thủ công "${chk.field}" (${manualVal}) của nhân sự ${empId} mâu thuẫn với dữ liệu nguồn mới (${prevSourceVal} -> ${curSourceVal}). Vui lòng chọn đối soát KEEP_MANUAL hoặc USE_SOURCE.`,
             });
             continue;
           }
@@ -987,13 +1025,76 @@ async function listPayslips(user, query, scope) {
     where.push(`pp.period = $${params.length}`);
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const total = parseInt((await db.query(
-    `SELECT COUNT(*) FROM payslips ps JOIN payroll_periods pp ON pp.id = ps.period_id JOIN employees e ON e.id = ps.employee_id ${clause}`, params)).rows[0].count, 10);
+  const aggRes = await db.query(
+    `SELECT COUNT(*)::int AS count,
+            COALESCE(SUM(ps.net_salary), 0)::numeric AS total_net,
+            COALESCE(SUM(ps.gross_income), 0)::numeric AS total_gross,
+            COALESCE(SUM(ps.base_salary), 0)::numeric AS total_base,
+            COALESCE(SUM(ps.ot_pay), 0)::numeric AS total_ot_pay,
+            COALESCE(SUM(ps.allowances + ps.bonus), 0)::numeric AS total_kpi_and_allowances,
+            COALESCE(SUM(ps.bhxh_amount + ps.bhyt_amount + ps.bhtn_amount), 0)::numeric AS total_insurance,
+            COALESCE(SUM(ps.pit_amount), 0)::numeric AS total_pit,
+            MD5(
+              COALESCE(
+                string_agg(
+                  CONCAT_WS(
+                    ':',
+                    ps.id::text,
+                    ps.employee_id,
+                    pp.period,
+                    ps.base_salary::text,
+                    ps.actual_work_days::text,
+                    ps.ot_hours::text,
+                    ps.ot_pay::text,
+                    ps.allowances::text,
+                    ps.bonus::text,
+                    ps.gross_income::text,
+                    ps.bhxh_amount::text,
+                    ps.bhyt_amount::text,
+                    ps.bhtn_amount::text,
+                    ps.pit_amount::text,
+                    ps.net_salary::text,
+                    COALESCE(ps.bank_account, ''),
+                    COALESCE(ps.bank_name, ''),
+                    COALESCE(ps.note, ''),
+                    ps.status,
+                    COALESCE(pp.policy_snapshot->>'source_fingerprint', '')
+                  ),
+                  '|' ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC
+                ),
+                'EMPTY'
+              )
+            ) AS snapshot_token
+       FROM payslips ps
+       JOIN payroll_periods pp ON pp.id = ps.period_id
+       JOIN employees e ON e.id = ps.employee_id
+       ${clause}`,
+    params
+  );
+  const aggRow = aggRes.rows[0] || {};
+  const total = parseInt(aggRow.count || 0, 10);
   const { rows } = await db.query(
     `${PAYSLIP_SQL} ${clause} ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   );
-  return { data: rows, pagination: paginationMeta(total, page, limit) };
+  const meta = paginationMeta(total, page, limit);
+  return {
+    data: rows,
+    pagination: {
+      ...meta,
+      period: query.period || null,
+      snapshotToken: aggRow.snapshot_token || 'EMPTY',
+      aggregates: {
+        totalNet: Number(aggRow.total_net || 0),
+        totalGross: Number(aggRow.total_gross || 0),
+        totalBase: Number(aggRow.total_base || 0),
+        totalOtPay: Number(aggRow.total_ot_pay || 0),
+        totalKpiAndAllowances: Number(aggRow.total_kpi_and_allowances || 0),
+        totalInsurance: Number(aggRow.total_insurance || 0),
+        totalPit: Number(aggRow.total_pit || 0),
+      },
+    },
+  };
 }
 
 async function myPayslips(user) {
