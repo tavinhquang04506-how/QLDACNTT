@@ -2,9 +2,30 @@ import api from './api';
 
 export const userService = {
   /**
-   * Lấy ma trận cấu hình phân quyền RBAC theo vai trò (6 vai trò × 64 quyền hạn)
+   * Lấy danh mục vai trò và ma trận cấu hình phân quyền RBAC theo vai trò
    */
   getRbacRoles: () => api.get('/settings/rbac-roles'),
+
+  /**
+   * Tạo mới một Vai trò RBAC tùy chỉnh
+   * @param {Object} payload - { code?, name, shortName?, level?, colorTheme?, defaultScope?, summary?, templateRoleCode? }
+   */
+  createRbacRole: (payload) => api.post('/settings/rbac-roles', payload),
+
+  /**
+   * Cập nhật thông tin nhận diện của một Vai trò RBAC (Tên, Cấp bậc, Màu sắc, Phạm vi, Mô tả)
+   * @param {string} roleCode
+   * @param {Object} payload
+   */
+  updateRbacRoleInfo: (roleCode, payload) =>
+    api.patch(`/settings/rbac-roles/${encodeURIComponent(roleCode)}`, payload),
+
+  /**
+   * Xóa một Vai trò RBAC khỏi hệ thống
+   * @param {string} roleCode
+   */
+  deleteRbacRole: (roleCode) =>
+    api.delete(`/settings/rbac-roles/${encodeURIComponent(roleCode)}`),
 
   /**
    * Lưu cấu hình phân quyền của 1 vai trò (hoặc toàn bộ ma trận) vào CSDL
@@ -13,7 +34,7 @@ export const userService = {
   updateRbacRoles: (payload) => api.put('/settings/rbac-roles', payload),
 
   /**
-   * Khôi phục cấu hình phân quyền của 1 vai trò (hoặc toàn bộ) về mặc định chuẩn
+   * Khôi phục cấu hình phân quyền của 1 vai trò (hoặc toàn bộ danh mục gốc) về mặc định chuẩn
    * @param {Object} payload - { roleCode? }
    */
   resetRbacRoles: (payload = {}) => api.post('/settings/rbac-roles/reset', payload),
