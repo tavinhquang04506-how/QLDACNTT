@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const db = require('../../config/db');
@@ -10,7 +11,44 @@ const { MAX_ATTACHMENT_BYTES } = require('./schema');
 const HR_ROLES = ['CEO', 'HR_DIRECTOR'];
 const SELECT = 'SELECT n.*, a.full_name AS author_name FROM company_notices n LEFT JOIN employees a ON a.id = n.author_id';
 
-const STORAGE_DIR = path.join(__dirname, '../../../storage/notice_attachments');
+const PROD_DEFAULT_STORAGE_DIR = path.resolve(__dirname, '../../../storage/notice_attachments');
+const TEST_DEFAULT_STORAGE_DIR = path.join(
+  os.tmpdir(),
+  `nexus-hrms-notice-attachments-test-${process.pid}`
+);
+
+// In-process concurrency lock set preventing two requests from binding/deleting the same attachment simultaneously
+const inFlightAttachmentLocks = new Set();
+
+function isSubPathOrEqual(candidatePath, basePath) {
+  const rel = path.relative(path.resolve(basePath), path.resolve(candidatePath));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function assertSafeStorageDir(targetDir) {
+  const resolved = path.resolve(targetDir);
+  if (process.env.NODE_ENV === 'test' && isSubPathOrEqual(resolved, PROD_DEFAULT_STORAGE_DIR)) {
+    throw new Error(
+      `UNSAFE_TEST_STORAGE_PATH: Tests are forbidden from reading/writing/cleaning production attachment storage (${resolved})`
+    );
+  }
+  return resolved;
+}
+
+function getStorageDir() {
+  const explicitDir =
+    process.env.NOTICE_ATTACHMENTS_DIR ||
+    (process.env.STORAGE_ROOT
+      ? path.join(process.env.STORAGE_ROOT, 'notice_attachments')
+      : null);
+
+  if (process.env.NODE_ENV === 'test') {
+    const testDir = explicitDir || process.env.TEST_NOTICE_ATTACHMENTS_DIR || TEST_DEFAULT_STORAGE_DIR;
+    return assertSafeStorageDir(testDir);
+  }
+
+  return path.resolve(explicitDir || PROD_DEFAULT_STORAGE_DIR);
+}
 
 const ALLOWED_EXTENSIONS = new Map([
   ['.pdf', 'application/pdf'],
@@ -26,9 +64,51 @@ const ALLOWED_EXTENSIONS = new Map([
 ]);
 
 function ensureStorageDir() {
-  if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  const dir = getStorageDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+  return dir;
+}
+
+function cleanupTestStorageDir() {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('cleanupTestStorageDir is only allowed when NODE_ENV === "test"');
+  }
+  const dir = assertSafeStorageDir(getStorageDir());
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function acquireAttachmentLocks(attachmentIds = []) {
+  const uniqueIds = Array.from(
+    new Set(
+      (attachmentIds || [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => /^NATT-[A-Za-z0-9-]+$/.test(id))
+    )
+  );
+  for (const id of uniqueIds) {
+    if (inFlightAttachmentLocks.has(id)) {
+      throw new AppError(
+        409,
+        'ATTACHMENT_CONCURRENT_CONFLICT',
+        `Tệp đính kèm "${id}" đang được xử lý bởi một giao dịch khác. Vui lòng thử lại.`
+      );
+    }
+  }
+  for (const id of uniqueIds) {
+    inFlightAttachmentLocks.add(id);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const id of uniqueIds) {
+      inFlightAttachmentLocks.delete(id);
+    }
+  };
 }
 
 function sanitizeFileName(rawName = '') {
@@ -48,10 +128,11 @@ function getAttachmentPaths(attachmentId) {
   if (!/^NATT-[A-Za-z0-9-]+$/.test(safeId)) {
     return null;
   }
+  const storageDir = getStorageDir();
   return {
     id: safeId,
-    binPath: path.join(STORAGE_DIR, `${safeId}.bin`),
-    metaPath: path.join(STORAGE_DIR, `${safeId}.meta.json`),
+    binPath: path.join(storageDir, `${safeId}.bin`),
+    metaPath: path.join(storageDir, `${safeId}.meta.json`),
   };
 }
 
@@ -66,6 +147,13 @@ function readAttachmentMeta(attachmentId) {
   } catch (_err) {
     return null;
   }
+}
+
+function writeAttachmentMetaRaw(metaPath, metaObj) {
+  const cleanMeta = { ...metaObj };
+  delete cleanMeta.binPath;
+  delete cleanMeta.metaPath;
+  fs.writeFileSync(metaPath, JSON.stringify(cleanMeta, null, 2), 'utf8');
 }
 
 function deleteAttachmentFiles(attachmentId) {
@@ -84,22 +172,79 @@ function deleteAttachmentFiles(attachmentId) {
 }
 
 function cleanupExpiredOrphanAttachments(maxAgeMs = 2 * 60 * 60 * 1000) {
-  ensureStorageDir();
+  const storageDir = ensureStorageDir();
   const now = Date.now();
   try {
-    const files = fs.readdirSync(STORAGE_DIR);
+    const files = fs.readdirSync(storageDir);
     for (const file of files) {
       if (!file.endsWith('.meta.json')) continue;
-      const metaFull = path.join(STORAGE_DIR, file);
+      const metaFull = path.join(storageDir, file);
       try {
         const meta = JSON.parse(fs.readFileSync(metaFull, 'utf8'));
+        if (inFlightAttachmentLocks.has(meta.id)) continue;
         const createdAtMs = meta.createdAt ? Date.parse(meta.createdAt) : 0;
-        if (!meta.noticeId && createdAtMs > 0 && now - createdAtMs > maxAgeMs) {
+        if (
+          (!meta.noticeId || meta.state === 'staged') &&
+          meta.state !== 'bound' &&
+          meta.state !== 'deletion-pending' &&
+          createdAtMs > 0 &&
+          now - createdAtMs > maxAgeMs
+        ) {
           deleteAttachmentFiles(meta.id);
         }
       } catch (_e) {}
     }
   } catch (_e) {}
+}
+
+/**
+ * R43: Idempotent reconciliation between PostgreSQL `company_notices.attachments` and filesystem metadata.
+ * - Any `deletion-pending` file that is no longer referenced in DB is physically deleted.
+ * - Any `deletion-pending` file that IS still referenced in DB (e.g. after an unclean crash before commit) is restored to `bound`.
+ */
+async function reconcileAttachmentStorage(executor = db) {
+  const storageDir = ensureStorageDir();
+  const actions = { deleted: [], restored: [] };
+  let files = [];
+  try {
+    files = fs.readdirSync(storageDir);
+  } catch (_e) {
+    return actions;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith('.meta.json')) continue;
+    const metaFull = path.join(storageDir, file);
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaFull, 'utf8'));
+      if (!meta?.id || inFlightAttachmentLocks.has(meta.id)) continue;
+
+      if (meta.state === 'deletion-pending') {
+        let stillReferenced = false;
+        if (meta.noticeId) {
+          const { rows } = await executor.query(
+            'SELECT attachments FROM company_notices WHERE id = $1',
+            [meta.noticeId]
+          );
+          if (rows[0] && Array.isArray(rows[0].attachments)) {
+            stillReferenced = rows[0].attachments.some((a) => a && a.id === meta.id);
+          }
+        }
+        if (stillReferenced) {
+          writeAttachmentMetaRaw(metaFull, {
+            ...meta,
+            state: 'bound',
+            deletionPendingAt: undefined,
+          });
+          actions.restored.push(meta.id);
+        } else {
+          deleteAttachmentFiles(meta.id);
+          actions.deleted.push(meta.id);
+        }
+      }
+    } catch (_e) {}
+  }
+  return actions;
 }
 
 function normalizeNoticeRowAttachments(row) {
@@ -219,11 +364,12 @@ async function uploadAttachment(actor, body) {
     uploadedByUserId: actor.userId,
     uploadedByEmployeeId: actor.employeeId || null,
     createdAt: new Date().toISOString(),
+    state: 'staged',
     noticeId: null,
   };
 
   fs.writeFileSync(paths.binPath, buffer);
-  fs.writeFileSync(paths.metaPath, JSON.stringify(meta, null, 2), 'utf8');
+  writeAttachmentMetaRaw(paths.metaPath, meta);
 
   return {
     id,
@@ -238,26 +384,45 @@ async function uploadAttachment(actor, body) {
 }
 
 async function deleteAttachment(actor, attachmentId) {
-  const stored = readAttachmentMeta(attachmentId);
-  if (!stored) {
-    throw notFound('Không tìm thấy tệp đính kèm tạm thời trên máy chủ');
-  }
-  if (stored.noticeId) {
-    const { rows } = await db.query('SELECT id, attachments FROM company_notices WHERE id = $1', [
-      stored.noticeId,
-    ]);
-    if (rows[0]) {
-      const attList = Array.isArray(rows[0].attachments) ? rows[0].attachments : [];
-      if (attList.some((a) => a && a.id === attachmentId)) {
-        throw badRequest('Tệp đang được gắn với văn bản thông báo đã phát hành; vui lòng gỡ tệp và lưu cập nhật thông báo.');
+  const releaseLock = acquireAttachmentLocks([attachmentId]);
+  try {
+    const stored = readAttachmentMeta(attachmentId);
+    if (!stored) {
+      throw notFound('Không tìm thấy tệp đính kèm tạm thời trên máy chủ');
+    }
+    if (
+      stored.uploadedByUserId &&
+      actor?.userId &&
+      String(stored.uploadedByUserId) !== String(actor.userId)
+    ) {
+      throw forbidden('Bạn không phải người tải lên tệp đính kèm tạm thời này nên không có quyền xóa.');
+    }
+    if (stored.noticeId) {
+      const { rows } = await db.query('SELECT id, attachments FROM company_notices WHERE id = $1', [
+        stored.noticeId,
+      ]);
+      if (rows[0]) {
+        const attList = Array.isArray(rows[0].attachments) ? rows[0].attachments : [];
+        if (attList.some((a) => a && a.id === attachmentId)) {
+          throw badRequest(
+            'Tệp đang được gắn với văn bản thông báo đã phát hành; vui lòng gỡ tệp và lưu cập nhật thông báo.'
+          );
+        }
       }
     }
+    deleteAttachmentFiles(attachmentId);
+    return { deleted: true, id: attachmentId };
+  } finally {
+    releaseLock();
   }
-  deleteAttachmentFiles(attachmentId);
-  return { deleted: true, id: attachmentId };
 }
 
-function bindVerifiedAttachmentsToNotice(noticeId, inputAttachments = []) {
+/**
+ * R43: Validate & prepare attachment metadata for binding to `noticeId` WITHOUT mutating `.meta.json`
+ * on disk before the database transaction commits.
+ * Enforces ownership (`uploadedByUserId === actor.userId`) for newly staged attachments.
+ */
+function prepareVerifiedAttachmentsForNotice(actor, noticeId, inputAttachments = []) {
   const verified = [];
   const seenIds = new Set();
   for (const item of inputAttachments || []) {
@@ -266,7 +431,7 @@ function bindVerifiedAttachmentsToNotice(noticeId, inputAttachments = []) {
     seenIds.add(item.id);
 
     const stored = readAttachmentMeta(item.id);
-    if (!stored) {
+    if (!stored || stored.state === 'deletion-pending') {
       throw badRequest(
         `Tệp đính kèm "${item.name || item.id}" không tồn tại trên máy chủ hoặc chưa tải lên hoàn tất.`
       );
@@ -274,20 +439,16 @@ function bindVerifiedAttachmentsToNotice(noticeId, inputAttachments = []) {
     if (stored.noticeId && stored.noticeId !== noticeId) {
       throw badRequest(`Tệp đính kèm "${stored.originalName}" đã được gắn với một thông báo khác.`);
     }
-
-    const updatedMeta = {
-      id: stored.id,
-      originalName: stored.originalName,
-      mimeType: stored.mimeType,
-      sizeBytes: stored.sizeBytes,
-      sizeLabel: stored.sizeLabel,
-      sha256: stored.sha256,
-      uploadedByUserId: stored.uploadedByUserId,
-      uploadedByEmployeeId: stored.uploadedByEmployeeId,
-      createdAt: stored.createdAt,
-      noticeId,
-    };
-    fs.writeFileSync(stored.metaPath, JSON.stringify(updatedMeta, null, 2), 'utf8');
+    if (
+      !stored.noticeId &&
+      stored.uploadedByUserId &&
+      actor?.userId &&
+      String(stored.uploadedByUserId) !== String(actor.userId)
+    ) {
+      throw forbidden(
+        `Tệp đính kèm "${stored.originalName}" thuộc phiên tải lên của tài khoản khác nên không thể gắn vào thông báo.`
+      );
+    }
 
     verified.push({
       id: stored.id,
@@ -296,11 +457,50 @@ function bindVerifiedAttachmentsToNotice(noticeId, inputAttachments = []) {
       sizeBytes: stored.sizeBytes,
       type: stored.mimeType,
       sha256: stored.sha256,
-      url: `/api/notices/${noticeId}/attachments/${stored.id}/download`,
+      url: noticeId ? `/api/notices/${noticeId}/attachments/${stored.id}/download` : null,
       available: true,
     });
   }
   return verified;
+}
+
+function commitBoundAttachmentsToDisk(noticeId, verifiedAttachments = []) {
+  for (const item of verifiedAttachments || []) {
+    const stored = readAttachmentMeta(item.id);
+    if (!stored) continue;
+    writeAttachmentMetaRaw(stored.metaPath, {
+      ...stored,
+      state: 'bound',
+      noticeId,
+      boundAt: stored.boundAt || new Date().toISOString(),
+    });
+  }
+}
+
+function markAttachmentsDeletionPending(attachmentIds = []) {
+  const snapshots = new Map();
+  for (const id of attachmentIds) {
+    const stored = readAttachmentMeta(id);
+    if (!stored) continue;
+    snapshots.set(id, { ...stored });
+    writeAttachmentMetaRaw(stored.metaPath, {
+      ...stored,
+      state: 'deletion-pending',
+      deletionPendingAt: new Date().toISOString(),
+    });
+  }
+  return snapshots;
+}
+
+function restoreAttachmentMetaSnapshots(snapshots) {
+  if (!snapshots || snapshots.size === 0) return;
+  for (const [, meta] of snapshots.entries()) {
+    if (meta?.metaPath && fs.existsSync(meta.binPath)) {
+      try {
+        writeAttachmentMetaRaw(meta.metaPath, meta);
+      } catch (_e) {}
+    }
+  }
 }
 
 // Visible to staff: active, already published, not expired, and addressed to their role and department.
@@ -398,93 +598,133 @@ async function assertDepartment(client, id) {
   if (rows.length === 0) throw notFound('Không tìm thấy phòng ban');
 }
 
-async function create(actor, body, req) {
-  return db.withTransaction(async (client) => {
-    if (body.targetDepartmentId) await assertDepartment(client, body.targetDepartmentId);
+async function create(actor, body, req, options = {}) {
+  const executor = options.executor || db;
+  const inputAttIds = (body.attachments || []).map((a) => a?.id).filter(Boolean);
+  const releaseLocks = acquireAttachmentLocks(inputAttIds);
 
-    // Pre-validate that all referenced attachments exist on disk before inserting
-    for (const item of body.attachments || []) {
-      const stored = readAttachmentMeta(item.id);
-      if (!stored) {
-        throw badRequest(`Tệp đính kèm "${item.name || item.id}" không tồn tại trên máy chủ hoặc chưa được tải lên hợp lệ.`);
+  let committedNoticeId = null;
+  let committedAttachments = [];
+
+  try {
+    // Pre-validate ownership and staged status before opening DB transaction
+    prepareVerifiedAttachmentsForNotice(actor, null, body.attachments || []);
+
+    const createdRow = await executor.withTransaction(async (client) => {
+      if (body.targetDepartmentId) await assertDepartment(client, body.targetDepartmentId);
+
+      const { rows } = await client.query(
+        `INSERT INTO company_notices (title, content, category, priority, author_id, target_role, target_department_id, is_pinned, published_at, expires_at, attachments)
+         VALUES ($1, $2, $3::notice_category_enum, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), $10, '[]'::jsonb) RETURNING id`,
+        [
+          body.title,
+          body.content,
+          body.category,
+          body.priority,
+          actor.employeeId ?? null,
+          body.targetRole ?? null,
+          body.targetDepartmentId ?? null,
+          body.isPinned,
+          body.publishedAt ?? null,
+          body.expiresAt ?? null,
+        ]
+      );
+      const noticeId = rows[0].id;
+      const verifiedAttachments = prepareVerifiedAttachmentsForNotice(
+        actor,
+        noticeId,
+        body.attachments || []
+      );
+
+      await client.query(`UPDATE company_notices SET attachments = $2::jsonb WHERE id = $1`, [
+        noticeId,
+        JSON.stringify(verifiedAttachments),
+      ]);
+
+      // Get author details for notification
+      const authorRes = actor.employeeId
+        ? await client.query('SELECT full_name, avatar_url, job_title FROM employees WHERE id = $1', [
+            actor.employeeId,
+          ])
+        : null;
+      const author = authorRes?.rows[0];
+      const senderName =
+        author?.full_name || (actor.roleCode === 'CEO' ? 'Lê Vũ Ngọc Duy' : 'Trần Mai Hương');
+      const senderRole =
+        author?.job_title || (actor.roleCode === 'CEO' ? 'Tổng Giám Đốc' : 'Giám Đốc Nhân Sự');
+      const senderAvatar =
+        author?.avatar_url ||
+        (actor.roleCode === 'CEO'
+          ? 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'
+          : 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150');
+
+      // R42: Store only reference metadata in `notifications` (never duplicate full content or attachment metadata in notifications table)
+      const notifId = `NOTIF-${noticeId}`;
+      await client.query(
+        `INSERT INTO notifications (
+          id, role_target, type, category, title, summary, sender_name, sender_role, sender_avatar,
+          priority, is_read, action_type, action_payload, created_at
+        ) VALUES ($1, $2, $3::notification_type_enum, $4, $5, NULL, $6, $7, $8, $9, false, $10, $11, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          role_target = EXCLUDED.role_target,
+          title = EXCLUDED.title,
+          summary = NULL,
+          priority = EXCLUDED.priority,
+          action_payload = EXCLUDED.action_payload`,
+        [
+          notifId,
+          body.targetRole ?? null,
+          body.priority === 'high' ? 'ceo_directive' : 'system',
+          'Thông báo công ty',
+          body.title,
+          senderName,
+          senderRole,
+          senderAvatar,
+          body.priority === 'high' ? 'urgent' : 'medium',
+          'notice_popup',
+          JSON.stringify({
+            id: noticeId,
+            date: new Date().toLocaleDateString('vi-VN'),
+            signer: `${senderName} - ${senderRole}`,
+            docNumber: `Số: ${noticeId}/2026/TB-NEXUS`,
+          }),
+        ]
+      );
+
+      if (typeof options.beforeAuditHook === 'function') {
+        await options.beforeAuditHook(client, noticeId);
       }
-      if (stored.noticeId) {
-        throw badRequest(`Tệp đính kèm "${stored.originalName}" đã được gắn với một thông báo khác.`);
+
+      await writeAudit(client, {
+        user: actor,
+        action: 'CREATE_NOTICE',
+        table: 'company_notices',
+        recordId: noticeId,
+        req,
+        newValues: {
+          title: body.title,
+          category: body.category,
+          target_role: body.targetRole ?? null,
+          target_department_id: body.targetDepartmentId ?? null,
+          attachmentIds: verifiedAttachments.map((a) => a.id),
+        },
+      });
+
+      if (typeof options.beforeCommitHook === 'function') {
+        await options.beforeCommitHook(client, noticeId);
       }
-    }
 
-    const { rows } = await client.query(
-      `INSERT INTO company_notices (title, content, category, priority, author_id, target_role, target_department_id, is_pinned, published_at, expires_at, attachments)
-       VALUES ($1, $2, $3::notice_category_enum, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), $10, '[]'::jsonb) RETURNING id`,
-      [body.title, body.content, body.category, body.priority, actor.employeeId ?? null, body.targetRole ?? null,
-        body.targetDepartmentId ?? null, body.isPinned, body.publishedAt ?? null, body.expiresAt ?? null]
-    );
-    const noticeId = rows[0].id;
-
-    const verifiedAttachments = bindVerifiedAttachmentsToNotice(noticeId, body.attachments || []);
-    await client.query(
-      `UPDATE company_notices SET attachments = $2::jsonb WHERE id = $1`,
-      [noticeId, JSON.stringify(verifiedAttachments)]
-    );
-
-    // Get author details for notification
-    const authorRes = actor.employeeId
-      ? await client.query('SELECT full_name, avatar_url, job_title FROM employees WHERE id = $1', [actor.employeeId])
-      : null;
-    const author = authorRes?.rows[0];
-    const senderName = author?.full_name || (actor.roleCode === 'CEO' ? 'Lê Vũ Ngọc Duy' : 'Trần Mai Hương');
-    const senderRole = author?.job_title || (actor.roleCode === 'CEO' ? 'Tổng Giám Đốc' : 'Giám Đốc Nhân Sự');
-    const senderAvatar = author?.avatar_url || (actor.roleCode === 'CEO'
-      ? 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'
-      : 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150');
-
-    // Auto-create/broadcast matching notification into `notifications` table
-    const notifId = `NOTIF-${noticeId}`;
-    await client.query(`
-      INSERT INTO notifications (
-        id, role_target, type, category, title, summary, sender_name, sender_role, sender_avatar,
-        priority, is_read, action_type, action_payload, created_at
-      ) VALUES ($1, $2, $3::notification_type_enum, $4, $5, $6, $7, $8, $9, $10, false, $11, $12, NOW())
-      ON CONFLICT (id) DO UPDATE SET
-        title = EXCLUDED.title, summary = EXCLUDED.summary, priority = EXCLUDED.priority, action_payload = EXCLUDED.action_payload
-    `, [
-      notifId,
-      body.targetRole ?? null,
-      body.priority === 'high' ? 'ceo_directive' : 'system',
-      'Thông báo công ty',
-      body.title,
-      body.content ? body.content.slice(0, 160) + (body.content.length > 160 ? '...' : '') : null,
-      senderName,
-      senderRole,
-      senderAvatar,
-      body.priority === 'high' ? 'urgent' : 'medium',
-      'notice_popup',
-      JSON.stringify({
-        id: noticeId,
-        title: body.title,
-        content: body.content,
-        category: body.category,
-        priority: body.priority,
-        attachments: verifiedAttachments,
-        date: new Date().toLocaleDateString('vi-VN'),
-        signer: `${senderName} - ${senderRole}`,
-        docNumber: `Số: ${noticeId}/2026/TB-NEXUS`,
-      }),
-    ]);
-
-    await writeAudit(client, {
-      user: actor, action: 'CREATE_NOTICE', table: 'company_notices', recordId: noticeId, req,
-      newValues: {
-        title: body.title,
-        category: body.category,
-        target_role: body.targetRole ?? null,
-        target_department_id: body.targetDepartmentId ?? null,
-        attachmentIds: verifiedAttachments.map((a) => a.id),
-      },
+      committedNoticeId = noticeId;
+      committedAttachments = verifiedAttachments;
+      return (await client.query(`${SELECT} WHERE n.id = $1`, [noticeId])).rows[0];
     });
-    const createdRow = (await client.query(`${SELECT} WHERE n.id = $1`, [noticeId])).rows[0];
+
+    // R43: Only bind `.meta.json` on disk AFTER the database transaction has committed
+    commitBoundAttachmentsToDisk(committedNoticeId, committedAttachments);
     return normalizeNoticeRowAttachments(createdRow);
-  });
+  } finally {
+    releaseLocks();
+  }
 }
 
 const COLUMNS = {
@@ -493,104 +733,217 @@ const COLUMNS = {
   attachments: 'attachments',
 };
 
-async function update(actor, id, body, req) {
-  return db.withTransaction(async (client) => {
-    const before = (await client.query('SELECT * FROM company_notices WHERE id = $1 FOR UPDATE', [id])).rows[0];
-    if (!before) throw notFound('Không tìm thấy thông báo');
-    if (body.targetDepartmentId) await assertDepartment(client, body.targetDepartmentId);
+async function update(actor, id, body, req, options = {}) {
+  const executor = options.executor || db;
+  const inputAttIds = (body.attachments || []).map((a) => a?.id).filter(Boolean);
+  const releaseInputLocks = acquireAttachmentLocks(inputAttIds);
+  let releaseExistingLocks = () => {};
+  let pendingDeleteSnapshots = null;
+  let removedAttachmentIds = [];
+  let committedAttachments = undefined;
 
-    const published = new Date(body.publishedAt ?? before.published_at);
-    const expires = body.expiresAt === undefined ? before.expires_at : body.expiresAt;
-    if (expires && new Date(expires) <= published) throw badRequest('Thời điểm hết hạn phải sau thời điểm đăng');
+  try {
+    const updatedNotice = await executor.withTransaction(async (client) => {
+      const before = (await client.query('SELECT * FROM company_notices WHERE id = $1 FOR UPDATE', [id])).rows[0];
+      if (!before) throw notFound('Không tìm thấy thông báo');
+      if (body.targetDepartmentId) await assertDepartment(client, body.targetDepartmentId);
 
-    let verifiedAttachments = undefined;
-    if (body.attachments !== undefined) {
-      verifiedAttachments = bindVerifiedAttachmentsToNotice(id, body.attachments || []);
-    }
+      const published = new Date(body.publishedAt ?? before.published_at);
+      const expires = body.expiresAt === undefined ? before.expires_at : body.expiresAt;
+      if (expires && new Date(expires) <= published) {
+        throw badRequest('Thời điểm hết hạn phải sau thời điểm đăng');
+      }
 
-    const sets = [];
-    const params = [id];
-    for (const [key, column] of Object.entries(COLUMNS)) {
-      if (body[key] !== undefined) {
-        if (key === 'attachments') {
-          params.push(JSON.stringify(verifiedAttachments || []));
-          sets.push(`${column} = $${params.length}::jsonb`);
-        } else {
-          params.push(body[key]);
-          sets.push(`${column} = $${params.length}${key === 'category' ? '::notice_category_enum' : ''}`);
+      let verifiedAttachments = undefined;
+      if (body.attachments !== undefined) {
+        const prevAttachments = Array.isArray(before.attachments) ? before.attachments : [];
+        const prevIdsToLock = prevAttachments
+          .map((a) => a?.id)
+          .filter((aid) => aid && !inputAttIds.includes(aid));
+        releaseExistingLocks = acquireAttachmentLocks(prevIdsToLock);
+
+        verifiedAttachments = prepareVerifiedAttachmentsForNotice(actor, id, body.attachments || []);
+        const newIdSet = new Set(verifiedAttachments.map((a) => a.id));
+        removedAttachmentIds = prevAttachments
+          .map((a) => a?.id)
+          .filter((aid) => aid && /^NATT-/.test(aid) && !newIdSet.has(aid));
+
+        // R43: Stage removed attachments as `deletion-pending` without deleting `.bin` before commit
+        pendingDeleteSnapshots = markAttachmentsDeletionPending(removedAttachmentIds);
+        committedAttachments = verifiedAttachments;
+      }
+
+      const sets = [];
+      const params = [id];
+      for (const [key, column] of Object.entries(COLUMNS)) {
+        if (body[key] !== undefined) {
+          if (key === 'attachments') {
+            params.push(JSON.stringify(verifiedAttachments || []));
+            sets.push(`${column} = $${params.length}::jsonb`);
+          } else {
+            params.push(body[key]);
+            sets.push(`${column} = $${params.length}${key === 'category' ? '::notice_category_enum' : ''}`);
+          }
         }
       }
-    }
-    await client.query(`UPDATE company_notices SET ${sets.join(', ')} WHERE id = $1`, params);
+      await client.query(`UPDATE company_notices SET ${sets.join(', ')} WHERE id = $1`, params);
 
-    // Clean up any previously attached NATT-* files that were removed during this update
-    if (verifiedAttachments !== undefined) {
-      const prevAttachments = Array.isArray(before.attachments) ? before.attachments : [];
-      const newIdSet = new Set(verifiedAttachments.map((a) => a.id));
-      for (const prevAtt of prevAttachments) {
-        if (prevAtt?.id && /^NATT-/.test(prevAtt.id) && !newIdSet.has(prevAtt.id)) {
-          deleteAttachmentFiles(prevAtt.id);
-        }
+      if (typeof options.afterNoticeUpdateHook === 'function') {
+        await options.afterNoticeUpdateHook(client, id);
       }
-    }
 
-    const updatedNotice = (await client.query(`${SELECT} WHERE n.id = $1`, [id])).rows[0];
-    const normalizedUpdated = normalizeNoticeRowAttachments(updatedNotice);
+      const currentRow = (await client.query(`${SELECT} WHERE n.id = $1`, [id])).rows[0];
 
-    // Also update notification if exists
-    if (body.title || body.content || body.priority || body.attachments !== undefined) {
-      const existingNotifRes = await client.query('SELECT action_payload FROM notifications WHERE id = $1', [`NOTIF-${id}`]);
-      let updatedPayload = null;
-      if (existingNotifRes.rows[0]?.action_payload) {
+      // R42: Synchronize `notifications` row metadata & role_target without storing duplicate content/attachments
+      const existingNotifRes = await client.query(
+        'SELECT action_payload, sender_name, sender_role FROM notifications WHERE id = $1',
+        [`NOTIF-${id}`]
+      );
+      if (existingNotifRes.rows[0]) {
         const rawPayload = existingNotifRes.rows[0].action_payload;
-        const parsed = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
-        updatedPayload = JSON.stringify({
-          ...parsed,
-          title: normalizedUpdated.title,
-          content: normalizedUpdated.content,
-          category: normalizedUpdated.category,
-          priority: normalizedUpdated.priority,
-          attachments: normalizedUpdated.attachments || [],
+        const parsed = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload || {};
+        const minimalPayload = JSON.stringify({
+          id,
+          date:
+            parsed.date ||
+            (currentRow.published_at
+              ? new Date(currentRow.published_at).toLocaleDateString('vi-VN')
+              : new Date().toLocaleDateString('vi-VN')),
+          signer:
+            parsed.signer ||
+            `${existingNotifRes.rows[0].sender_name || 'Ban Điều Hành'} - ${existingNotifRes.rows[0].sender_role || 'NEXUS'}`,
+          docNumber: parsed.docNumber || `Số: ${id}/2026/TB-NEXUS`,
         });
+
+        await client.query(
+          `UPDATE notifications
+           SET role_target = $2,
+               title = $3,
+               summary = NULL,
+               priority = $4,
+               action_payload = $5::jsonb
+           WHERE id = $1`,
+          [
+            `NOTIF-${id}`,
+            currentRow.target_role ?? null,
+            currentRow.title,
+            currentRow.priority === 'high' ? 'urgent' : 'medium',
+            minimalPayload,
+          ]
+        );
       }
-      await client.query(`
-        UPDATE notifications 
-        SET title = COALESCE($2, title),
-            summary = COALESCE($3, summary),
-            priority = COALESCE($4, priority),
-            action_payload = COALESCE($5::jsonb, action_payload)
-        WHERE id = $1
-      `, [
-        `NOTIF-${id}`,
-        body.title || null,
-        body.content ? body.content.slice(0, 160) + (body.content.length > 160 ? '...' : '') : null,
-        body.priority === 'high' ? 'urgent' : (body.priority ? 'medium' : null),
-        updatedPayload,
-      ]);
+
+      if (typeof options.beforeAuditHook === 'function') {
+        await options.beforeAuditHook(client, id);
+      }
+
+      await writeAudit(client, {
+        user: actor,
+        action: 'UPDATE_NOTICE',
+        table: 'company_notices',
+        recordId: id,
+        req,
+        oldValues: { title: before.title, is_pinned: before.is_pinned, is_active: before.is_active },
+        newValues: body,
+      });
+
+      if (typeof options.beforeCommitHook === 'function') {
+        await options.beforeCommitHook(client, id);
+      }
+
+      return currentRow;
+    });
+
+    // R43: Transaction committed! Now finalize newly bound metadata and physically delete removed files
+    if (committedAttachments !== undefined) {
+      commitBoundAttachmentsToDisk(id, committedAttachments);
+      for (const remId of removedAttachmentIds) {
+        deleteAttachmentFiles(remId);
+      }
     }
 
-    await writeAudit(client, {
-      user: actor, action: 'UPDATE_NOTICE', table: 'company_notices', recordId: id, req,
-      oldValues: { title: before.title, is_pinned: before.is_pinned, is_active: before.is_active }, newValues: body,
-    });
-    return normalizedUpdated;
-  });
+    return normalizeNoticeRowAttachments(updatedNotice);
+  } catch (err) {
+    // R43: Transaction rolled back! Restore any `deletion-pending` metadata snapshots so old files remain bound and downloadable
+    restoreAttachmentMetaSnapshots(pendingDeleteSnapshots);
+    throw err;
+  } finally {
+    releaseExistingLocks();
+    releaseInputLocks();
+  }
 }
 
-async function remove(actor, id, req) {
-  return db.withTransaction(async (client) => {
-    const res = await client.query('DELETE FROM company_notices WHERE id = $1 RETURNING title, attachments', [id]);
-    if (res.rowCount === 0) throw notFound('Không tìm thấy thông báo');
-    const oldAttachments = Array.isArray(res.rows[0].attachments) ? res.rows[0].attachments : [];
-    for (const att of oldAttachments) {
-      if (att?.id && /^NATT-/.test(att.id)) {
-        deleteAttachmentFiles(att.id);
+async function remove(actor, id, req, options = {}) {
+  const executor = options.executor || db;
+  let releaseLocks = () => {};
+  let pendingDeleteSnapshots = null;
+  let attachmentIdsToRemove = [];
+
+  try {
+    await executor.withTransaction(async (client) => {
+      const res = await client.query(
+        'DELETE FROM company_notices WHERE id = $1 RETURNING title, attachments',
+        [id]
+      );
+      if (res.rowCount === 0) throw notFound('Không tìm thấy thông báo');
+
+      const oldAttachments = Array.isArray(res.rows[0].attachments) ? res.rows[0].attachments : [];
+      attachmentIdsToRemove = oldAttachments
+        .map((a) => a?.id)
+        .filter((aid) => aid && /^NATT-/.test(aid));
+
+      releaseLocks = acquireAttachmentLocks(attachmentIdsToRemove);
+      pendingDeleteSnapshots = markAttachmentsDeletionPending(attachmentIdsToRemove);
+
+      if (typeof options.afterNoticeDeleteHook === 'function') {
+        await options.afterNoticeDeleteHook(client, id);
       }
+
+      await client.query(
+        `DELETE FROM notification_reads
+         WHERE notification_id = $1
+            OR notification_id LIKE $2
+            OR notification_id IN (
+              SELECT id FROM notifications WHERE action_type = 'notice_popup' AND action_payload->>'id' = $3
+            )`,
+        [`NOTIF-${id}`, `REMIND-${id}-%`, id]
+      );
+      await client.query(
+        `DELETE FROM notifications
+         WHERE id = $1
+            OR id LIKE $2
+            OR (action_type = 'notice_popup' AND action_payload->>'id' = $3)`,
+        [`NOTIF-${id}`, `REMIND-${id}-%`, id]
+      );
+
+      if (typeof options.beforeAuditHook === 'function') {
+        await options.beforeAuditHook(client, id);
+      }
+
+      await writeAudit(client, {
+        user: actor,
+        action: 'DELETE_NOTICE',
+        table: 'company_notices',
+        recordId: id,
+        req,
+        oldValues: { title: res.rows[0].title },
+      });
+
+      if (typeof options.beforeCommitHook === 'function') {
+        await options.beforeCommitHook(client, id);
+      }
+    });
+
+    // R43: Only delete physical files AFTER the database transaction commits
+    for (const attId of attachmentIdsToRemove) {
+      deleteAttachmentFiles(attId);
     }
-    await client.query('DELETE FROM notification_reads WHERE notification_id = $1', [`NOTIF-${id}`]);
-    await client.query('DELETE FROM notifications WHERE id = $1', [`NOTIF-${id}`]);
-    await writeAudit(client, { user: actor, action: 'DELETE_NOTICE', table: 'company_notices', recordId: id, req, oldValues: { title: res.rows[0].title } });
-  });
+  } catch (err) {
+    restoreAttachmentMetaSnapshots(pendingDeleteSnapshots);
+    throw err;
+  } finally {
+    releaseLocks();
+  }
 }
 
 async function getReaders(actor, id) {
@@ -625,7 +978,7 @@ async function getReaders(actor, id) {
     WHERE r.notification_id = $1
   `;
   const reads = (await db.query(readsQuery, [notifId])).rows;
-  const readMap = new Map(reads.map(r => [r.user_id, r.read_at]));
+  const readMap = new Map(reads.map((r) => [r.user_id, r.read_at]));
 
   const readers = [];
   const unread = [];
@@ -634,7 +987,7 @@ async function getReaders(actor, id) {
     if (readMap.has(emp.user_id)) {
       readers.push({
         ...emp,
-        read_at: readMap.get(emp.user_id)
+        read_at: readMap.get(emp.user_id),
       });
     } else {
       unread.push(emp);
@@ -652,7 +1005,7 @@ async function getReaders(actor, id) {
     readCount,
     readPercent,
     readers,
-    unread
+    unread,
   };
 }
 
@@ -674,32 +1027,40 @@ async function remindUnread(actor, id, req) {
       : 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150');
 
     for (const target of report.unread) {
-      const notifId = `REMIND-${id}-${target.id}-${Date.now().toString().slice(-4)}`;
-      await client.query(`
-        INSERT INTO notifications (
+      const remindHash = crypto
+        .createHash('sha1')
+        .update(`${id}:${target.id}:${Date.now()}:${sent}`)
+        .digest('hex')
+        .slice(0, 8);
+      const notifId = `REMIND-${id}-${remindHash}`.slice(0, 30);
+      await client.query(
+        `INSERT INTO notifications (
           id, user_id, type, category, title, summary, sender_name, sender_role, sender_avatar,
           priority, is_read, action_type, action_payload, created_at
-        ) VALUES ($1, $2, 'ceo_directive', 'Nhắc nhở chỉ đạo', $3, $4, $5, $6, $7, 'urgent', false, 'notice_popup', $8, NOW())
-      `, [
-        notifId,
-        target.user_id,
-        `[NHẮC NHỞ] Bạn chưa đọc: ${report.noticeTitle}`,
-        `Ban Lãnh Đạo yêu cầu bạn hoàn tất đọc văn bản chỉ đạo "${report.noticeTitle}". Vui lòng bấm vào để xem chi tiết ngay.`,
-        senderName,
-        senderRole,
-        senderAvatar,
-        JSON.stringify({
-          id,
-          title: report.noticeTitle,
-          isReminder: true
-        })
-      ]);
+        ) VALUES ($1, $2, 'ceo_directive', 'Nhắc nhở chỉ đạo', $3, NULL, $4, $5, $6, 'urgent', false, 'notice_popup', $7, NOW())`,
+        [
+          notifId,
+          target.user_id,
+          `[NHẮC NHỞ] Bạn chưa đọc thông báo ${id}`,
+          senderName,
+          senderRole,
+          senderAvatar,
+          JSON.stringify({
+            id,
+            isReminder: true,
+          }),
+        ]
+      );
       sent++;
     }
 
     await writeAudit(client, {
-      user: actor, action: 'REMIND_NOTICE_UNREAD', table: 'company_notices', recordId: id, req,
-      newValues: { unreadCount: report.unread.length, sentCount: sent }
+      user: actor,
+      action: 'REMIND_NOTICE_UNREAD',
+      table: 'company_notices',
+      recordId: id,
+      req,
+      newValues: { unreadCount: report.unread.length, sentCount: sent },
     });
 
     return { sentCount: sent, message: `Đã gửi thông báo nhắc nhở hỏa tốc tới ${sent} nhân sự chưa đọc` };
@@ -718,4 +1079,10 @@ module.exports = {
   deleteAttachment,
   downloadAttachment,
   normalizeNoticeRowAttachments,
+  getStorageDir,
+  PROD_DEFAULT_STORAGE_DIR,
+  assertSafeStorageDir,
+  cleanupTestStorageDir,
+  reconcileAttachmentStorage,
+  readAttachmentMeta,
 };
