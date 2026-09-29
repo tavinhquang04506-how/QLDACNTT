@@ -14,11 +14,23 @@ const EMP_COLS = `e.id, e.full_name, e.department_id, e.position_id, e.job_title
 const DETAIL_SQL = `
   SELECT ${EMP_COLS},
          d.name AS department_name, p.name AS position_name, p.level AS position_level,
-         m.full_name AS manager_name, m.job_title AS manager_title
+         m.full_name AS manager_name, m.job_title AS manager_title,
+         lb.remaining_days AS leave_balance,
+         c.contract_no, c.type AS active_contract_type, c.start_date AS contract_start_date,
+         c.end_date AS contract_end_date, c.salary AS contract_salary
     FROM employees e
     LEFT JOIN departments d ON e.department_id = d.id
     LEFT JOIN positions p ON e.position_id = p.id
-    LEFT JOIN employees m ON e.manager_id = m.id`;
+    LEFT JOIN employees m ON e.manager_id = m.id
+    LEFT JOIN leave_balances lb ON lb.employee_id = e.id
+          AND lb.year = EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER AND lb.leave_type_id = 'LT-AL'
+    LEFT JOIN LATERAL (
+      SELECT contract_no, type, start_date, end_date, salary
+        FROM contracts
+       WHERE employee_id = e.id
+       ORDER BY (status = 'HIEU_LUC') DESC, start_date DESC
+       LIMIT 1
+    ) c ON TRUE`;
 
 async function findEmployee(executor, id) {
   const { rows } = await executor.query(`${DETAIL_SQL} WHERE e.id = $1`, [id]);
@@ -68,11 +80,25 @@ async function list(user, query) {
     const p = `$${params.length}`;
     where.push(`(e.full_name ILIKE ${p} OR e.work_email ILIKE ${p} OR e.id ILIKE ${p} OR e.phone_number ILIKE ${p})`);
   }
-  if (query.department) add('e.department_id = ?', query.department);
+  if (query.department) {
+    params.push(query.department);
+    const pExact = `$${params.length}`;
+    params.push(`%${query.department}%`);
+    const pLike = `$${params.length}`;
+    where.push(`(e.department_id = ${pExact} OR d.name ILIKE ${pLike})`);
+  }
   if (query.status) add('e.status = ?', query.status);
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  const total = parseInt((await db.query(`SELECT COUNT(*) FROM employees e ${clause}`, params)).rows[0].count, 10);
+  const total = parseInt(
+    (
+      await db.query(
+        `SELECT COUNT(*) FROM employees e LEFT JOIN departments d ON e.department_id = d.id ${clause}`,
+        params
+      )
+    ).rows[0].count,
+    10
+  );
   const { rows } = await db.query(
     `SELECT ${EMP_COLS}, d.name AS department_name, p.name AS position_name, m.full_name AS manager_name,
             COALESCE(lb.remaining_days, 12) AS leave_balance

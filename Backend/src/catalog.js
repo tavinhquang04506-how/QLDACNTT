@@ -173,6 +173,11 @@ module.exports = {
       "GET /api/dashboard/stats": "KPI theo phạm vi: công ty / phòng ban / cá nhân",
       "GET /api/dashboard/notifications": "Thông báo (đường dẫn cũ của /api/notifications)"
     },
+    "settings": {
+      "GET   /api/settings": "Đọc cấu hình hệ thống toàn doanh nghiệp",
+      "PUT   /api/settings": "Lưu cấu hình hệ thống (CEO/HRD)",
+      "PATCH /api/settings": "Cập nhật một phần cấu hình hệ thống (CEO/HRD)"
+    },
     "auditLogs": {
       "GET /api/audit-logs": "Nhật ký hệ thống (CEO/ADMIN)"
     }

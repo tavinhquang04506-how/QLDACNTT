@@ -151,4 +151,9 @@ export function createApiClient({
 
 const api = createApiClient();
 
+export function getAccessToken() {
+  if (typeof localStorage === 'undefined') return null;
+  return localStorage.getItem('nexus_token') || null;
+}
+
 export default api;
