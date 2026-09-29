@@ -18,6 +18,7 @@ function redactErrorText(text = '', apiKey = '') {
     out = out.split(apiKey).join('[REDACTED_KEY]');
   }
   out = out.replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED_KEY]');
+  out = out.replace(/AQ\.[0-9A-Za-z\-_]{15,}/g, '[REDACTED_KEY]');
   return out;
 }
 
