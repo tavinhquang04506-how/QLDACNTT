@@ -28,8 +28,8 @@ INSERT INTO system_settings (key, value, category, description) VALUES
   ('employee_bhxh_rate', '10.5'::jsonb, 'tax_bhxh', 'Tỷ lệ trích đóng BHXH/BHYT/BHTN phần người lao động (%)'),
   ('employer_bhxh_rate', '21.5'::jsonb, 'tax_bhxh', 'Tỷ lệ đóng BHXH/BHYT/BHTN phần doanh nghiệp (%)'),
   ('gps_radius_meters', '250'::jsonb, 'biometrics', 'Bán kính hợp lệ cho phép nhân viên check-in GPS (mét)'),
-  ('office_lat', '10.762622'::jsonb, 'biometrics', 'Vĩ độ trụ sở chính NEXUS'),
-  ('office_lng', '106.660172'::jsonb, 'biometrics', 'Kinh độ trụ sở chính NEXUS'),
+  ('office_lat', '10.77'::jsonb, 'biometrics', 'Vĩ độ trụ sở chính NEXUS'),
+  ('office_lng', '106.7'::jsonb, 'biometrics', 'Kinh độ trụ sở chính NEXUS'),
   ('office_name', '"Tòa nhà NEXUS Tower"'::jsonb, 'biometrics', 'Tên địa điểm trụ sở chính'),
   ('face_confidence_threshold', '98'::jsonb, 'biometrics', 'Ngưỡng độ tin cậy chấm công Kiosk (%)')
 ON CONFLICT (key) DO NOTHING;
