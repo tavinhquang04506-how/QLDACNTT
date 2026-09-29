@@ -2,6 +2,23 @@ import api from './api';
 
 export const userService = {
   /**
+   * Lấy ma trận cấu hình phân quyền RBAC theo vai trò (6 vai trò × 64 quyền hạn)
+   */
+  getRbacRoles: () => api.get('/settings/rbac-roles'),
+
+  /**
+   * Lưu cấu hình phân quyền của 1 vai trò (hoặc toàn bộ ma trận) vào CSDL
+   * @param {Object} payload - { roleCode, permissions } hoặc { matrix }
+   */
+  updateRbacRoles: (payload) => api.put('/settings/rbac-roles', payload),
+
+  /**
+   * Khôi phục cấu hình phân quyền của 1 vai trò (hoặc toàn bộ) về mặc định chuẩn
+   * @param {Object} payload - { roleCode? }
+   */
+  resetRbacRoles: (payload = {}) => api.post('/settings/rbac-roles/reset', payload),
+
+  /**
    * Lấy danh sách tài khoản hệ thống kèm thông tin nhân sự & phòng ban
    * @param {Object} params - { search, role, active, page, limit }
    */
@@ -11,7 +28,7 @@ export const userService = {
     if (params.role) query.append('role', params.role);
     if (params.active !== undefined && params.active !== '') query.append('active', String(params.active));
     if (params.page) query.append('page', String(params.page));
-    query.append('limit', String(params.limit || 200));
+    query.append('limit', String(params.limit || 100));
     return api.get(`/users?${query.toString()}`);
   },
 
