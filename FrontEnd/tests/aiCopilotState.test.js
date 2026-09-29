@@ -1,0 +1,243 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  buildBotMessageFromCopilotPayload,
+  buildRoleAwareWelcomeMessage,
+  buildUserScopeWatchKey,
+  getVietnamCurrentYearAndMonth,
+} from '../src/utils/aiCopilotState.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+describe('R35, R36, R39 & Phase B — AI Copilot UI State, Notice Attachment & Login Routing Verification', () => {
+  it('R35: buildBotMessageFromCopilotPayload maps VERIFIED, REFUSED, and UNVERIFIED responses according to real backend contract (verified, refused, refusalCodes)', () => {
+    // 1. Verified response with structuredEvidence and sources
+    const verifiedMsg = buildBotMessageFromCopilotPayload(
+      {
+        success: true,
+        answer: 'Năm 2026: còn lại 5 ngày phép (khả dụng 3 ngày).',
+        verified: true,
+        refused: false,
+        refusalCodes: [],
+        toolsUsed: [{ name: 'get_my_leave_balance', ok: true }],
+        sources: [{ id: 'leave-balance:NV-0008:2026', title: 'Quỹ phép cá nhân năm 2026' }],
+        structuredEvidence: [
+          {
+            tool: 'get_my_leave_balance',
+            entity: { employeeId: 'NV-0008' },
+            period: { year: 2026 },
+            fields: { balances: [{ remaining: 5, available: 3, used: 7, entitlement: 12 }] },
+          },
+        ],
+        requestId: 'req-v1',
+      },
+      'Tôi còn mấy ngày phép?'
+    );
+    assert.equal(verifiedMsg.verified, true);
+    assert.equal(verifiedMsg.refused, false);
+    assert.equal(verifiedMsg.verificationState, 'VERIFIED');
+    assert.match(verifiedMsg.statusBadgeText, /Đã đối chiếu dữ liệu hệ thống/);
+    assert.equal(verifiedMsg.sources.length, 1);
+    assert.equal(verifiedMsg.structuredEvidence.length, 1);
+    assert.equal(verifiedMsg.retryText, '');
+
+    // 2. Refused response (UNGROUNDED_ANSWER_REJECTED / ANSWER_SOURCE_MISMATCH / SCOPE_CHANGED_DURING_REQUEST)
+    const refusedMsg = buildBotMessageFromCopilotPayload(
+      {
+        success: true,
+        answer:
+          'Không thể xác minh thông tin nhân sự hoặc chính sách do chưa truy xuất được bằng chứng từ công cụ hệ thống được phân quyền (UNGROUNDED_ANSWER_REJECTED).',
+        verified: false,
+        refused: true,
+        refusalCodes: ['UNGROUNDED_ANSWER_REJECTED'],
+        toolsUsed: [],
+        sources: [{ id: 'should-be-stripped', title: 'Should not appear on refused message' }],
+        requestId: 'req-r1',
+      },
+      'How many vacation days do I have?'
+    );
+    assert.equal(refusedMsg.verified, false);
+    assert.equal(refusedMsg.refused, true);
+    assert.equal(refusedMsg.verificationState, 'REFUSED');
+    assert.match(refusedMsg.statusBadgeText, /UNGROUNDED_ANSWER_REJECTED/);
+    assert.equal(refusedMsg.sources.length, 0);
+    assert.equal(refusedMsg.retryText, 'How many vacation days do I have?');
+
+    // 3. Unverified response (e.g. hasRecord=false or greeting/clarification without tools)
+    const unverifiedEmptyToolMsg = buildBotMessageFromCopilotPayload(
+      {
+        success: true,
+        answer: 'Chưa có dữ liệu quỹ phép cho năm 2030.',
+        verified: false,
+        refused: false,
+        refusalCodes: [],
+        toolsUsed: [{ name: 'get_my_leave_balance', ok: true }],
+        sources: [],
+        requestId: 'req-u1',
+      },
+      'Tra cứu phép năm 2030'
+    );
+    assert.equal(unverifiedEmptyToolMsg.verified, false);
+    assert.equal(unverifiedEmptyToolMsg.refused, false);
+    assert.equal(unverifiedEmptyToolMsg.verificationState, 'UNVERIFIED');
+    assert.match(unverifiedEmptyToolMsg.statusBadgeText, /Chưa có bản ghi chính thức/);
+    assert.equal(unverifiedEmptyToolMsg.sources.length, 0);
+
+    const unverifiedGreetingMsg = buildBotMessageFromCopilotPayload(
+      {
+        success: true,
+        answer: 'Xin chào! Bạn muốn tra cứu kỳ lương nào?',
+        verified: false,
+        refused: false,
+        refusalCodes: [],
+        toolsUsed: [],
+        sources: [],
+        requestId: 'req-u2',
+      },
+      'Xin chào'
+    );
+    assert.equal(unverifiedGreetingMsg.verificationState, 'UNVERIFIED');
+    assert.match(unverifiedGreetingMsg.statusBadgeText, /Hội thoại \/ Cần làm rõ thông tin/);
+  });
+
+  it('R36: buildUserScopeWatchKey changes whenever id, roleCode, departmentId, or employeeId changes (including null transitions)', () => {
+    const k1 = buildUserScopeWatchKey({
+      id: 'u1',
+      roleCode: 'LINE_MANAGER',
+      departmentId: 'DEPT-IT',
+      employeeId: 'NV-01',
+    });
+    const k2 = buildUserScopeWatchKey({
+      id: 'u1',
+      roleCode: 'LINE_MANAGER',
+      departmentId: 'DEPT-SALES',
+      employeeId: 'NV-01',
+    });
+    const k3 = buildUserScopeWatchKey({
+      id: 'u1',
+      roleCode: 'LINE_MANAGER',
+      departmentId: null,
+      employeeId: 'NV-01',
+    });
+    const k4 = buildUserScopeWatchKey({
+      id: 'u1',
+      roleCode: 'EMPLOYEE',
+      departmentId: null,
+      employeeId: 'NV-01',
+    });
+
+    assert.notEqual(k1, k2);
+    assert.notEqual(k2, k3);
+    assert.notEqual(k3, k4);
+  });
+
+  it('R35 & R36: AiCopilotDrawerModal.jsx renders verified, refused, and unverified badges and watches full scope key', () => {
+    const modalSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/analytics/AiCopilotDrawerModal.jsx'),
+      'utf8'
+    );
+    assert.equal(modalSource.includes('data-testid="ai-msg-refused-badge"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-msg-verified-badge"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-msg-unverified-badge"'), true);
+    assert.equal(modalSource.includes('buildBotMessageFromCopilotPayload'), true);
+    assert.equal(modalSource.includes('buildUserScopeWatchKey'), true);
+  });
+
+  it('R39 & Phase B: CreateCompanyNoticeModal, NotificationDetailModal, and LoginPage remove fake docs/CA claims and align role landing paths', () => {
+    const createNoticeSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/portal/CreateCompanyNoticeModal.jsx'),
+      'utf8'
+    );
+    assert.equal(createNoticeSource.includes('handleAddPresetDoc'), false);
+    assert.equal(createNoticeSource.includes('example.com'), false);
+    assert.equal(createNoticeSource.includes('URL.createObjectURL'), false);
+    assert.equal(createNoticeSource.includes('noticeService.uploadAttachment'), true);
+
+    const detailNoticeSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/common/NotificationDetailModal.jsx'),
+      'utf8'
+    );
+    assert.equal(
+      detailNoticeSource.includes('Đã ký số xác thực CA bởi Hệ thống Quản trị NEXUS'),
+      false
+    );
+    assert.equal(detailNoticeSource.includes('Không khả dụng — cần tải lên lại'), true);
+    assert.equal(detailNoticeSource.includes('noticeService.downloadAttachment'), true);
+    assert.equal(/noticeService\s*\.\s*getById/.test(detailNoticeSource), true);
+    assert.equal(detailNoticeSource.includes('data-testid="notice-access-denied"'), true);
+    const noticeServiceSource = fs.readFileSync(
+      path.join(__dirname, '../src/services/noticeService.js'),
+      'utf8'
+    );
+    assert.equal(noticeServiceSource.includes('MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024'), true);
+    assert.equal(noticeServiceSource.includes('MAX_PROXY_BODY_BYTES = 10 * 1024 * 1024'), true);
+    assert.equal(noticeServiceSource.includes('estimateBase64JsonBytes'), true);
+    assert.ok(
+      detailNoticeSource.indexOf('React.useEffect') <
+        detailNoticeSource.indexOf('if (!isOpen || !payload) return null;'),
+      'React.useEffect must be called before early return in NotificationDetailModal'
+    );
+
+    const loginPageSource = fs.readFileSync(
+      path.join(__dirname, '../src/pages/LoginPage.jsx'),
+      'utf8'
+    );
+    assert.equal(loginPageSource.includes("if (normalized === 'ADMIN') return '/directory';"), true);
+    assert.equal(loginPageSource.includes("if (normalized === 'KIOSK') return '/kiosk';"), true);
+  });
+
+  it('AI NEXUS V1 Phase E: buildRoleAwareWelcomeMessage dynamically resolves year/month by timezone and scopes chips per role', () => {
+    const jan2028 = new Date('2028-01-15T08:00:00+07:00');
+    const ym = getVietnamCurrentYearAndMonth(jan2028);
+    assert.equal(ym.year, 2028);
+    assert.equal(ym.month, '2028-01');
+    assert.equal(ym.prevMonth, '2027-12');
+
+    const empWelcome = buildRoleAwareWelcomeMessage(
+      { id: 'u1', roleCode: 'EMPLOYEE', employeeId: 'NV-0008' },
+      jan2028
+    );
+    assert.ok(empWelcome.chips.some((c) => c.includes('2028')));
+    assert.ok(empWelcome.chips.some((c) => c.includes('2027-12')));
+    assert.equal(empWelcome.chips.some((c) => c.includes('2026')), false);
+
+    // ADMIN only gets policy chips, never personal leave/payslip or HR analytics chips
+    const adminWelcome = buildRoleAwareWelcomeMessage(
+      { id: 'u-admin', roleCode: 'ADMIN', employeeId: null },
+      jan2028
+    );
+    assert.equal(adminWelcome.chips.some((c) => c.includes('phiếu lương')), false);
+    assert.equal(adminWelcome.chips.some((c) => c.includes('số liệu nhân sự')), false);
+    assert.ok(adminWelcome.chips.every((c) => /Quy chế|Quy định/i.test(c)));
+  });
+
+  it('AI NEXUS V1 Phase E: AiCopilotDrawerModal.jsx supports reset button, generationId stale-response guard, answerSections, clarification choices, and navigationActions', () => {
+    const modalSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/analytics/AiCopilotDrawerModal.jsx'),
+      'utf8'
+    );
+    assert.equal(modalSource.includes('data-testid="ai-copilot-reset-btn"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-msg-sections"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-clarification-choice"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-followup-chip"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-nav-action"'), true);
+    assert.equal(modalSource.includes('sessionGenerationRef'), true);
+  });
+
+  it('Final UAT (BUG-UAT-02): DashboardPage.jsx only calls payrollService.getPeriods() when role is HR_DIRECTOR or CEO', () => {
+    const dashboardSource = fs.readFileSync(
+      path.join(__dirname, '../src/pages/DashboardPage.jsx'),
+      'utf8'
+    );
+    assert.equal(
+      dashboardSource.includes(
+        "(currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO') ? payrollService.getPeriods()"
+      ),
+      true
+    );
+  });
+});

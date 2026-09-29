@@ -1,0 +1,12 @@
+▶ R35 & R36 AI Gate Verification (12-REVIEW-fe918e1-AI-GATE)
+  ✔ R35: blocks ungrounded claims across English, unaccented Vietnamese, written number words, and enforces structured field/entity/period semantics (206.4341ms)
+  ✔ R36: re-verifies DB scope and account status before issuing response and discards in-flight answers when department, role, employee binding, or active state changes (106.4067ms)
+✔ R35 & R36 AI Gate Verification (12-REVIEW-fe918e1-AI-GATE) (481.0549ms)
+ℹ tests 2
+ℹ suites 1
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1017.1075

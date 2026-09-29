@@ -3,13 +3,9 @@ import AppleModal from '../../components/motion/AppleModal';
 import { useAuth } from '../../context/AuthContext';
 import { 
   CalendarDays, 
-  Clock, 
-  FileText, 
   UploadCloud, 
   CheckCircle2, 
-  X, 
   Send, 
-  UserCheck, 
   AlertCircle,
   ArrowRight,
   ShieldCheck,
@@ -30,17 +26,27 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
   const [endDate, setEndDate] = useState(todayStr);
   const [shiftType, setShiftType] = useState('full');
   const [employees, setEmployees] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [handoverPerson, setHandoverPerson] = useState('');
   const [reason, setReason] = useState('');
   const [attachedFile, setAttachedFile] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     if (isOpen) {
+      setErrorMsg('');
+      setIsSuccess(false);
       api.get('/employees').then(res => {
         if (res?.data && Array.isArray(res.data)) {
           setEmployees(res.data);
+        }
+      }).catch(console.warn);
+      api.get('/leaves/holidays').then(res => {
+        const list = res?.data || (Array.isArray(res) ? res : []);
+        if (Array.isArray(list)) {
+          setHolidays(list.map(h => String(h.holiday_date || h).slice(0, 10)));
         }
       }).catch(console.warn);
     }
@@ -48,22 +54,22 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
 
   // Strictly filter to colleagues in the SAME department (excluding current user)
   const deptEmployees = employees.filter(e => {
-    const isSelf = e.id === currentRole?.id || e.id === currentRole?.employee_id;
+    const isSelf = e.id === currentRole?.id || e.id === currentRole?.employeeId;
     if (isSelf) return false;
     
-    const curDept = (currentRole?.department_id || currentRole?.department || currentRole?.department_name || '').toLowerCase();
+    const curDept = (currentRole?.departmentId || currentRole?.department || '').toLowerCase();
     const empDept = (e.department_id || e.department || e.department_name || '').toLowerCase();
     
-    if (currentRole?.department_id && e.department_id && e.department_id === currentRole.department_id) {
+    if (currentRole?.departmentId && e.department_id && e.department_id === currentRole.departmentId) {
       return true;
     }
-    if (curDept && empDept && (curDept.includes('phát triển') && empDept.includes('phát triển') || curDept === empDept)) {
+    if (curDept && empDept && curDept === empDept) {
       return true;
     }
     return false;
   });
 
-  const availableHandovers = deptEmployees.length > 0 ? deptEmployees : employees.filter(e => e.id !== currentRole?.id && e.id !== currentRole?.employee_id);
+  const availableHandovers = deptEmployees.length > 0 ? deptEmployees : employees.filter(e => e.id !== currentRole?.id && e.id !== currentRole?.employeeId);
 
   useEffect(() => {
     if (availableHandovers.length > 0 && (!handoverPerson || !availableHandovers.some(e => e.id === handoverPerson))) {
@@ -71,12 +77,43 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
     }
   }, [availableHandovers, handoverPerson]);
 
-  const s = new Date(startDate);
-  const end = new Date(endDate);
-  const diffDays = Math.max(1, Math.round((end - s) / (1000 * 60 * 60 * 24)) + 1);
+  const computeWorkingDays = (fromIso, toIso, holidayList = holidays) => {
+    if (!fromIso || !toIso) return 0;
+    const from = new Date(`${fromIso}T00:00:00Z`);
+    const to = new Date(`${toIso}T00:00:00Z`);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) return 0;
+    const holidaySet = new Set(Array.isArray(holidayList) ? holidayList : []);
+    let count = 0;
+    for (let d = new Date(from); d <= to; d = new Date(d.getTime() + 86400000)) {
+      const dow = d.getUTCDay();
+      const iso = d.toISOString().slice(0, 10);
+      if (dow !== 0 && dow !== 6 && !holidaySet.has(iso)) count += 1;
+    }
+    return count;
+  };
+
+  const workingDaysCount = computeWorkingDays(startDate, endDate, holidays);
+  const diffDays = shiftType === 'morning' || shiftType === 'afternoon'
+    ? (workingDaysCount === 1 ? 0.5 : workingDaysCount)
+    : workingDaysCount;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setErrorMsg('');
+
+    if (endDate < startDate) {
+      setErrorMsg('Ngày kết thúc không được nhỏ hơn ngày bắt đầu.');
+      return;
+    }
+    if (workingDaysCount <= 0) {
+      setErrorMsg('Khoảng thời gian đã chọn chỉ rơi vào ngày nghỉ cuối tuần hoặc ngày lễ, không phát sinh ngày phép làm việc.');
+      return;
+    }
+    if ((shiftType === 'morning' || shiftType === 'afternoon') && startDate !== endDate) {
+      setErrorMsg('Nghỉ nửa ngày (0.5 ngày) chỉ áp dụng khi Từ ngày và Đến ngày là cùng một ngày làm việc.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     const typeMapping = {
@@ -93,51 +130,45 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
         leave_type_id: typeMapping[leaveType] || 'LT-AL',
         start_date: startDate,
         end_date: endDate,
-        total_days: shiftType === 'morning' || shiftType === 'afternoon' ? 0.5 : diffDays,
-        reason: reason || 'Nghỉ giải quyết việc cá nhân',
-        handover_to: handoverPerson
+        shift_type: shiftType,
+        reason: reason.trim(),
+        handover_to: handoverPerson || null,
+        attachment_name: attachedFile || null,
       });
       window.dispatchEvent(new CustomEvent('nexus:leave-updated'));
+      setIsSubmitting(false);
+      setIsSuccess(true);
+      try {
+        confetti({
+          particleCount: 80,
+          spread: 70,
+          origin: { y: 0.6 }
+        });
+      } catch {}
+      setTimeout(() => {
+        setIsSuccess(false);
+        onClose();
+      }, 1500);
     } catch (err) {
-      console.warn('Backend submit notice, keeping local success state:', err);
+      setIsSubmitting(false);
+      setErrorMsg(err?.message || 'Không thể gửi đơn nghỉ phép. Vui lòng kiểm tra lại ngày nghỉ hoặc số dư phép.');
     }
-
-    setIsSubmitting(false);
-    setIsSuccess(true);
-    try {
-      confetti({
-        particleCount: 80,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-    } catch (err) {
-      // fallback
-    }
-    setTimeout(() => {
-      setIsSuccess(false);
-      onClose();
-    }, 1600);
   };
 
   const ceoUser = employees.find(e => e.position_id === 'POS-CEO' || e.job_title?.includes('Tổng Giám Đốc') || e.role?.includes('CEO')) || employees[0];
-  const ceoName = ceoUser?.full_name || ceoUser?.name || 'Nguyễn Tổng Giám Đốc';
+  const ceoName = ceoUser?.full_name || ceoUser?.name || 'Tổng Giám Đốc';
 
   const hrdUser = employees.find(e => (e.department_id === 'DEPT-HR' || e.department_name?.includes('Nhân sự')) && (e.position_id === 'POS-DIR' || e.job_title?.includes('Giám Đốc') || e.role?.includes('HRD'))) || employees.find(e => e.role === 'HR_DIRECTOR') || employees[1];
-  const hrdName = hrdUser?.full_name || hrdUser?.name || 'Trần Thị Giám Đốc Nhân Sự';
+  const hrdName = hrdUser?.full_name || hrdUser?.name || 'Giám Đốc Nhân Sự';
 
   const managerUser = employees.find(e =>
-    (e.department_id === currentRole?.department_id || e.department_name === currentRole?.department) &&
+    (e.department_id === currentRole?.departmentId || e.department_name === currentRole?.department) &&
     e.id !== currentRole?.id &&
     (e.position_id?.includes('MGR') || e.position_id?.includes('LEAD') || e.job_title?.includes('Trưởng') || e.job_title?.includes('Lead'))
   ) || employees.find(e => e.id !== currentRole?.id) || employees[0];
-  const managerName = managerUser?.full_name || managerUser?.name || 'Lê Văn Trưởng Phòng';
+  const managerName = managerUser?.full_name || managerUser?.name || 'Trưởng Phòng';
   const managerRole = managerUser?.job_title || managerUser?.role || 'Trưởng phòng';
 
-  // Determine approval steps:
-  // If Line Manager or HR Director -> Level 1 is CEO
-  // If Employee:
-  //   <= 2 days -> 1 level (Manager)
-  //   > 2 days -> 2 levels (Manager -> HR Director)
   const isMultiLevel = !isLineManager && !isHrd && diffDays > 2;
 
   return (
@@ -167,12 +198,19 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
             </div>
             <h4 className="text-lg font-bold text-slate-900">Gửi Đơn Thành Công!</h4>
             <p className="text-xs text-slate-500 max-w-sm">
-              Đơn nghỉ phép của bạn đã được chuyển tới cấp có thẩm quyền phê duyệt và đồng bộ vào lịch trình bộ phận.
+              Đơn nghỉ phép của bạn đã được lưu vào cơ sở dữ liệu và chuyển tới cấp có thẩm quyền phê duyệt.
             </p>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
-            {/* Loại nghỉ phép chuẩn 7 trường hợp */}
+            {errorMsg && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {/* Loại nghỉ phép */}
             <div>
               <label className="font-bold text-slate-700 block mb-1.5">
                 Loại hình nghỉ phép <span className="text-rose-500">*</span>
@@ -186,8 +224,8 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                 <option value="personal">Nghỉ việc riêng hưởng 100% lương (Kết hôn, việc hiếu hỷ theo Luật)</option>
                 <option value="medical">Nghỉ ốm đau / Thai sản hưởng chế độ BHXH (Mẫu y tế C65-HD)</option>
                 <option value="unpaid">Nghỉ việc riêng không hưởng lương (Cần Ban Giám Đốc phê duyệt)</option>
-                <option value="compensatory">Nghỉ bù ngày công làm thêm giờ / trực đêm (TOIL)</option>
-                <option value="paternity">Chế độ Nam nhân viên khi vợ sinh con (5 - 14 ngày BHXH)</option>
+                <option value="compensatory">Nghỉ công tác / Nghỉ bù theo phân công</option>
+                <option value="paternity">Chế độ Thai sản / Nam nhân viên khi vợ sinh con</option>
               </select>
             </div>
 
@@ -219,7 +257,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
               </div>
             </div>
 
-            {/* Ca nghỉ & Người nhận bàn giao (chỉ đồng nghiệp cùng phòng ban) */}
+            {/* Ca nghỉ & Người nhận bàn giao */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="font-bold text-slate-700 block mb-1.5">
@@ -230,7 +268,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                   onChange={(e) => setShiftType(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
                 >
-                  <option value="full">Cả ngày ({diffDays} ngày công)</option>
+                  <option value="full">Cả ngày ({diffDays} ngày theo lịch)</option>
                   <option value="morning">Buổi sáng (08:00 - 12:00) (0.5 ngày)</option>
                   <option value="afternoon">Buổi chiều (13:30 - 17:30) (0.5 ngày)</option>
                 </select>
@@ -238,13 +276,12 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
 
               <div>
                 <label className="font-bold text-slate-700 block mb-1.5">
-                  Người nhận bàn giao (Cùng phòng ban) <span className="text-rose-500">*</span>
+                  Người nhận bàn giao (Cùng phòng ban)
                 </label>
                 <select
                   value={handoverPerson}
                   onChange={(e) => setHandoverPerson(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
-                  required
                 >
                   {availableHandovers.length > 0 ? (
                     availableHandovers.map(e => (
@@ -256,9 +293,6 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                     <option value="">Không có đồng nghiệp cùng phòng</option>
                   )}
                 </select>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Chỉ chọn nhân sự trực thuộc cùng phòng ban để bàn giao
-                </p>
               </div>
             </div>
 
@@ -297,7 +331,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
               </div>
             </div>
 
-            {/* Cấp phê duyệt tiếp nhận - Modern Dynamic Visual Workflow Boxes with Arrow */}
+            {/* Cấp phê duyệt tiếp nhận */}
             <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-slate-700 font-bold text-xs">
@@ -308,31 +342,26 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                   {isLineManager || isHrd
                     ? '1 Cấp: Trình Ban Tổng Giám Đốc'
                     : isMultiLevel
-                    ? `2 Cấp: Quy trình nghỉ > 2 ngày (${diffDays} ngày)`
-                    : `1 Cấp: Quy trình nghỉ ≤ 2 ngày (${diffDays} ngày)`}
+                    ? `2 Cấp: Trưởng phòng -> HRD (${diffDays} ngày)`
+                    : `2 Cấp: Trưởng phòng -> HRD (${diffDays} ngày)`}
                 </span>
               </div>
 
               {isLineManager || isHrd ? (
-                /* Box for Line Manager / HRD: Approval by CEO */
                 <div className="p-3 bg-white border border-blue-200 rounded-xl shadow-xs flex items-center gap-3">
                   <div className="w-9 h-9 rounded-lg bg-blue-100 text-blue-700 font-bold flex items-center justify-center shrink-0">
                     <User className="w-5 h-5" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                        Cấp 1 - Ban Điều Hành
-                      </span>
-                    </div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                      Cấp 1 - Ban Điều Hành
+                    </span>
                     <div className="text-xs font-bold text-slate-800 mt-0.5 truncate">{ceoName}</div>
                     <div className="text-[11px] text-slate-500">Tổng Giám Đốc / CEO trực tiếp phê duyệt</div>
                   </div>
                 </div>
-              ) : isMultiLevel ? (
-                /* 2 Boxes with Arrow for Employee > 2 days */
+              ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-[1fr,auto,1fr] gap-2 items-center pt-1">
-                  {/* Box 1: Trưởng phòng */}
                   <div className="p-2.5 bg-white border border-slate-200 rounded-xl shadow-xs flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 font-bold flex items-center justify-center shrink-0">
                       <User className="w-4 h-4" />
@@ -346,12 +375,10 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                     </div>
                   </div>
 
-                  {/* Arrow */}
                   <div className="hidden sm:flex items-center justify-center text-blue-500">
                     <ArrowRight className="w-4 h-4" />
                   </div>
 
-                  {/* Box 2: Giám Đốc Nhân Sự */}
                   <div className="p-2.5 bg-white border border-blue-200 rounded-xl shadow-xs flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 font-bold flex items-center justify-center shrink-0">
                       <ShieldCheck className="w-4 h-4" />
@@ -363,22 +390,6 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
                       <div className="text-xs font-bold text-slate-800 truncate mt-0.5">{hrdName}</div>
                       <div className="text-[10px] text-slate-500 truncate">Giám Đốc Khối Nhân Sự duyệt</div>
                     </div>
-                  </div>
-                </div>
-              ) : (
-                /* 1 Box for Employee <= 2 days */
-                <div className="p-3 bg-white border border-emerald-200 rounded-xl shadow-xs flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 font-bold flex items-center justify-center shrink-0">
-                    <User className="w-5 h-5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                        Cấp 1 - Duyệt Trực Tiếp (≤ 2 ngày)
-                      </span>
-                    </div>
-                    <div className="text-xs font-bold text-slate-800 mt-0.5 truncate">{managerName}</div>
-                    <div className="text-[11px] text-slate-500">{managerRole} - Phê duyệt toàn quyền</div>
                   </div>
                 </div>
               )}

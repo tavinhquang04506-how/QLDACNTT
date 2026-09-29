@@ -1,47 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import { 
   Clock, 
-  Calendar, 
   FileText, 
-  Sparkles, 
-  Eye, 
-  EyeOff, 
   CheckCircle2, 
-  Download, 
-  Bell, 
   BookOpen, 
   CalendarPlus,
   ArrowRight,
   Briefcase,
-  CalendarCheck,
-  Stethoscope,
-  Laptop,
   Megaphone,
   Plus,
   Pin,
   SlidersHorizontal,
   Paperclip
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { attendanceService, leaveService, payrollService, noticeService, projectService, notificationService } from '../services';
+import { normalizeLeaveBalance, buildPortalSalaryView, formatPortalWorkHours } from '../utils/dataAdapters';
 
 export default function EmployeePortalPage() {
   const { openModal } = useModal();
   const { currentRole } = useAuth();
   const navigate = useNavigate();
-  const [showSalary, setShowSalary] = useState(true);
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [clockInTime, setClockInTime] = useState('--:--:--');
-  const [clockLoading, setClockLoading] = useState(false);
-  const [punchMessage, setPunchMessage] = useState('');
 
   // Live data states
   const [leaveBalances, setLeaveBalances] = useState([]);
+  const [leaveBalanceError, setLeaveBalanceError] = useState(false);
   const [todayAttendance, setTodayAttendance] = useState(null);
   const [myPayslips, setMyPayslips] = useState([]);
   const [companyNotices, setCompanyNotices] = useState([]);
@@ -85,14 +73,20 @@ export default function EmployeePortalPage() {
           }
         }
 
-        if (balRes.status === 'fulfilled') {
+        if (balRes.status === 'fulfilled' && balRes.value?.success !== false) {
           const bals = balRes.value?.data || (Array.isArray(balRes.value) ? balRes.value : []);
           setLeaveBalances(bals);
+          setLeaveBalanceError(false);
+        } else {
+          setLeaveBalances([]);
+          setLeaveBalanceError(true);
         }
 
-        if (payRes.status === 'fulfilled') {
+        if (payRes.status === 'fulfilled' && payRes.value?.success !== false) {
           const slips = payRes.value?.data || (Array.isArray(payRes.value) ? payRes.value : []);
           setMyPayslips(slips);
+        } else {
+          setMyPayslips([]);
         }
 
         if (notRes.status === 'fulfilled') {
@@ -138,90 +132,20 @@ export default function EmployeePortalPage() {
     };
   }, [currentRole.id]);
 
-  // Tailored personal salary per role (bound to live DB payslips)
-  const getSalaryData = () => {
-    if (myPayslips && myPayslips.length > 0) {
-      const p = myPayslips[0];
-      return {
-        net: `${Number(p.net_salary || 0).toLocaleString('vi-VN')} VNĐ`,
-        base: `+${Number(p.base_salary || 0).toLocaleString('vi-VN')} đ`,
-        bonus: `+${Number(p.bonus || 0).toLocaleString('vi-VN')} đ (Thưởng KPI)`,
-        allowance: `+${Number((p.allowances || 0) + (p.ot_pay || 0)).toLocaleString('vi-VN')} đ (Phụ cấp + OT)`,
-        insurance: `-${Number(p.bhxh_amount || 0).toLocaleString('vi-VN')} đ (BHXH 10.5%)`,
-        tax: `-${Number(p.pit_amount || 0).toLocaleString('vi-VN')} đ (Thuế TNCN)`,
-        bank: p.bank_name ? `${p.bank_name} (${p.period_id || 'Kỳ hiện tại'})` : 'Tài khoản ngân hàng liên kết'
-      };
-    }
-    const baseSalary = currentRole?.baseSalary || 0;
-    return {
-      net: 'Chờ quyết toán',
-      base: baseSalary > 0 ? `+${Number(baseSalary).toLocaleString('vi-VN')} đ (Lương HĐ)` : '0 đ',
-      bonus: '+0 đ',
-      allowance: '+0 đ',
-      insurance: baseSalary > 0 ? `-${Number(Math.round(baseSalary * 0.105)).toLocaleString('vi-VN')} đ (Dự kiến)` : '0 đ',
-      tax: '0 đ',
-      bank: 'Chưa có phiếu lương được chốt'
-    };
-  };
+  // Personal salary view bound to live DB payslips without string concatenation or partial BHXH bug
+  const salaryData = buildPortalSalaryView(myPayslips, currentRole);
 
-  const salaryData = getSalaryData();
-
-  const handleClockToggle = async () => {
-    setClockLoading(true);
-    setPunchMessage('');
-    try {
-      if (!isClockedIn) {
-        await attendanceService.checkIn({ method: 'manual' });
-        const now = new Date();
-        setClockInTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-        setIsClockedIn(true);
-        setPunchMessage('Đã chấm công vào ca thành công!');
-        try {
-          confetti({
-            particleCount: 50,
-            spread: 60,
-            origin: { y: 0.7 }
-          });
-        } catch (e) {}
-      } else {
-        await attendanceService.checkOut({ method: 'manual' });
-        setIsClockedIn(false);
-        setPunchMessage('Đã chấm công ra ca thành công!');
-      }
-    } catch (err) {
-      console.warn('Attendance punch API fallback:', err);
-      if (!isClockedIn) {
-        const now = new Date();
-        setClockInTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-        setIsClockedIn(true);
-        setPunchMessage('Đã chấm công vào ca!');
-        try {
-          confetti({
-            particleCount: 50,
-            spread: 60,
-            origin: { y: 0.7 }
-          });
-        } catch (e) {}
-      } else {
-        setIsClockedIn(false);
-        setPunchMessage('Đã chấm công ra ca!');
-      }
-    } finally {
-      setClockLoading(false);
-      setTimeout(() => setPunchMessage(''), 4000);
-    }
-  };
-
-  // Compute live leave stats
-  const annualLeave = Array.isArray(leaveBalances)
-    ? (leaveBalances.find(b => b.leave_type_code === 'PHEP_NAM' || b.leave_type_code === 'AL') || leaveBalances[0])
-    : null;
-  const totalLeaveDays = Number(annualLeave?.entitled_days ?? annualLeave?.total_days ?? 12);
-  const usedLeaveDays = Number(annualLeave?.used_days ?? 0);
-  const remainingLeaveDays = Number(annualLeave?.remaining_days ?? Math.max(0, totalLeaveDays - usedLeaveDays));
-  const usedPercent = totalLeaveDays > 0 ? ((usedLeaveDays / totalLeaveDays) * 100).toFixed(1) : '0';
-  const remainingPercent = totalLeaveDays > 0 ? ((remainingLeaveDays / totalLeaveDays) * 100).toFixed(1) : '100';
-  const donutDash = `${remainingPercent}, 100`;
+  // Compute live leave stats without fabricating 12 days when data is missing or API failed
+  const leaveView = normalizeLeaveBalance(leaveBalances, { hasError: leaveBalanceError });
+  const {
+    hasData: hasLeaveData,
+    totalLeaveDays,
+    usedLeaveDays,
+    remainingLeaveDays,
+    usedPercent,
+    donutDash,
+    statusText: leaveStatusText,
+  } = leaveView;
 
   // Compute live calendar dates
   const now = new Date();
@@ -307,8 +231,6 @@ export default function EmployeePortalPage() {
             </div>
           </div>
         </div>
-
-
       </div>
 
       {/* 4 Fast Action Shortcuts */}
@@ -331,7 +253,7 @@ export default function EmployeePortalPage() {
 
         {/* Card 2: Payslip PDF */}
         <div 
-          onClick={() => openModal('modal3C', myPayslips[0] || { name: empName, id: empId, role: empTitle, department: empDepartment })}
+          onClick={() => openModal('modal3C', myPayslips[0] ? { ...myPayslips[0], portalSalaryView: salaryData } : { name: empName, id: empId, role: empTitle, department: empDepartment, portalSalaryView: salaryData })}
           className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs hover:shadow-md hover:border-emerald-300 transition-all cursor-pointer group flex items-center gap-3.5"
         >
           <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:scale-105 transition-transform shrink-0">
@@ -341,7 +263,9 @@ export default function EmployeePortalPage() {
             <h3 className="text-[13px] font-bold text-slate-900 group-hover:text-emerald-600 transition-colors">
               Phiếu lương điện tử
             </h3>
-            <p className="text-[11px] text-slate-500 truncate mt-0.5">Xem & tải quyết toán thu nhập</p>
+            <p className="text-[11px] text-slate-500 truncate mt-0.5">
+              {salaryData.hasPayslip ? `Thực lĩnh: ${salaryData.net}` : 'Xem & tải quyết toán thu nhập'}
+            </p>
           </div>
         </div>
 
@@ -417,8 +341,12 @@ export default function EmployeePortalPage() {
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-xl font-black text-slate-900 leading-none">{remainingLeaveDays}</span>
-                  <span className="text-[10px] font-semibold text-slate-400 mt-0.5">ngày còn</span>
+                  <span className="text-xl font-black text-slate-900 leading-none">
+                    {hasLeaveData ? remainingLeaveDays : '--'}
+                  </span>
+                  <span className="text-[10px] font-semibold text-slate-400 mt-0.5">
+                    {hasLeaveData ? 'ngày còn' : leaveStatusText}
+                  </span>
                 </div>
               </div>
 
@@ -426,18 +354,24 @@ export default function EmployeePortalPage() {
               <div className="grid grid-cols-3 gap-3 w-full text-center">
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
                   <span className="text-[11px] text-slate-500 font-medium block">Tổng cộng</span>
-                  <span className="text-sm font-bold text-slate-900 mt-0.5 block">{totalLeaveDays} ngày</span>
+                  <span className="text-sm font-bold text-slate-900 mt-0.5 block">
+                    {hasLeaveData ? `${totalLeaveDays} ngày` : leaveStatusText}
+                  </span>
                   <span className="text-[10px] text-slate-400">Hạn 31/12</span>
                 </div>
                 <div className="p-2.5 rounded-xl bg-amber-50/50 border border-amber-200">
                   <span className="text-[11px] text-slate-500 font-medium block">Đã sử dụng</span>
-                  <span className="text-sm font-bold text-amber-600 mt-0.5 block">{usedLeaveDays} ngày</span>
-                  <span className="text-[10px] text-amber-600">{usedPercent}%</span>
+                  <span className="text-sm font-bold text-amber-600 mt-0.5 block">
+                    {hasLeaveData ? `${usedLeaveDays} ngày` : leaveStatusText}
+                  </span>
+                  <span className="text-[10px] text-amber-600">{hasLeaveData ? `${usedPercent}%` : '--'}</span>
                 </div>
                 <div className="p-2.5 rounded-xl bg-blue-50/50 border border-blue-200">
                   <span className="text-[11px] text-blue-600 font-bold block">Khả dụng</span>
-                  <span className="text-sm font-bold text-blue-700 mt-0.5 block">{remainingLeaveDays} ngày</span>
-                  <span className="text-[10px] text-blue-600 font-semibold">Sẵn sàng</span>
+                  <span className="text-sm font-bold text-blue-700 mt-0.5 block">
+                    {hasLeaveData ? `${remainingLeaveDays} ngày` : leaveStatusText}
+                  </span>
+                  <span className="text-[10px] text-blue-600 font-semibold">{leaveStatusText}</span>
                 </div>
               </div>
             </div>
@@ -549,13 +483,13 @@ export default function EmployeePortalPage() {
             {/* Attendance Summary */}
             <div className="mt-2.5 pt-2.5 border-t border-dashed border-slate-200 flex items-center justify-between text-xs text-slate-600">
               <span>Đã làm: <strong className="text-emerald-700 font-bold">{isClockedIn ? '1 ngày' : '0 ngày'}</strong></span>
-              <span>Đúng giờ: <strong className="text-emerald-700 font-bold">{isClockedIn ? '100%' : '0%'}</strong></span>
-              <span>Giờ công: <strong className="text-slate-900 font-bold">{isClockedIn ? (todayAttendance?.working_hours ? `${todayAttendance.working_hours} giờ` : '8.0 giờ') : '0.0 giờ'}</strong></span>
+              <span>Trạng thái hôm nay: <strong className="text-emerald-700 font-bold">{todayAttendance?.status === 'DI_MUON' ? 'Đi muộn' : isClockedIn ? 'Đã ghi nhận' : 'Chưa chấm công'}</strong></span>
+              <span>Giờ công: <strong className="text-slate-900 font-bold">{formatPortalWorkHours(todayAttendance, isClockedIn)}</strong></span>
             </div>
           </div>
         </div>
 
-        {/* RIGHT COLUMN: Daily Tasks & Company News (Bảo mật tuyệt đối, không để lộ tiền lương) */}
+        {/* RIGHT COLUMN: Daily Tasks & Company News */}
         <div className="flex flex-col gap-6">
           {/* Card 3: Kế hoạch & Trọng tâm công việc hôm nay */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-2xs">

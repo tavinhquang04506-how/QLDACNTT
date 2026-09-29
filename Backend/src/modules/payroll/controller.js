@@ -10,7 +10,11 @@ const getPeriod = asyncHandler(async (req, res) => {
 });
 
 const calculate = asyncHandler(async (req, res) => {
-  const data = await service.calculate(req.user, req.body.period, req);
+  const data = await service.calculate(req.user, req.body.period, req, {
+    conflictResolution: req.body.conflictResolution,
+    adjustmentResolutions: req.body.adjustmentResolutions,
+    expectedSourceValues: req.body.expectedSourceValues,
+  });
   res.json({ success: true, message: `Đã tính lương tháng ${data.period} cho ${data.headcount} nhân viên`, data });
 });
 

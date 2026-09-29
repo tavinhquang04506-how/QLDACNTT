@@ -1,0 +1,32 @@
+# LABEL: R20-R23 Regression Suite (API + DB + Guard + 505+ Multi-Page Export)
+# COMMAND: node --test Backend/tests/api/r20-r23-review-fixes.test.js
+# BRANCH: bugfix/remediation-r20-r23-review-fixes
+# BASE_COMMIT: b4adde0
+# STARTED_AT: 2026-10-21T08:32:47.220Z
+# FINISHED_AT: 2026-10-21T08:32:48.686Z
+# EXIT_CODE: 0
+================================================================================
+▶ R20–R23 Review Fixes (Guard, HR Adjustments & Conflict Reconciliation, 505+ Multi-Page Export)
+  ▶ R23: current_database() guard rejects primary DB before any setup/fixture/cleanup DML
+    ✔ rejects nexus_hrms and non-*_test database names in assertTestDatabaseName (0.891ms)
+    ✔ blocks all fixture/cleanup helpers with 0 DML queries if current_database() returns nexus_hrms (1.1614ms)
+    ✔ blocks migrate.js runMigrations on nexus_hrms unless --confirm-production-db=nexus_hrms is provided (0.6138ms)
+  ✔ R23: current_database() guard rejects primary DB before any setup/fixture/cleanup DML (3.3276ms)
+  ▶ R21: Preserve all 6 HR manual adjustment fields across recalculations & reconcile conflicts
+    ✔ preserves individual, combined, and explicit-0 HR adjustments across multiple recalculations (230.3899ms)
+    ✔ detects source-vs-manual conflicts (409 ADJUSTMENT_SOURCE_CONFLICT) and supports explicit KEEP_MANUAL / USE_SOURCE reconciliation with audit logs (66.4229ms)
+  ✔ R21: Preserve all 6 HR manual adjustment fields across recalculations & reconcile conflicts (297.1846ms)
+  ▶ R22: Multi-page (> 500 payslips) pagination, completeness check & CSV reconciliation
+    ✔ paginates and reconciles 505+ payslips across 2 pages without truncation or duplicate rows (255.4287ms)
+  ✔ R22: Multi-page (> 500 payslips) pagination, completeness check & CSV reconciliation (255.7568ms)
+✔ R20–R23 Review Fixes (Guard, HR Adjustments & Conflict Reconciliation, 505+ Multi-Page Export) (892.7606ms)
+ℹ tests 6
+ℹ suites 4
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1390.0845
+
+EXIT_CODE=0

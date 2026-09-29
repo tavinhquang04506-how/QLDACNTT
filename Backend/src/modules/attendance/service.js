@@ -8,6 +8,7 @@ const { signQrToken, verifyQrToken, consumeQrToken, QR_TTL_SECONDS } = require('
 
 const { getCurrentKioskCode, validateKioskCode } = require('./kioskCode');
 const { validateLocation, OFFICE_LOCATION } = require('./gpsValidator');
+const settingsService = require('../settings/service');
 
 const NOT_LINKED = 'Tài khoản chưa được liên kết với hồ sơ nhân viên';
 const requireEmployee = (user) => {
@@ -44,7 +45,7 @@ async function insertCheckIn(executor, employeeId, method, gps = {}) {
       method || 'code_gps', 
       gps.gpsLat ?? null, 
       gps.gpsLng ?? null, 
-      gps.address ?? (gps.gpsLat ? OFFICE_LOCATION.name : null),
+      gps.address ?? (gps.gpsLat != null ? OFFICE_LOCATION.name : null),
       gps.distance ?? null
     ]
   );
@@ -52,33 +53,82 @@ async function insertCheckIn(executor, employeeId, method, gps = {}) {
 }
 
 function getKioskCode() {
-  return getCurrentKioskCode();
+  return {
+    ...getCurrentKioskCode(),
+    mode: 'TOTP_6_DIGIT',
+    qrPunchEndpoint: '/api/attendance/kiosk/punch',
+  };
 }
 
-async function checkIn(user, body) {
-  const employeeId = requireEmployee(user);
+const SELF_PUNCH_METHODS = new Set(['gps', 'code', 'code_gps']);
 
-  // 1. Kiểm tra mã 6 số nếu có gửi lên hoặc phương thức là code_gps
-  if (body.code) {
-    const isCodeValid = validateKioskCode(body.code);
-    if (!isCodeValid) {
+async function validateSelfPunchPayload(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw badRequest('Dữ liệu chấm công không hợp lệ');
+  }
+  const method = body.method || 'code_gps';
+  if (!SELF_PUNCH_METHODS.has(method)) {
+    throw badRequest('Phương thức tự chấm công không hợp lệ (chỉ hỗ trợ gps, code hoặc code_gps)');
+  }
+
+  const needsCode = method === 'code' || method === 'code_gps';
+  const needsGps = method === 'gps' || method === 'code_gps';
+
+  if (needsCode) {
+    const rawCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!/^\d{6}$/.test(rawCode)) {
+      throw badRequest('Mã code Kiosk bắt buộc gồm đúng 6 chữ số');
+    }
+    if (!validateKioskCode(rawCode)) {
+      throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
+    }
+  } else if (body.code !== undefined && body.code !== null && body.code !== '') {
+    const rawCode = String(body.code).trim();
+    if (!/^\d{6}$/.test(rawCode) || !validateKioskCode(rawCode)) {
       throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
     }
   }
 
-  // 2. Kiểm tra GPS Geofencing (3 vùng thông minh)
-  let loc = { valid: true, distance: null, message: null };
-  if (body.gpsLat != null && body.gpsLng != null) {
-    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy);
+  let loc = { valid: true, distance: null, message: null, office: null };
+  if (needsGps) {
+    if (
+      typeof body.gpsLat !== 'number' ||
+      !Number.isFinite(body.gpsLat) ||
+      body.gpsLat < -90 ||
+      body.gpsLat > 90 ||
+      typeof body.gpsLng !== 'number' ||
+      !Number.isFinite(body.gpsLng) ||
+      body.gpsLng < -180 ||
+      body.gpsLng > 180
+    ) {
+      throw badRequest('Phương thức chấm công GPS bắt buộc cung cấp đầy đủ tọa độ (gpsLat, gpsLng) hợp lệ');
+    }
+    const sys = await settingsService.getSettings(db);
+    const radiusGreen = Number(sys.gps_radius_meters) || OFFICE_LOCATION.radiusGreen;
+    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy, {
+      officeLat: sys.office_lat,
+      officeLng: sys.office_lng,
+      officeName: sys.office_name,
+      radiusGreen,
+      radiusYellow: Math.max(radiusGreen * 4, 1000),
+    });
     if (!loc.valid) {
       throw badRequest(loc.message);
     }
   }
 
-  const row = await insertCheckIn(db, employeeId, body.method || 'code_gps', {
+  const dbMethod = method === 'code' ? 'code_gps' : method;
+  return { method, dbMethod, loc };
+}
+
+async function checkIn(user, body) {
+  const employeeId = requireEmployee(user);
+  const { dbMethod, loc } = await validateSelfPunchPayload(body);
+
+  const row = await insertCheckIn(db, employeeId, dbMethod, {
     ...body,
     distance: loc.distance,
-    address: body.address || (body.gpsLat ? loc.office : null)
+    address: body.address || (body.gpsLat != null ? loc.office : null)
   });
   if (!row) throw conflict('Bạn đã check-in hôm nay rồi');
   return { 
@@ -90,23 +140,7 @@ async function checkIn(user, body) {
 
 async function checkOut(user, body) {
   const employeeId = requireEmployee(user);
-
-  // 1. Kiểm tra mã 6 số nếu có gửi lên
-  if (body.code) {
-    const isCodeValid = validateKioskCode(body.code);
-    if (!isCodeValid) {
-      throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
-    }
-  }
-
-  // 2. Kiểm tra GPS Geofencing
-  let loc = { valid: true, distance: null, message: null };
-  if (body.gpsLat != null && body.gpsLng != null) {
-    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy);
-    if (!loc.valid) {
-      throw badRequest(loc.message);
-    }
-  }
+  const { dbMethod, loc } = await validateSelfPunchPayload(body);
 
   const { rows } = await db.query(
     `UPDATE attendance_logs SET 
@@ -119,10 +153,10 @@ async function checkOut(user, body) {
      RETURNING *`,
     [
       employeeId, 
-      body.method || 'code_gps',
+      dbMethod,
       body.gpsLat ?? null,
       body.gpsLng ?? null,
-      body.address || (body.gpsLat ? loc.office : null)
+      body.address || (body.gpsLat != null ? loc.office : null)
     ]
   );
   if (rows[0]) return { row: rows[0], message: hoursMessage(rows[0]), location: loc };
@@ -154,6 +188,7 @@ async function kioskPunch(body) {
   consumeQrToken(claims);
 
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const emp = await client.query('SELECT id, status FROM employees WHERE id = $1', [claims.employeeId]);
     if (emp.rows.length === 0) throw notFound('Không tìm thấy nhân viên');
     if (emp.rows[0].status === 'DA_NGHI_VIEC') throw conflict('Nhân viên đã nghỉ việc');
@@ -215,6 +250,7 @@ async function list(user, query, scope) {
 /** HR/CEO correction of one day (upsert). The DB trigger recomputes late minutes, hours and status from the times. */
 async function adjust(actor, body, req) {
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const emp = await client.query('SELECT 1 FROM employees WHERE id = $1', [body.employeeId]);
     if (emp.rows.length === 0) throw notFound('Không tìm thấy nhân viên');
 
@@ -343,4 +379,4 @@ async function live(user, scope) {
   return rows;
 }
 
-module.exports = { checkIn, checkOut, today, myQr, kioskPunch, list, adjust, timesheet, exceptions, live, getKioskCode };
+module.exports = { checkIn, checkOut, today, myQr, kioskPunch, list, adjust, timesheet, exceptions, live, getKioskCode, validateSelfPunchPayload };

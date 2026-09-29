@@ -47,50 +47,51 @@ export default function Modal4E_DepartmentManage({ isOpen, onClose }) {
   });
 
   const [filterDivision, setFilterDivision] = useState("all");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const handleAdd = async (e) => {
     e.preventDefault();
     if (!formData.name.trim()) return;
+    setErrorMsg("");
 
-    const code = formData.code ? formData.code.toUpperCase().replace(/\s+/g, '') : `D${Math.floor(100 + Math.random() * 900)}`;
+    const rawCode = formData.code ? formData.code.toUpperCase().replace(/[^A-Z0-9]/g, "") : `D${Math.floor(100 + Math.random() * 900)}`;
+    const code = rawCode.slice(0, 15);
+    if (code.length < 2) {
+      setErrorMsg("Mã phòng ban phải gồm 2-15 ký tự chữ hoặc số (A-Z, 0-9)");
+      return;
+    }
+
+    setSubmitting(true);
     try {
       await api.post('/departments', {
         code,
-        name: formData.name,
+        name: formData.name.trim(),
         description: `Khối ${formData.division}`,
       });
-      fetchDepartments();
+      await fetchDepartments();
+      setFormData({ name: "", code: "", manager: "", division: "Vận Hành", quota: "10" });
+      try {
+        confetti({
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.6 }
+        });
+      } catch {}
     } catch (err) {
-      console.warn('API add department fallback:', err);
-      const newDept = {
-        id: `DEPT-${code}`,
-        name: formData.name,
-        code,
-        manager: formData.manager || "Chưa bổ nhiệm",
-        staffCount: parseInt(formData.quota) || 0,
-        division: formData.division,
-      };
-      setDepartments([newDept, ...departments]);
+      setErrorMsg(err?.message || "Không thể tạo phòng ban mới. Vui lòng kiểm tra mã phòng ban hoặc quyền truy cập.");
+    } finally {
+      setSubmitting(false);
     }
-
-    setFormData({ name: "", code: "", manager: "", division: "Vận Hành", quota: "10" });
-
-    try {
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.6 }
-      });
-    } catch (e) {}
   };
 
   const handleDelete = async (id) => {
+    setErrorMsg("");
     try {
       await api.delete(`/departments/${id}`);
-      setDepartments(departments.filter(d => d.id !== id));
+      await fetchDepartments();
     } catch (err) {
-      console.warn('API delete department fallback:', err);
-      setDepartments(departments.filter(d => d.id !== id));
+      setErrorMsg(err?.message || "Không thể xóa phòng ban này (có thể phòng ban đang có nhân sự hoạt động).");
     }
   };
 
@@ -108,6 +109,11 @@ export default function Modal4E_DepartmentManage({ isOpen, onClose }) {
       maxWidth="max-w-4xl"
     >
       <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
+        {errorMsg && (
+          <div className="md:col-span-3 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold">
+            {errorMsg}
+          </div>
+        )}
         {/* Form add department */}
         <div className="md:col-span-1 bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col gap-4">
           <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">

@@ -5,5 +5,7 @@ npm-debug.log
 !.env.docker.example
 tests
 coverage
+storage
+storage/*
 .git
 .gitignore

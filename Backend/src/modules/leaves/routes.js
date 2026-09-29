@@ -12,6 +12,7 @@ router.post('/', requirePermission('leave.create'), validate({ body: createBody 
 router.get('/', requirePermission('leave.read'), validate({ query: listQuery }), controller.list);
 router.get('/calendar', requirePermission('leave.read'), validate({ query: calendarQuery }), controller.calendar);
 router.get('/types', controller.types);
+router.get('/holidays', requirePermission('leave.read'), controller.holidays);
 router.get('/balances/:employeeId', requirePermission('leave.read'), validate({ params: employeeParam }), controller.balances);
 router.get('/:id', requirePermission('leave.read'), validate({ params: idParam }), controller.get);
 router.patch('/:id/approve', requirePermission('leave.approve'), validate({ params: idParam, body: approveBody }), controller.approve);

@@ -47,9 +47,21 @@ services:
       JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_nexus_docker_2026_change_in_production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
       APP_TIMEZONE: Asia/Ho_Chi_Minh
+      STORAGE_ROOT: /app/storage
+      NOTICE_ATTACHMENTS_DIR: /app/storage/notice_attachments
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost,http://127.0.0.1
+      AI_ENABLED: ${AI_ENABLED:-false}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-20000}
+      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-1200}
+      AI_MAX_TOOL_ROUNDS: ${AI_MAX_TOOL_ROUNDS:-3}
+      AI_MAX_MESSAGE_CHARS: ${AI_MAX_MESSAGE_CHARS:-4000}
+      AI_REQUESTS_PER_MINUTE: ${AI_REQUESTS_PER_MINUTE:-10}
     ports:
       - "${PORT:-8000}:8000"
+    volumes:
+      - nexus-storage-data:/app/storage
     depends_on:
       db:
         condition: service_healthy
@@ -86,3 +98,5 @@ networks:
 volumes:
   nexus-db-data:
     name: nexus-db-data
+  nexus-storage-data:
+    name: nexus-storage-data

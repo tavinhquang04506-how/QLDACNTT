@@ -1,0 +1,8 @@
+=== [R16-R19 REPRODUCTION BEFORE FIX] ===
+TIMESTAMP=2026-10-21T06:18:24.737Z
+[R16 REPRODUCED] Read-only application DB schema query: {"db":"nexus_hrms","versions":null,"holidays":null,"snapshot":false}
+[R17 REPRODUCED] SettingsPage before fix: {"hasDefaultInit":true,"saveDisabledExpr":"saving || loading","handleSaveChecksLoaded":false}
+[R18 SERVICE REPRODUCED] payrollService.lock() succeeded on stale payslip (actual_work_days=0 vs att_days=1) with acknowledgeAnomalies=false after 9 mock queries
+[R18 DB STALE LOCK REPRODUCED] {"lockStaleStatus":"DA_CHOT","payslipWorkDaysAtLock":0,"liveAttendanceDays":10}
+[R18 DB RECALC BONUS WIPE REPRODUCED] {"bonusBeforeRecalc":5000000,"bonusAfterRecalc":0,"noteAfterRecalc":null}
+[R19 REPRODUCED] Naive substring .includes() on swapped-row CSV: {"naiveIncludesPass":true,"actualRowForNvA":"NV-A,Nguyß╗àn V─ân A,29500000 (wrong amount)"}

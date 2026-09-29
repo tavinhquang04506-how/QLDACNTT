@@ -7,16 +7,11 @@ const path = require('path');
 const { Client } = require('pg');
 const config = require('../src/config/env');
 const { runMigrations } = require('./migrate');
-
-function assertTestDatabaseName(name) {
-  if (typeof name !== 'string' || !/^[a-z0-9_]+_test$/.test(name)) {
-    throw new Error(`Refusing to use database "${name}": test database name must match /^[a-z0-9_]+_test$/ (must end with _test)`);
-  }
-}
+const { assertTestDatabaseName, assertSafeTestDatabase } = require('../src/utils/testDbGuard');
 
 async function main() {
   const dbName = config.db.database;
-  assertTestDatabaseName(dbName);
+  assertTestDatabaseName(dbName, 'scripts/test-setup.js target database');
 
   const admin = new Client({ ...config.db, database: 'postgres' });
   await admin.connect();
@@ -26,12 +21,14 @@ async function main() {
 
   const client = new Client(config.db);
   await client.connect();
+  await assertSafeTestDatabase(client, 'scripts/test-setup.js schema execution');
   const schemaSql = fs.readFileSync(path.resolve(__dirname, '../../database/schema.sql'), 'utf8');
   await client.query(schemaSql);
   await client.end();
 
   const db = require('../src/config/db');
-  const applied = await runMigrations({ pool: db.pool });
+  await assertSafeTestDatabase(db, 'scripts/test-setup.js migration execution');
+  const applied = await runMigrations({ pool: db.pool, expectedDatabase: dbName });
   await db.pool.end();
   if (applied.length) console.log(`✅ Applied ${applied.length} migration(s): ${applied.join(', ')}`);
 

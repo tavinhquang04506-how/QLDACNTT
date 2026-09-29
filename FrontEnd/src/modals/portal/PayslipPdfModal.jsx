@@ -1,28 +1,38 @@
 import React from 'react';
 import AppleModal from '../../components/motion/AppleModal';
-import { Printer, Download, CheckCircle2, ShieldCheck, QrCode, Award } from 'lucide-react';
+import { Printer, Download, ShieldCheck, QrCode } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
 import { numberToVietnameseWords } from '../../utils/numberToVietnameseWords';
 
 export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
-  const { currentRole } = useAuth();
-  const employeeName = payload?.full_name || payload?.employee_name || payload?.name || currentRole?.name || 'Nhân sự';
-  const employeeId = payload?.employee_id || payload?.id || currentRole?.id || '';
+  const { currentRole, user } = useAuth();
+  const employeeName = payload?.full_name || payload?.employee_name || payload?.name || user?.name || currentRole?.name || 'Nhân sự';
+  const employeeId = payload?.employee_id || payload?.id || user?.employeeId || currentRole?.id || '';
   const role = payload?.job_title || payload?.role || currentRole?.title || 'Chuyên viên';
-  const department = payload?.department_name || payload?.department || payload?.dept || currentRole?.department || 'Khối Chuyên Môn';
-  const baseSalary = Number(payload?.base_salary ?? payload?.contractSalary ?? currentRole?.baseSalary ?? 0);
-  const kpiBonus = Number(payload?.bonus ?? payload?.ot_pay ?? 0);
+  const department = payload?.department_name || payload?.department || payload?.dept || currentRole?.department || 'Chưa phân phòng';
+  const baseSalary = Number(payload?.base_salary ?? payload?.contractSalary ?? 0);
+  const kpiBonus = Number(payload?.bonus ?? 0) + Number(payload?.ot_pay ?? 0);
   const lunchAllowance = Number(payload?.allowances ?? payload?.allowance ?? 0);
   const gross = Number(payload?.gross_income ?? payload?.gross_salary ?? (baseSalary + kpiBonus + lunchAllowance));
-  const bhxh = Number(payload?.bhxh_amount ?? payload?.insurance_deduction ?? Math.round(baseSalary * 0.105));
-  const tax = Number(payload?.pit_amount ?? payload?.tax_deduction ?? Math.round(baseSalary * 0.08));
-  const totalDeduction = Number(payload?.total_deductions ?? payload?.total_deduction ?? (bhxh + tax));
-  const rawNet = Number(payload?.net_salary);
-  const net = !isNaN(rawNet) && rawNet > 0 ? rawNet : (gross - totalDeduction);
+  const bhxh = Number(payload?.bhxh_amount ?? payload?.insurance_deduction ?? 0);
+  const bhyt = Number(payload?.bhyt_amount ?? 0);
+  const bhtn = Number(payload?.bhtn_amount ?? 0);
+  const totalInsurance = bhxh + bhyt + bhtn;
+  const tax = Number(payload?.pit_amount ?? payload?.tax_deduction ?? 0);
+  const totalDeduction = Number(payload?.total_deductions ?? payload?.total_deduction ?? (totalInsurance + tax));
+  const rawNet = payload?.net_salary !== undefined && payload?.net_salary !== null ? Number(payload.net_salary) : null;
+  const net = rawNet !== null && !Number.isNaN(rawNet) ? rawNet : Math.max(0, gross - totalDeduction);
+
+  const actualWorkDays = payload?.actual_work_days ?? payload?.work_days ?? null;
+  const standardWorkDays = Number(payload?.standard_work_days ?? 22) || 22;
+  const bankAccount = payload?.bank_account || null;
+  const bankName = payload?.bank_name || null;
+  const payslipStatus = payload?.status || payload?.period_status || 'DU_THAO';
 
   const amountInWords = numberToVietnameseWords(net);
   const period = payload?.period || new Date().toISOString().slice(0, 7);
+  const payslipCode = payload?.id || `PAY-${String(period).replace('-', '')}-${employeeId}`;
 
   const handlePrint = () => {
     window.print();
@@ -59,10 +69,16 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
               </div>
             </div>
             <div className="text-right">
-              <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 text-[10px]">
-                ĐÃ CHI TRẢ THÀNH CÔNG
+              <span className={`px-2 py-0.5 rounded font-bold border text-[10px] ${
+                payslipStatus === 'DA_CHUYEN_KHOAN'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : payslipStatus === 'DA_CHOT'
+                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                  : 'bg-amber-50 text-amber-700 border-amber-200'
+              }`}>
+                {payslipStatus === 'DA_CHUYEN_KHOAN' ? 'ĐÃ CHI TRẢ' : payslipStatus === 'DA_CHOT' ? 'ĐÃ CHỐT SỔ' : 'BẢN DỰ THẢO'}
               </span>
-              <div className="text-[10px] text-slate-400 mt-1 font-mono">Bút toán: #PAY-202608-{employeeId}</div>
+              <div className="text-[10px] text-slate-400 mt-1 font-mono">Bút toán: #{payslipCode}</div>
             </div>
           </div>
 
@@ -71,7 +87,7 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
             <h2 className="text-base font-bold uppercase text-slate-900 font-display">
               PHIẾU LƯƠNG VÀ QUYẾT TOÁN THU NHẬP CÁ NHÂN
             </h2>
-            <p className="text-slate-500 text-[11px] mt-0.5">Kỳ tính lương: Tháng 08/2026 (01/08 - 31/08/2026)</p>
+            <p className="text-slate-500 text-[11px] mt-0.5">Kỳ tính lương: {period}</p>
           </div>
 
           {/* Employee Info Grid */}
@@ -89,10 +105,18 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
               <span className="text-slate-500">Phòng ban:</span> <span className="text-slate-800">{department}</span>
             </div>
             <div>
-              <span className="text-slate-500">Tài khoản nhận:</span> <span className="font-mono text-slate-800">1903 8847 2919 • Techcombank</span>
+              <span className="text-slate-500">Tài khoản nhận:</span>{' '}
+              <span className="font-mono text-slate-800">
+                {bankAccount && bankName ? `${bankAccount} • ${bankName}` : bankAccount || 'Chưa cập nhật tài khoản ngân hàng'}
+              </span>
             </div>
             <div>
-              <span className="text-slate-500">Ngày công chuẩn:</span> <strong className="text-blue-600">22 / 22 ngày (100%)</strong>
+              <span className="text-slate-500">Ngày công thực tế:</span>{' '}
+              <strong className="text-blue-600">
+                {actualWorkDays !== null
+                  ? `${actualWorkDays} / ${standardWorkDays} ngày (${Math.round((Number(actualWorkDays) / standardWorkDays) * 100)}%)`
+                  : 'Chưa ghi nhận'}
+              </strong>
             </div>
           </div>
 
@@ -109,11 +133,11 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
                     <td className="p-2 text-right font-mono font-bold text-slate-900">+{baseSalary.toLocaleString('vi-VN')} đ</td>
                   </tr>
                   <tr className="hover:bg-slate-50">
-                    <td className="p-2 text-slate-700">2. Thưởng hiệu suất KPI Sprint (Đạt 96.0%)</td>
+                    <td className="p-2 text-slate-700">2. Phụ cấp làm thêm giờ / thưởng hiệu suất</td>
                     <td className="p-2 text-right font-mono font-bold text-emerald-600">+{kpiBonus.toLocaleString('vi-VN')} đ</td>
                   </tr>
                   <tr className="hover:bg-slate-50">
-                    <td className="p-2 text-slate-700">3. Phụ cấp ăn trưa và thiết bị công nghệ</td>
+                    <td className="p-2 text-slate-700">3. Phụ cấp định kỳ theo quy chế</td>
                     <td className="p-2 text-right font-mono font-bold text-slate-900">+{lunchAllowance.toLocaleString('vi-VN')} đ</td>
                   </tr>
                   <tr className="bg-slate-50 font-bold">
@@ -131,8 +155,8 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
               <table className="w-full border border-slate-200 rounded-lg overflow-hidden">
                 <tbody className="divide-y divide-slate-100">
                   <tr className="hover:bg-slate-50">
-                    <td className="p-2 text-slate-700">1. Trích nộp BHXH, BHYT, BHTN (10.5%)</td>
-                    <td className="p-2 text-right font-mono text-rose-600 font-semibold">-{bhxh.toLocaleString('vi-VN')} đ</td>
+                    <td className="p-2 text-slate-700">1. Trích nộp BHXH, BHYT, BHTN người lao động</td>
+                    <td className="p-2 text-right font-mono text-rose-600 font-semibold">-{totalInsurance.toLocaleString('vi-VN')} đ</td>
                   </tr>
                   <tr className="hover:bg-slate-50">
                     <td className="p-2 text-slate-700">2. Thuế thu nhập cá nhân tạm khấu trừ</td>
@@ -163,53 +187,33 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
 
             <div className="text-center p-2 bg-white/10 backdrop-blur rounded-xl border border-white/20">
               <QrCode className="w-10 h-10 text-white mx-auto" />
-              <span className="text-[9px] font-mono text-blue-100 block mt-1">Xác thực số</span>
+              <span className="text-[9px] font-mono text-blue-100 block mt-1">Mã đối chiếu</span>
             </div>
           </div>
 
-          {/* Corporate Seal & E-Signature Section */}
+          {/* Approval & Verification Section */}
           <div className="mt-6 pt-5 border-t border-slate-200 grid grid-cols-3 gap-4 text-center">
             <div>
               <p className="text-[11px] font-bold text-slate-700 uppercase">Người Lập Phiếu</p>
-              <p className="text-[10px] text-slate-400 italic mb-10">(Ký, họ tên)</p>
-              <p className="text-[11px] font-bold text-slate-800">Nguyễn Thu Thảo</p>
-              <p className="text-[9px] text-slate-400">Chuyên viên C&B</p>
+              <p className="text-[10px] text-slate-400 italic mb-6">(Hệ thống hạch toán)</p>
+              <p className="text-[11px] font-bold text-slate-800">Bộ phận C&B</p>
+              <p className="text-[9px] text-slate-400">Phòng Nhân sự</p>
             </div>
 
-            <div className="relative">
-              <p className="text-[11px] font-bold text-slate-700 uppercase">Giám Đốc Nhân Sự</p>
-              <p className="text-[10px] text-slate-400 italic mb-2">(Ký điện tử & duyệt)</p>
-              
-              {/* E-Signature Box */}
-              <div className="inline-block p-1.5 border border-emerald-300 bg-emerald-50/50 rounded-lg text-left my-1 shadow-2xs">
-                <div className="flex items-center gap-1 text-[9px] font-bold text-emerald-800">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                  KÝ SỐ VNPT-CA
-                </div>
-                <div className="text-[8px] text-emerald-700 font-mono">05/09/2026 08:30:15</div>
-                <div className="text-[9px] font-semibold text-slate-800">Trần Mai Hương</div>
-              </div>
-
-              <p className="text-[11px] font-bold text-slate-800 mt-1">Trần Mai Hương</p>
-              <p className="text-[9px] text-slate-400">Giám đốc Khối Nhân sự</p>
+            <div>
+              <p className="text-[11px] font-bold text-slate-700 uppercase">Kiểm Soát Nhân Sự</p>
+              <p className="text-[10px] text-slate-400 italic mb-6">(Đối chiếu công & lương)</p>
+              <p className="text-[11px] font-bold text-slate-800">Khối Quản trị Nguồn Nhân lực</p>
+              <p className="text-[9px] text-slate-400">Xác nhận dữ liệu kỳ {period}</p>
             </div>
 
-            <div className="relative">
-              <p className="text-[11px] font-bold text-slate-700 uppercase">Tổng Giám Đốc</p>
-              <p className="text-[10px] text-slate-400 italic mb-2">(Phê duyệt chi trả)</p>
-              
-              {/* Corporate Red Seal Stamp Effect */}
-              <div className="inline-block p-1.5 border border-rose-300 bg-rose-50/50 rounded-lg text-left my-1 shadow-2xs">
-                <div className="flex items-center gap-1 text-[9px] font-bold text-rose-800">
-                  <Award className="w-3 h-3 text-rose-600 shrink-0" />
-                  FWB NEXUS CORP
-                </div>
-                <div className="text-[8px] text-rose-700 font-mono">DẤU PHÁP NHÂN SỐ</div>
-                <div className="text-[9px] font-semibold text-slate-800">Lê Vũ Ngọc Duy</div>
-              </div>
-
-              <p className="text-[11px] font-bold text-slate-800 mt-1">Lê Vũ Ngọc Duy</p>
-              <p className="text-[9px] text-slate-400">Tổng Giám Đốc (CEO)</p>
+            <div>
+              <p className="text-[11px] font-bold text-slate-700 uppercase">Phê Duyệt Chi Trả</p>
+              <p className="text-[10px] text-slate-400 italic mb-6">(Theo trạng thái sổ lương)</p>
+              <p className="text-[11px] font-bold text-slate-800">Ban Giám Đốc</p>
+              <p className="text-[9px] text-slate-400">
+                {payslipStatus === 'DA_CHUYEN_KHOAN' ? 'Đã hoàn tất lệnh chi' : payslipStatus === 'DA_CHOT' ? 'Đã chốt sổ lương' : 'Đang dự thảo'}
+              </p>
             </div>
           </div>
         </div>
@@ -218,7 +222,7 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
         <div className="flex items-center justify-between">
           <div className="text-xs text-slate-500 flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Mã bảo mật chữ ký số điện tử: <span className="font-mono text-slate-700 font-bold">SHA-256: 9e4f..88a1</span></span>
+            <span>Trích xuất từ sổ lương NEXUS HRMS • Mã tham chiếu: <span className="font-mono text-slate-700 font-bold">{payslipCode}</span></span>
           </div>
 
           <div className="flex items-center gap-3">

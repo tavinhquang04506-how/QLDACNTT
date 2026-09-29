@@ -1,0 +1,468 @@
+﻿{
+  "gate": "LIVE_GEMINI_V1_EVALUATION",
+  "status": "PASS",
+  "abortedReason": null,
+  "preflight": {
+    "passed": true,
+    "verifiedDatabase": "nexus_hrms_test",
+    "verifiedExports": [
+      "runCopilot",
+      "resetConversation",
+      "clearAiRuntimeState"
+    ],
+    "verifiedColumns": [
+      "users.id",
+      "users.email",
+      "users.role_code",
+      "users.employee_id",
+      "roles.role_code",
+      "employees.id",
+      "employees.department_id"
+    ],
+    "fixtureCheck": {
+      "provisionedRoles": [
+        "EMPLOYEE",
+        "LINE_MANAGER",
+        "HR_DIRECTOR",
+        "ADMIN",
+        "KIOSK"
+      ],
+      "syntheticEmployeeId": "NV-LIVE-EMP"
+    }
+  },
+  "model": "gemini-3.5-flash-lite",
+  "queriesUsed": 18,
+  "retriesUsed": 0,
+  "passedCount": 18,
+  "totalExecuted": 18,
+  "totalPlanned": 18,
+  "results": [
+    {
+      "id": "V1-01",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-01",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_leave_balance"
+      ],
+      "sources": [
+        "leave-balance:NV-LIVE-EMP:2026"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2238,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-02",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-02",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_leave_balance"
+      ],
+      "sources": [
+        "leave-balance:NV-LIVE-EMP:2026"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2523,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-03",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-03",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_leave_balance"
+      ],
+      "sources": [
+        "leave-balance:NV-LIVE-EMP:2026"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2383,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-04",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-04",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "empty",
+      "actualType": "empty",
+      "verified": false,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_leave_balance"
+      ],
+      "sources": [],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2370,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-05",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-05",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_attendance"
+      ],
+      "sources": [
+        "attendance:NV-LIVE-EMP:2026-09-01..2026-09-30"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2885,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-06",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-06",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_payslip"
+      ],
+      "sources": [
+        "payslip:6866"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 3043,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-07",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-06",
+      "reusedConversationFrom": "V1-06",
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_payslip"
+      ],
+      "sources": [
+        "payslip:6865"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2964,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-10",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-06",
+      "reusedConversationFrom": "V1-06",
+      "resetFirst": true,
+      "expectedType": "clarification",
+      "actualType": "clarification",
+      "verified": false,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [],
+      "sources": [],
+      "providerCalls": 0,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-11",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-11",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_my_payslip",
+        "get_my_payslip"
+      ],
+      "sources": [
+        "payslip:6866",
+        "payslip:6865"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 7367,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-13",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-13",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "clarification",
+      "actualType": "clarification",
+      "verified": false,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [],
+      "sources": [],
+      "providerCalls": 0,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 3,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-15",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-15",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "refusal",
+      "actualType": "refusal",
+      "verified": false,
+      "refused": true,
+      "refusalCodes": [
+        "FORBIDDEN_CROSS_EMPLOYEE"
+      ],
+      "toolsUsed": [
+        "get_my_payslip"
+      ],
+      "sources": [],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2125,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-17",
+      "role": "LINE_MANAGER",
+      "conversationId": "live-eval-v1-17",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_scoped_dashboard"
+      ],
+      "sources": [
+        "dashboard:department:DEPT-IT"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2525,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-18",
+      "role": "LINE_MANAGER",
+      "conversationId": "live-eval-v1-18",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "refusal",
+      "actualType": "refusal",
+      "verified": false,
+      "refused": true,
+      "refusalCodes": [
+        "FORBIDDEN_CROSS_DEPARTMENT"
+      ],
+      "toolsUsed": [
+        "get_scoped_dashboard"
+      ],
+      "sources": [],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2616,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-19",
+      "role": "LINE_MANAGER",
+      "conversationId": "live-eval-v1-19",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "get_scoped_performance"
+      ],
+      "sources": [
+        "performance:NV-LIVE-EMP"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2819,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-21",
+      "role": "ADMIN",
+      "conversationId": "live-eval-v1-21",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "answer",
+      "actualType": "answer",
+      "verified": true,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "search_policies"
+      ],
+      "sources": [
+        "policy:HB-POL-01:v2",
+        "policy:HB-POL-02:v2",
+        "policy:HB-POL-03:v2"
+      ],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2509,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-22",
+      "role": "ADMIN",
+      "conversationId": "live-eval-v1-22",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "refusal",
+      "actualType": "refusal",
+      "verified": false,
+      "refused": true,
+      "refusalCodes": [
+        "FORBIDDEN_ROLE",
+        "FORBIDDEN_SCOPE"
+      ],
+      "toolsUsed": [
+        "get_my_payslip",
+        "get_scoped_performance"
+      ],
+      "sources": [],
+      "providerCalls": 3,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 9163,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-24",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-24",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "empty",
+      "actualType": "empty",
+      "verified": false,
+      "refused": false,
+      "refusalCodes": [],
+      "toolsUsed": [
+        "search_policies"
+      ],
+      "sources": [],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2401,
+      "pass": true,
+      "failureReasons": []
+    },
+    {
+      "id": "V1-25",
+      "role": "EMPLOYEE",
+      "conversationId": "live-eval-v1-25",
+      "reusedConversationFrom": null,
+      "resetFirst": false,
+      "expectedType": "refusal",
+      "actualType": "refusal",
+      "verified": false,
+      "refused": true,
+      "refusalCodes": [
+        "POLICY_VERSION_NOT_FOUND"
+      ],
+      "toolsUsed": [
+        "search_policies"
+      ],
+      "sources": [],
+      "providerCalls": 2,
+      "retriesUsed": 0,
+      "maxRetriesGranted": 1,
+      "latencyMs": 2330,
+      "pass": true,
+      "failureReasons": []
+    }
+  ],
+  "timestamp": "2026-10-25T07:59:24.041Z"
+}

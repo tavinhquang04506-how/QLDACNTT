@@ -1,16 +1,43 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AppleDrawer from '../motion/AppleDrawer';
 import Avatar from '../common/Avatar';
-import { Send, Users, Sparkles, MessageSquare, Clock, ShieldCheck, ArrowRight, CornerDownLeft } from 'lucide-react';
+import { Send, MessageSquare } from 'lucide-react';
+import { getAccessToken } from '../../services/api';
+import projectService from '../../services/projectService';
+
+function resolveWsUrl() {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+  const apiUrl = import.meta.env.VITE_API_URL || '';
+  if (apiUrl.startsWith('http://') || apiUrl.startsWith('https://')) {
+    const base = apiUrl.replace(/\/api\/?$/, '');
+    return base.replace(/^http/, 'ws') + '/ws';
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws`;
+}
+
+function normalizeMessage(m) {
+  return {
+    id: m.id,
+    squadId: m.squadId || m.squad_id,
+    senderId: m.senderId || m.sender_id,
+    senderName: m.senderName || m.sender_name || 'Thành viên',
+    senderAvatar: m.senderAvatar || m.sender_avatar || null,
+    role: m.role || m.sender_role || 'Thành viên Squad',
+    text: m.text || m.content || '',
+    timestamp: m.timestamp || m.created_at || new Date().toISOString(),
+  };
+}
 
 export default function SquadChatDrawer({ isOpen, onClose, squad, currentUser }) {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isConnected, setIsConnected] = useState(false);
+  const [chatError, setChatError] = useState('');
   const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  const squadId = squad?.id || squad?.code || 'SQ-CORE';
+  const squadId = squad?.id || squad?.code || 'SQD-1';
   const squadName = squad?.name || squad?.title || 'Đội Ngũ Dự Án Agile (Squad)';
 
   const scrollToBottom = () => {
@@ -23,36 +50,51 @@ export default function SquadChatDrawer({ isOpen, onClose, squad, currentUser })
 
   useEffect(() => {
     if (!isOpen) return;
+    let isMounted = true;
+    setChatError('');
 
-    // Connect to backend WebSocket server
-    const wsUrl = `ws://${window.location.hostname || 'localhost'}:8000/ws`;
+    // Fetch persisted history via REST first
+    projectService.getSquadMessages(squadId)
+      .then((res) => {
+        const list = res?.data || res;
+        if (isMounted && Array.isArray(list)) {
+          setMessages(list.map(normalizeMessage));
+        }
+      })
+      .catch((err) => {
+        if (isMounted) setChatError(err?.message || 'Không thể tải lịch sử kênh chat.');
+      });
+
+    const token = getAccessToken();
+    if (!token) {
+      setIsConnected(false);
+      return;
+    }
+
+    const wsUrl = resolveWsUrl();
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
 
     ws.onopen = () => {
-      setIsConnected(true);
-      // Join squad channel
-      ws.send(JSON.stringify({
-        type: 'join-squad',
-        squadId,
-        userId: currentUser?.id || 'NV-0001',
-        userName: currentUser?.name || 'Thành viên',
-        avatar: currentUser?.avatar,
-      }));
+      ws.send(JSON.stringify({ type: 'auth', token }));
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'squad-history') {
-          if (Array.isArray(data.messages)) {
-            setMessages(data.messages);
-          }
+        if (data.type === 'auth-ok') {
+          setIsConnected(true);
+          ws.send(JSON.stringify({ type: 'join-squad', squadId }));
+        } else if (data.type === 'squad-history' && Array.isArray(data.messages)) {
+          setMessages(data.messages.map(normalizeMessage));
         } else if (data.type === 'squad-message' && data.message) {
-          setMessages(prev => {
-            if (prev.some(m => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
+          const msg = normalizeMessage(data.message);
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
           });
+        } else if (data.type === 'error') {
+          setChatError(data.message || 'Lỗi kênh chat thời gian thực.');
         }
       } catch (e) {
         console.warn('WS message parse error', e);
@@ -63,45 +105,45 @@ export default function SquadChatDrawer({ isOpen, onClose, squad, currentUser })
       setIsConnected(false);
     };
 
-    ws.onerror = (err) => {
-      console.warn('WS connection error', err);
+    ws.onerror = () => {
       setIsConnected(false);
     };
 
     return () => {
+      isMounted = false;
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close();
       }
     };
-  }, [isOpen, squadId, currentUser]);
+  }, [isOpen, squadId]);
 
-  const handleSend = (textToSend) => {
-    const text = textToSend || inputText;
-    if (!text.trim()) return;
+  const handleSend = async (textToSend) => {
+    const text = (textToSend ?? inputText).trim();
+    if (!text) return;
+    setChatError('');
 
-    const payload = {
-      type: 'squad-message',
-      squadId,
-      text: text.trim(),
-      senderId: currentUser?.id || 'NV-0001',
-      senderName: currentUser?.name || 'Nhân viên',
-      senderAvatar: currentUser?.avatar,
-      role: currentUser?.title || 'Thành viên Squad',
-    };
-
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(payload));
-    } else {
-      // Local optimistic fallback
-      const localMsg = {
-        id: 'MSG-' + Date.now(),
-        ...payload,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages(prev => [...prev, localMsg]);
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && isConnected) {
+      socketRef.current.send(JSON.stringify({
+        type: 'squad-message',
+        squadId,
+        text,
+      }));
+      setInputText('');
+      return;
     }
 
-    setInputText('');
+    try {
+      const res = await projectService.sendSquadMessage(squadId, { content: text });
+      if (!res?.success || !res?.data) {
+        setChatError(res?.message || 'Không thể gửi tin nhắn.');
+        return;
+      }
+      const saved = normalizeMessage(res.data);
+      setMessages((prev) => (prev.some((m) => m.id === saved.id) ? prev : [...prev, saved]));
+      setInputText('');
+    } catch (err) {
+      setChatError(err?.message || 'Không thể gửi tin nhắn vào kênh này.');
+    }
   };
 
   const quickChips = [
@@ -131,6 +173,12 @@ export default function SquadChatDrawer({ isOpen, onClose, squad, currentUser })
             {squadId}
           </span>
         </div>
+
+        {chatError && (
+          <div className="bg-rose-50 text-rose-700 border-b border-rose-200 px-4 py-2 text-[11px] font-semibold">
+            {chatError}
+          </div>
+        )}
 
         {/* Messages List Body */}
         <div className="flex-1 p-4 space-y-3.5 overflow-y-auto text-xs leading-relaxed custom-scrollbar">

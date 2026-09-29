@@ -1,0 +1,16 @@
+﻿Γ£ö R01 (F06): check-in and check-out reject empty body, manual/qr/kiosk self-punch, missing GPS or missing 6-digit code (217.1743ms)
+Γ£ö R02 (F09) & R03: missing attendance gets 0 workdays/0 net, blocks lock with 409, and note-only updatePayslip never mutates amounts (80.0893ms)
+Γ£ö R04 (F17/F20): leave creation rejects forged client totalDays and excludes public_holidays + weekends (58.1255ms)
+Γ£ö R05 (F12/F13/F26): system_settings drive payroll/OT by effective period and locked periods keep their snapshot (106.0161ms)
+Γ£ö R06: settingsService.getSettings propagates database errors instead of silently returning DEFAULT_SETTINGS (0.8178ms)
+Γ£ö Concurrency: simultaneous updatePayslip and lock serialize on payroll_periods FOR UPDATE without totals drift (69.8014ms)
+Γä╣ tests 6
+Γä╣ suites 0
+Γä╣ pass 6
+Γä╣ fail 0
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 1076.9814
+
+[EXIT_CODE=0]

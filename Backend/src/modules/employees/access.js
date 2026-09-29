@@ -1,6 +1,13 @@
 const { SENSITIVE_EMPLOYEE_FIELDS } = require('../../utils/redact');
 
 const HR_ROLES = ['CEO', 'HR_DIRECTOR'];
+const JOINED_SENSITIVE_FIELDS = [
+  'contract_salary',
+  'contract_no',
+  'active_contract_type',
+  'contract_start_date',
+  'contract_end_date',
+];
 
 /**
  * Remove what `user` may not see from an employee row (returns a copy).
@@ -13,6 +20,7 @@ function shapeEmployee(row, user) {
   const isOwner = Boolean(user.employeeId) && row.id === user.employeeId;
   if (HR_ROLES.includes(user.roleCode) || isOwner) return rest;
   for (const field of SENSITIVE_EMPLOYEE_FIELDS) delete rest[field];
+  for (const field of JOINED_SENSITIVE_FIELDS) delete rest[field];
   return rest;
 }
 

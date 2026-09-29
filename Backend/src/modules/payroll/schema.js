@@ -2,10 +2,31 @@ const { z } = require('zod');
 
 const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Kỳ lương phải có dạng YYYY-MM');
 const numericId = z.string().regex(/^\d{1,18}$/, 'Mã không hợp lệ');
+const resolutionAction = z.enum(['USE_SOURCE', 'KEEP_MANUAL']);
+const fieldResolutionObject = z.object({
+  action: resolutionAction,
+  expectedCurrentSourceValue: z.number().optional(),
+});
+const fieldResolutionEntry = z.union([resolutionAction, fieldResolutionObject]);
 
-const calculateBody = z.object({ period: z.string({ required_error: 'Thiếu kỳ lương' }).pipe(period) });
+const calculateBody = z.object({
+  period: z.string({ required_error: 'Thiếu kỳ lương' }).pipe(period),
+  conflictResolution: resolutionAction.optional(),
+  adjustmentResolutions: z
+    .record(
+      z.string(),
+      z.union([fieldResolutionEntry, z.record(z.string(), fieldResolutionEntry)])
+    )
+    .optional(),
+  expectedSourceValues: z
+    .record(z.string(), z.record(z.string(), z.number()))
+    .optional(),
+});
 const idParam = z.object({ id: numericId });
-const lockBody = z.object({ acknowledgeAnomalies: z.boolean().optional() });
+const lockBody = z.object({
+  acknowledgeAnomalies: z.boolean().optional().default(false),
+  note: z.string().trim().max(500).optional(),
+});
 const payslipsQuery = z.object({ period: period.optional(), page: z.string().optional(), limit: z.string().optional() });
 const updatePayslipBody = z.object({
   baseSalary: z.number().nonnegative().optional(),

@@ -1,0 +1,13 @@
+﻿=== [R08 E2E VERIFICATION START] ===
+TIMESTAMP=2026-10-21T03:44:20.806Z
+DB_NAME=nexus_hrms_test
+[SERVER] Backend listening on http://127.0.0.1:8000
+[SERVER] Frontend reachable on http://127.0.0.1:3000
+[ASSERT 1 PASS] Settings Save + Reload: UI inputs contain '36', API max_ot_per_month=36, DB max_ot_per_month=36, PIT deduction=15500000
+[ASSERT 2 PASS] Manager Scope Isolation: IT Manager depts=["DEPT-IT"] (count=7), Sales Manager depts=["DEPT-SALES"] (count=3)
+[ASSERT 3 PASS] Error Handling: PUT /api/settings(EMPLOYEE)=403, POST /api/payroll/calculate(EMPLOYEE)=403, manual punch=400, forged leave=400, settings DB failure throws=true
+[ASSERT 4 PASS] >50 Pagination: DB total=62, API total=62, page1=50, page2=12, overlap=0
+[ASSERT 5 PASS] Payroll Locked Period Export ('2028-09'): slips=63, DB count=63, sumNet=21321000, period.total_net=21321000.00, bankBatchTotal=21321000
+=== [ALL 5 R08 E2E BROWSER & CROSS-LAYER ASSERTIONS PASSED] ===
+
+[EXIT_CODE=0]

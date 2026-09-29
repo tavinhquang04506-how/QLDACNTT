@@ -1,20 +1,54 @@
 const { z } = require('zod');
 const { isoDate } = require('../employees/schema');
 
-const METHODS = ['gps', 'manual', 'qr', 'kiosk', 'code_gps', 'code'];
+const SELF_PUNCH_METHODS = ['gps', 'code_gps', 'code'];
 const STATUSES = ['DUNG_GIO', 'DI_MUON', 'VE_SOM', 'NGHI_PHEP', 'VANG_KHONG_PHEP', 'CONG_TAC', 'NGHI_LE'];
 
 const month = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Tháng phải có dạng YYYY-MM');
 const dateTime = z.string().datetime({ offset: true, message: 'Thời điểm không hợp lệ (ISO 8601)' });
 
-const punchBody = z.object({
-  method: z.enum(METHODS).default('code_gps'),
-  code: z.string().trim().length(6, 'Mã code phải gồm 6 chữ số').optional().or(z.literal('')),
-  gpsLat: z.number().min(-90).max(90).nullish(),
-  gpsLng: z.number().min(-180).max(180).nullish(),
-  address: z.string().max(500).nullish(),
-  accuracy: z.number().nullish(),
-});
+const punchBody = z
+  .object({
+    method: z.enum(SELF_PUNCH_METHODS, {
+      errorMap: () => ({ message: 'Phương thức tự chấm công chỉ hỗ trợ gps, code hoặc code_gps' }),
+    }).default('code_gps'),
+    code: z.string().trim().optional(),
+    gpsLat: z.number({ invalid_type_error: 'Vĩ độ (gpsLat) phải là số' }).min(-90).max(90).nullish(),
+    gpsLng: z.number({ invalid_type_error: 'Kinh độ (gpsLng) phải là số' }).min(-180).max(180).nullish(),
+    address: z.string().max(500).nullish(),
+    accuracy: z.number().nullish(),
+  })
+  .superRefine((val, ctx) => {
+    const needsCode = val.method === 'code' || val.method === 'code_gps';
+    const needsGps = val.method === 'gps' || val.method === 'code_gps';
+
+    if (needsCode) {
+      if (typeof val.code !== 'string' || !/^\d{6}$/.test(val.code.trim())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['code'],
+          message: 'Mã code Kiosk bắt buộc gồm đúng 6 chữ số',
+        });
+      }
+    }
+
+    if (needsGps) {
+      if (typeof val.gpsLat !== 'number' || !Number.isFinite(val.gpsLat)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['gpsLat'],
+          message: 'Phương thức chấm công GPS bắt buộc có tọa độ vĩ độ (gpsLat)',
+        });
+      }
+      if (typeof val.gpsLng !== 'number' || !Number.isFinite(val.gpsLng)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['gpsLng'],
+          message: 'Phương thức chấm công GPS bắt buộc có tọa độ kinh độ (gpsLng)',
+        });
+      }
+    }
+  });
 
 const kioskBody = z.object({ qrToken: z.string({ required_error: 'Thiếu mã QR' }).min(1, 'Thiếu mã QR') });
 

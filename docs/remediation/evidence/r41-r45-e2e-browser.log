@@ -1,0 +1,190 @@
+=== [R14-R23 UI-DRIVEN E2E VERIFICATION START] ===
+TIMESTAMP=2026-10-24T07:41:20.952Z
+DB_NAME=nexus_hrms_test (current_database()=nexus_hrms_test)
+[SERVER] Backend listening on http://127.0.0.1:8000
+[SERVER] Frontend reachable on http://127.0.0.1:3000
+[ASSERT 1 PASS] UI Settings Form Save + Reload: DOM maxOt=36, DOM pitDeduction=15500000, DOM policyEffectiveFrom=2028-06, DB system_policy_versions(2028-06)=15500000
+[ASSERT 2 PASS] UI Scope Isolation: EmpA Portal=('Nguyễn Văn An E2E', 9.5 days), EmpB Portal=('Trần Thị Bình E2E'), IT Manager DOM rows=9 (0 Sales), Sales Manager DOM rows=3 (includes NV-T98642b5f, 0 IT)
+node : ❌ Unhandled error: Error: SIMULATED_DB_FAILURE_500
+At line:1 char:1
++ node Backend/scripts/e2e-browser-verify.js 2>&1 | Tee-Object -FilePat ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (❌ Unhandled err..._DB_FAILURE_500:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    at db.withTransaction (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:595:15)
+    at Object.updateSettings (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\service.js:246:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\routes.js:32:30
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:119:3)
+❌ Unhandled error: Error: SIMULATED_DB_FAILURE_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:589:15)
+    at Object.list (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\employees\service.js:95:16)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\employees\controller.js:6:46
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\validate.js:11:5
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+❌ Unhandled error: Error: SIMULATED_DB_FAILURE_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:589:15)
+    at Object.list (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\employees\service.js:95:16)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\employees\controller.js:6:46
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\validate.js:11:5
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+[ASSERT 3a/3b PASS] UI 403/500 Error Handling: 403/500 Settings Banner="Internal Server Error", 500 Directory Banner="Internal Server Error", rendered fallback rows=0
+❌ Unhandled error: Error: SIMULATED_SETTINGS_GET_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:643:15)
+    at Object.getSettings (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\service.js:105:35)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\routes.js:17:23
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:119:3)
+❌ Unhandled error: Error: SIMULATED_SETTINGS_GET_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:643:15)
+    at Object.getSettings (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\service.js:105:35)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\routes.js:17:23
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:119:3)
+❌ Unhandled error: Error: SIMULATED_SETTINGS_GET_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:643:15)
+    at Object.getSettings (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\service.js:105:35)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\settings\routes.js:17:23
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at Route.dispatch (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:119:3)
+[ASSERT 3c (R17) PASS] Settings Load Failure Guard & Retry: failedLoadDisabled=true, putCallsBeforeRetry=0, retryLoadedMaxOt=34, savedMaxOt=32, preservedPit=14200000, failedReloadBlockedSave=true
+[ASSERT 4 PASS] UI Pagination Clicks (>50 records): DB total=55, pages=3, rows per page=[20, 20, 15], unique rendered DOM rows=55
+[ASSERT 5 (R18+R19) PASS] Multi-Period Stale Guard & Full CSV Reconciliation: R18StaleBlocked=true, R18BonusPreserved=1500000, 2028-10(reportRows=59, bankPayable=3, bankExcluded=56, netSum=83880875), 2028-09(reportRows=59, bankPayable=3, netSum=83644375), NegativeTests(crossPeriod+swappedAmounts+droppedRow)=3/3 FAILED_AS_EXPECTED
+❌ Unhandled error: Error: SIMULATED_PAYSLIPS_GET_500
+    at db.query (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:1092:15)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\payroll\service.js:1092:35
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\payroll\controller.js:38:32
+[ASSERT 6 (R20+R22) PASS] Uncreated/Error/Slow Period Guard & 505+ Multi-Page UI Export: uncreatedTotalNet="0 đ", slowInFlightDisabled=true, buttonsDisabledOnUncreated=true, modalOpenedOnUncreated=false, 2028-11MultiPageExportRows=505 (DB=505, bankPayable=469, netSum=5993379227)
+❌ Unhandled error: Error: SIMULATED_CALCULATE_500_ON_CONFLICT_SUBMIT
+    at payrollServiceBackend.calculate 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:1330:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\payroll\controller.js:13:30
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\validate.js:11:5
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+[ASSERT 7 (R24+R25+R26) PASS] R25HonestRecalcBtn=true, R24Modal(unselectedBlocked=true, cancelSafe=true, midModalStaleDetected=true, error500Safe=true, persistedDays=20.0, persistedBase=26000000.00, preservedBonus=1800000.00, auditConflicts=2), R26ExportGuards(duplicateBlocked=true, snapshotMonetaryChangeBlocked=true)
+❌ Unhandled error: Error: Simulated DB outage on GET /api/projects (R28 E2E)
+    at projectsServiceBackend.list (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:1487:21)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\projects\controller.js:5:49
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\auth.js:65:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  status: 500
+}
+❌ Unhandled error: Error: Simulated DB outage on GET /api/projects (R28 E2E)
+    at projectsServiceBackend.list (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:1487:21)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\projects\controller.js:5:49
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at authenticate (C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\auth.js:65:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  status: 500
+}
+[ASSERT 8 (R27+R28+R30) PASS] R27NetNeutralSwapBlocked=true, R28TasksErrorRetryAndZeroFallback=true, R30LineManagerZeroPeriodsCalls=true, R30AdminRestrictedGuard=true
+--- Running Scenario 9: R33 Real Task History & KPI=0 UI E2E ---
+❌ Unhandled error: Error: Lỗi kết nối khi tải lịch sử nhiệm vụ (R33 E2E)
+    at tasksServiceBackend.logs (C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:1628:23)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\tasks\controller.js:36:49
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\validate.js:11:5
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5) {
+  status: 500
+}
+[ASSERT 9 (R33) PASS] KpiZeroPreservedInDom=true, EmptyLogsNoFabricated0900=true, LogsErrorRetryRecovered=true, RealServerTaskLogsRendered=true
+--- Running Scenario 10: R35, R36, R37 & R38 AI Copilot Drawer UI E2E ---
+[ASSERT 10 (R35+R36+R37+R38+R41) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, R41MixedClauseSanitizedVerified=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true
+--- Running Scenario 11: R39 Company Notice Real File Upload & Multi-Context Download E2E ---
+❌ Unhandled error: Error: Không thể ghi tệp đính kèm lên ổ đĩa máy chủ (simulated I/O error)
+    at noticesServiceBackend.uploadAttachment 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\scripts\e2e-browser-verify.js:2047:21)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\modules\notices\controller.js:29:30
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\utils\asyncHandler.js:2:62
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\middleware\validate.js:11:5
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5)
+    at next (C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\route.js:149:13)
+    at C:\Users\tavin\Downloads\QLDACNTT\Backend\src\policies\index.js:30:12
+    at Layer.handle [as handle_request] 
+(C:\Users\tavin\Downloads\QLDACNTT\Backend\node_modules\express\lib\router\layer.js:95:5) {
+  status: 500
+}
+[ASSERT 11 (R39+R42+R44) PASS] PresetButtonsRemoved=true, OversizeRejected=true, UploadErrorHandled=true, TempRemoveCleaned=true, EditPreservedAttachment=true, IsolatedContextBDownloadSha256Match=true, ContextCOutOfScope403=true, R42NotifCenterScoped=true, R44TempStorageIsolated=true, LegacyBlobMarkedUnavailable=true
+--- Running Scenario 12: Phase B Full Website Role, Route & Viewport Matrix ---
+[ASSERT 12 (PHASE B & R45 ROUTE/RENDER/BEHAVIORAL MATRIX) PASS] RolesVerified=6/6(HR_DIRECTOR,CEO,LINE_MANAGER,EMPLOYEE,ADMIN,KIOSK), KioskTerminalElements=true, NegativeRouteGuards=true, ViewportsVerified=390/768/1440px(NoHorizontalOverflow,ModalScrollAndEscapeClose=true), GlobalUncaughtPageExceptions=0
+=== [ALL R14-R45 & PHASE B UI-DRIVEN E2E ASSERTIONS PASSED] ===

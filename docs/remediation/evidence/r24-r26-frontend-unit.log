@@ -1,0 +1,103 @@
+
+> nexus-hrms-frontend@1.0.0 test
+> node --test "tests/**/*.test.js"
+
+✔ F21: concurrent 401 requests share a single refresh call and both retry with new token (92.166ms)
+✔ F21: when refresh fails, all concurrent 401 callers reject (never resolve false-401 object) and session is cleared (22.842ms)
+▶ Attendance Calculation and Verification Tests
+  ✔ validates supported punch methods (2.8735ms)
+  ✔ determines late status based on standard morning shift 08:15 threshold (0.4308ms)
+  ✔ formats attendance time and date safely without NaN (0.3459ms)
+✔ Attendance Calculation and Verification Tests (6.4726ms)
+▶ Dashboard Data Extraction Tests
+  ✔ correctly maps overview KPI figures and attendance rate (1.7584ms)
+  ✔ handles null stats gracefully without runtime exception (0.4546ms)
+✔ Dashboard Data Extraction Tests (4.2622ms)
+▶ Data Adapters Unit Tests
+  ✔ normalizeEmployee should return safe defaults for null or empty input without fabricating salary (9.9442ms)
+  ✔ normalizeEmployee should correctly map PostgreSQL snake_case fields and preserve 0 vs null (0.8341ms)
+  ✔ R07: normalizeLeaveBalance never fabricates 12 days on empty/error state and preserves 0 remaining days (0.7571ms)
+  ✔ R07: buildPortalSalaryView converts numeric strings before adding allowances+ot_pay and sums 10.5% insurance (BHXH+BHYT+BHTN) (70.2063ms)
+  ✔ R07: formatPortalWorkHours never fabricates 8.0 giờ when employee is only checked in (0.483ms)
+  ✔ normalizeLeaveRequest should handle missing fields safely (1.4012ms)
+  ✔ normalizePayslip should handle missing fields safely and compute netSalary (1.3743ms)
+  ✔ normalizeTask should handle missing fields safely (3.3527ms)
+  ✔ normalizeDepartment should handle missing fields safely (0.6338ms)
+  ✔ formatVND formats currency correctly and distinguishes 0 from null/redacted (2.9294ms)
+  ✔ formatDateVN formats YYYY-MM-DD correctly (3.1281ms)
+✔ Data Adapters Unit Tests (110.0622ms)
+▶ Directory Filtering and Search Tests
+  ✔ filters employees by text query without case sensitivity or crashing on nulls (4.6295ms)
+  ✔ filters employees by department correctly (17.2371ms)
+  ✔ handles empty or malformed employee safely with safe defaults (0.3374ms)
+✔ Directory Filtering and Search Tests (32.2907ms)
+▶ File Export & Excel Import Unit Test Suite
+  ✔ generateCSVContent should produce UTF-8 BOM and correct rows (1.4616ms)
+  ✔ getEmployeeTemplateCSV returns valid 10-column onboarding template (2.4183ms)
+  ✔ parseCSVToEmployeeRows correctly parses uploaded CSV text (1.0589ms)
+✔ File Export & Excel Import Unit Test Suite (9.6605ms)
+▶ Leave and Payroll Logic Tests
+  ✔ correctly counts pending requests without double subtraction (2.6896ms)
+  ✔ scopes payroll visibility: filters employee payslips by role (1.4072ms)
+  ✔ formats payroll currency accurately with formatVND (40.8258ms)
+  ✔ R10: payrollService.lockPeriod defaults acknowledgeAnomalies to false and forwards audit note (1.1644ms)
+  ✔ R10 & R13: PayrollLockModal displays real anomalies, defaults acknowledgeAnomalies to false, and removes fake password/checkbox controls (1.4998ms)
+  ✔ R17: settingsPatch blocks saving when server baseline is not loaded or loadError is active, and builds partial diff patch with expectedUpdatedAt (5.7837ms)
+  ✔ R18 & R19: PayrollLockModal blocks stale payroll from being bypassed by acknowledgeAnomalies, and BankTransferModal excludes zero-net payslips (1.3484ms)
+  ✔ R20: PayrollPage never falls back to apiPeriods[0] when selected period does not exist and disables actions on uncreated, slow, or failed period loads (4.5516ms)
+  ✔ R22: fetchAllPayslipsForPeriod loads all pages (505 records across 2 pages) and rejects partial page failures or count mismatches (5.0015ms)
+  ✔ R24: Adjustment source conflict helpers enforce explicit choices without defaults, include expectedSourceValues, and invalidate stale decisions when source mutates mid-review (2.2843ms)
+  ✔ R25: PayrollPage and PayrollAnomalyModal remove fake local CEO/Exception approval state and reflect real server status (1.5911ms)
+  ✔ R26: fetchAllPayslipsForPeriod rejects duplicate employee_id, duplicate id, missing metadata, changed total, and mid-pagination monetary changes while accepting 505+ valid rows (3.4747ms)
+✔ Leave and Payroll Logic Tests (74.9162ms)
+▶ 9-Box Logic & Calculation Unit Tests
+  ✔ correctly calculates score levels with strict boundary conditions (5.5913ms)
+  ✔ correctly maps all 9 cells in the 9-box matrix (1.7736ms)
+  ✔ verifies tier groupings and grid order structure (2.3867ms)
+  ✔ computes arithmetic average safely with edge cases (1.1988ms)
+  ✔ handles period formatting and rollover calculations accurately (3.5987ms)
+✔ 9-Box Logic & Calculation Unit Tests (21.1657ms)
+▶ PIP – ngày tháng
+  ✔ cộng ngày và tính khoảng cách không lệch múi giờ (3.081ms)
+✔ PIP – ngày tháng (5.3896ms)
+▶ PIP – trạng thái và tiến độ thời gian
+  ✔ mọi trạng thái backend đều có nhãn hiển thị (2.2745ms)
+  ✔ tính phần trăm thời gian, ngày còn lại, sắp hết hạn và quá hạn nghiệm thu (0.5836ms)
+✔ PIP – trạng thái và tiến độ thời gian (3.1977ms)
+▶ PIP – mục tiêu và gợi ý nghiệm thu
+  ✔ đếm mục tiêu theo trạng thái (thiếu status = chưa đánh giá) (0.9855ms)
+  ✔ chỉ gợi ý kết quả khi mọi mục tiêu đã được đánh giá; ngưỡng đạt 80% (0.9575ms)
+  ✔ tổng hợp danh sách: chờ duyệt, đang chạy, quá hạn, tỷ lệ đạt (0.8715ms)
+✔ PIP – mục tiêu và gợi ý nghiệm thu (3.3181ms)
+▶ PIP – căn cứ từ đánh giá 9-Box
+  ✔ xếp hạng kỳ và lấy đánh giá gần nhất của từng nhân sự (0.7861ms)
+  ✔ soạn căn cứ lập PIP từ điểm và nhận xét thật (0.5392ms)
+✔ PIP – căn cứ từ đánh giá 9-Box (2.6078ms)
+▶ PIP – bản nháp
+  ✔ chia hạn mục tiêu theo các mốc đều nhau (2.2485ms)
+  ✔ báo lỗi các trường bắt buộc và hạn mục tiêu ngoài kỳ (0.9685ms)
+  ✔ làm sạch mục tiêu và escape HTML khi in (0.5865ms)
+✔ PIP – bản nháp (4.1642ms)
+▶ Profile 360 Review State & Fallback Tests
+  ✔ correctly maps 9-box cell metadata and period label for evaluated employee (3.3856ms)
+  ✔ correctly handles unreviewed or new employee state (0.2866ms)
+  ✔ correctly maps core and improvement cells for edge cases (1.4522ms)
+✔ Profile 360 Review State & Fallback Tests (7.4552ms)
+▶ Project Tasks and AI Analytics Logic Tests
+  ✔ correctly formats task review payload conforming to backend schema (2.7128ms)
+  ✔ correctly maps 9-box matrix coordinates based on performance and potential (7.1575ms)
+  ✔ normalizes task safely even with missing optional attributes (0.7248ms)
+✔ Project Tasks and AI Analytics Logic Tests (12.9354ms)
+✔ computeRiskStats correctly calculates distribution and talents at risk (1.9258ms)
+✔ isTopTalentAtRisk checks if employee is both high/mid risk and in talentIds (0.506ms)
+✔ filterRiskList filters by search, level, department and talent (0.5725ms)
+✔ SIGNAL_DEFINITIONS covers all 8 retention risk factors (1.5363ms)
+ℹ tests 63
+ℹ suites 13
+ℹ pass 63
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 414.2754
+EXIT_CODE=0 

@@ -28,10 +28,11 @@ test('insurance is 8% + 1.5% + 1% of the salary, capped at the statutory ceiling
   assert.deepEqual(insurance(0), { bhxh: 0, bhyt: 0, bhtn: 0 });
 });
 
-test('overtime pays 150% of the hourly rate (salary / 22 days / 8 hours)', () => {
+test('overtime pays 150% of the hourly rate (salary / 22 days / 8 hours) by default and honors policy overrides', () => {
   assert.equal(overtimePay(22_000_000, 0), 0);
   assert.equal(overtimePay(22_000_000, 8), 1_500_000);
   assert.equal(overtimePay(30_000_000, 10), Math.round(10 * (30_000_000 / 22 / 8) * 1.5));
+  assert.equal(overtimePay(20_000_000, 8, { standard_work_days: 20, ot_multiplier: 2.0 }), 2_000_000);
 });
 
 test('a full month at 22 million: gross, deductions and net', () => {
@@ -51,6 +52,41 @@ test('fewer worked days lower the pay, and workDays above the standard are cappe
   const capped = computePayslip({ base: 22_000_000, workDays: 30, otHours: 0, allowances: 0 });
   assert.equal(capped.salaryByDays, 22_000_000);
   assert.equal(capped.workDays, 22);
+});
+
+test('R03: 0 workDays and 0 OT/bonus yields 0 allowances, 0 insurance, and 0 net even when base > 0', () => {
+  const p = computePayslip({ base: 22_000_000, workDays: 0, otHours: 0, allowances: 1_500_000, bonus: 0 });
+  assert.equal(p.workDays, 0);
+  assert.equal(p.allowances, 0);
+  assert.equal(p.grossIncome, 0);
+  assert.equal(p.bhxh, 0);
+  assert.equal(p.bhyt, 0);
+  assert.equal(p.bhtn, 0);
+  assert.equal(p.pitAmount, 0);
+  assert.equal(p.totalDeductions, 0);
+  assert.equal(p.netSalary, 0);
+});
+
+test('R05: computePayslip honors policy personal_income_tax_deduction, dependent_deduction, employee_bhxh_rate, standard_work_days', () => {
+  const p = computePayslip({
+    base: 22_000_000,
+    workDays: 20,
+    otHours: 0,
+    allowances: 1_500_000,
+    dependents: 1,
+    policy: {
+      standard_work_days: 20,
+      personal_income_tax_deduction: 15_500_000,
+      dependent_deduction: 6_200_000,
+      employee_bhxh_rate: 10.5,
+    },
+  });
+  assert.equal(p.standardWorkDays, 20);
+  assert.equal(p.salaryByDays, 22_000_000);
+  assert.equal(p.pitDeduction, 21_700_000);
+  assert.equal(p.pitTaxable, 0);
+  assert.equal(p.pitAmount, 0);
+  assert.equal(p.netSalary, 23_500_000 - 2_310_000);
 });
 
 test('a low salary pays no income tax and never yields a negative net', () => {

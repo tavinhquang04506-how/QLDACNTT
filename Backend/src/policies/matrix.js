@@ -10,6 +10,8 @@ const matrix = {
   'attendance.report': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT },
   'attendance.kiosk': { KIOSK: ALL, HR_DIRECTOR: ALL, CEO: ALL },
   'attendance.adjust': { CEO: ALL, HR_DIRECTOR: ALL },
+  'attendance.appeals.create': { CEO: 'self', HR_DIRECTOR: 'self', LINE_MANAGER: 'self', EMPLOYEE: 'self' },
+  'attendance.appeals.read': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self' },
   'attendance.appeals.review': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT },
   'contract.read': { CEO: ALL, HR_DIRECTOR: ALL, EMPLOYEE: 'self' },
   'contract.manage': { CEO: ALL, HR_DIRECTOR: ALL },
@@ -64,6 +66,10 @@ const matrix = {
   'pip.track': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT },
   'dashboard.read': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self' },
   'project.create': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT },
+  'settings.read': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: ALL },
+  'settings.manage': { CEO: ALL, HR_DIRECTOR: ALL },
+  'ai.copilot': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: 'self' },
+  'ai.knowledge': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: 'self' },
 };
 
 module.exports = { matrix };
