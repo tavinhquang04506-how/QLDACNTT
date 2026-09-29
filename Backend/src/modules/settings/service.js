@@ -604,11 +604,33 @@ async function getRbacRoleMatrix(executor = db) {
     if (r.role_code) roleCounts[r.role_code] = Number(r.count) || 0;
   }
 
+  let recentAuditLogs = [];
+  try {
+    const auditRes = await executor.query(
+      `SELECT a.id, a.user_id AS "userId", u.email AS "userEmail", a.action,
+              a.table_name AS "tableName", a.record_id AS "recordId",
+              a.old_values AS "oldValues", a.new_values AS "newValues",
+              a.created_at AS "createdAt"
+         FROM audit_logs a
+         LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.table_name IN ('users', 'roles', 'system_settings')
+           OR a.action LIKE '%RBAC%'
+           OR a.action LIKE '%USER%'
+           OR a.action LIKE '%PASSWORD%'
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT 60`
+    );
+    recentAuditLogs = auditRes.rows || [];
+  } catch {
+    recentAuditLogs = [];
+  }
+
   return {
     roles: rolesList,
     matrix: baseMatrix,
     defaultMatrix: cloneDefaultRbacMatrix(),
     roleCounts,
+    recentAuditLogs,
     updatedAt,
     updatedBy,
   };
