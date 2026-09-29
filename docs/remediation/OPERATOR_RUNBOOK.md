@@ -84,6 +84,22 @@ Nếu phát hiện bất kỳ sự cố nào trong khung giờ bảo trì:
    ```
 4. Chạy đối soát đồng bộ trạng thái file (`reconcileAttachmentStorage`) và kiểm tra baseline:
    ```powershell
-   $env:DB_NAME='nexus_hrms'; node -e "const s = require('./Backend/src/modules/notices/service'); const db = require('./Backend/src/config/db'); s.reconcileAttachmentStorage(db).then(r => { console.log(r); db.pool.end(); });"
+   $env:DB_NAME='nexus_hrms'; npm run attachments:reconcile --prefix Backend
    node Backend/scripts/check-phase-a-baseline.js
    ```
+
+---
+
+## 4. Quy Trình Đối Soát Tệp Đính Kèm Định Kỳ / Sau Sự Cố (`R47`)
+
+Cơ chế `reconcileAttachmentStorage` sử dụng PostgreSQL (`company_notices.attachments`) làm nguồn sự thật duy nhất (Single Source of Truth):
+- **Tự động khi khởi động & định kỳ**: Khi `Backend/server.js` khởi động, hệ thống tự động chạy `reconcileAttachmentStorage(db)` một lần và kích hoạt tiến trình nền định kỳ (`startAttachmentReconciliationJob`, mặc định mỗi 15 phút).
+- **Chạy thủ công qua CLI**:
+  ```powershell
+  $env:DB_NAME='nexus_hrms'; npm run attachments:reconcile --prefix Backend
+  ```
+- **Nguyên tắc an toàn (Fail-Closed)**:
+  - Tệp ở trạng thái `staged` hoặc `deletion-pending` nhưng **đã được tham chiếu trong DB** (ví dụ: crash sau khi DB commit nhưng trước khi cập nhật `.meta.json`) sẽ **không bao giờ bị xóa** mà được tự động nâng cấp/khôi phục sang `bound`.
+  - Tệp `deletion-pending` không còn được bất kỳ bản ghi `company_notices` nào tham chiếu sẽ được xóa vật lý (`.bin` và `.meta.json`).
+  - Tệp `staged` quá hạn (`STAGED_TTL_MS = 2 giờ`) và không được DB tham chiếu sẽ được thu dọn.
+  - Nếu truy vấn PostgreSQL gặp lỗi hoặc mất kết nối, tiến trình đối soát/dọn dẹp sẽ **Fail-Closed** (giữ nguyên toàn bộ tệp trên đĩa, trả về `status: "FAIL_CLOSED_DB_ERROR"` và exit code `1`).
