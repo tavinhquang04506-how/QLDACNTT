@@ -6,6 +6,7 @@ const db = require('./config/db');
 const catalog = require('./catalog');
 const { authLimiter } = require('./middleware/rateLimit');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const { checkSchemaReadiness } = require('./utils/schemaReadiness');
 
 const app = express();
 
@@ -58,15 +59,32 @@ app.use('/api/ai', require('./modules/ai/routes'));
 app.get('/api/health', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW() AS server_time, current_database() AS db_name');
+    const readiness = await checkSchemaReadiness(db);
     return res.json({
       status: 'OK',
       server: 'NEXUS HR Backend API',
       database: result.rows[0].db_name,
+      schemaStatus: readiness.status,
+      schemaReady: readiness.ready,
+      pendingMigrationsCount: readiness.pendingMigrations.length,
       serverTime: result.rows[0].server_time,
       uptime: Math.floor(process.uptime()) + 's',
     });
   } catch (error) {
     return res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
+app.get('/api/health/ready', async (req, res) => {
+  try {
+    const readiness = await checkSchemaReadiness(db);
+    return res.status(readiness.ready ? 200 : 503).json(readiness);
+  } catch (error) {
+    return res.status(500).json({
+      ready: false,
+      status: 'ERROR',
+      message: error.message,
+    });
   }
 });
 

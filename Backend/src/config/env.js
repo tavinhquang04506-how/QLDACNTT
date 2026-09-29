@@ -3,7 +3,11 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
 const { parseTrustProxy } = require('../utils/trustProxy');
 
-const isTest = process.env.NODE_ENV === 'test';
+const isTest =
+  process.env.NODE_ENV === 'test' ||
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.execArgv.includes('--test') ||
+  process.argv.includes('--test');
 
 const list = (value, fallback) =>
   value ? value.split(',').map((s) => s.trim()).filter(Boolean) : fallback;

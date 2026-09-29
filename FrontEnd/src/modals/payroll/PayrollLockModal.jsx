@@ -60,10 +60,15 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
     };
   }, [isOpen, periodId, payload?.anomalies]);
 
+  const staleItems = anomalies.filter((a) => a.category === 'stale' || a.type === 'PAYROLL_STALE');
   const violations = anomalies.filter((a) => a.category === 'violation');
-  const warnings = anomalies.filter((a) => a.category !== 'violation');
+  const warnings = anomalies.filter((a) => a.category !== 'violation' && a.category !== 'stale' && a.type !== 'PAYROLL_STALE');
 
   const handleConfirmLock = async () => {
+    if (staleItems.length > 0) {
+      setErrorMsg('Dữ liệu nguồn tính lương đã thay đổi sau lần tính cuối. Vui lòng tính lại bảng lương trước khi khóa sổ.');
+      return;
+    }
     setErrorMsg('');
     setIsSubmitting(true);
     try {
@@ -133,6 +138,23 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
           </div>
         )}
 
+        {staleItems.length > 0 && (
+          <div
+            data-testid="payroll-lock-stale-banner"
+            className="mt-4 p-3 bg-rose-100/90 border border-rose-300 rounded-xl text-rose-900 text-xs font-semibold flex items-start gap-2"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-700 mt-0.5" />
+            <div>
+              <span className="font-bold block">
+                Phát hiện {staleItems.length} thay đổi dữ liệu nguồn sau lần tính lương cuối (PAYROLL_STALE)
+              </span>
+              <span className="text-[11px] text-rose-800 block mt-0.5">
+                Dữ liệu chấm công, nghỉ phép hưởng lương, lương cơ bản hoặc chính sách đã thay đổi. Vui lòng tính lại bảng lương trước khi khóa sổ (checkbox xác nhận bất thường không thể bỏ qua lỗi này).
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* 1. Actual Anomaly Inspection Before Lock */}
         <div className="mt-4 space-y-2.5 text-xs">
           <div className="flex items-center justify-between">
@@ -143,6 +165,7 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
               </span>
             ) : (
               <span className="text-[11px] font-semibold text-slate-600" data-testid="payroll-lock-anomaly-summary">
+                {staleItems.length > 0 ? `${staleItems.length} nguồn lỗi thời • ` : ''}
                 {violations.length} vi phạm chặn chốt • {warnings.length} cảnh báo
               </span>
             )}
@@ -159,7 +182,8 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
               className="max-h-44 overflow-y-auto space-y-2 pr-1 border border-slate-200 rounded-xl p-2.5 bg-slate-50/70"
             >
               {anomalies.map((item, idx) => {
-                const isViolation = item.category === 'violation';
+                const isStale = item.category === 'stale' || item.type === 'PAYROLL_STALE';
+                const isViolation = item.category === 'violation' || isStale;
                 const empId = item.employee_id || item.employeeId || '';
                 const empName = item.full_name || item.name || 'Nhân sự';
                 const title = item.title || item.type || 'Bất thường';
@@ -183,7 +207,7 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
                           isViolation ? 'bg-rose-200 text-rose-800' : 'bg-amber-200 text-amber-800'
                         }`}
                       >
-                        {isViolation ? 'Chặn chốt' : 'Cảnh báo'}
+                        {isStale ? 'Cần tính lại' : isViolation ? 'Chặn chốt' : 'Cảnh báo'}
                       </span>
                     </div>
                     <p className="text-[11px] mt-1 opacity-90">{desc}</p>
@@ -270,7 +294,7 @@ export default function PayrollLockModal({ isOpen, onClose, payload }) {
           <button
             data-testid="payroll-lock-submit-btn"
             onClick={handleConfirmLock}
-            disabled={isSubmitting || isLocked || loadingAnomalies}
+            disabled={isSubmitting || isLocked || loadingAnomalies || staleItems.length > 0}
             className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
           >
             {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
