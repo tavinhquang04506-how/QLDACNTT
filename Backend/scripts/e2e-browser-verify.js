@@ -320,7 +320,7 @@ async function main() {
     assert.equal(hrLanding, '/dashboard');
 
     await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/settings`, 2200);
-    await cdp.waitForSelector('[data-testid="input-max-ot-per-month"]');
+    await cdp.waitForSelector('[data-testid="settings-save-btn"]:not([disabled])');
 
     // Fill Attendance tab inputs via DOM
     await cdp.fillInput('[data-testid="input-late-grace-minutes"]', '20');
@@ -342,7 +342,7 @@ async function main() {
 
     // Reload browser page and inspect rendered DOM input values + DB state
     await cdp.reload(2200);
-    await cdp.waitForSelector('[data-testid="input-max-ot-per-month"]');
+    await cdp.waitForSelector('[data-testid="settings-save-btn"]:not([disabled])');
     const domAttInputs = await cdp.eval(`({
       lateGrace: document.querySelector('[data-testid="input-late-grace-minutes"]')?.value,
       maxOt: document.querySelector('[data-testid="input-max-ot-per-month"]')?.value,
@@ -1586,7 +1586,176 @@ async function main() {
       '[ASSERT 9 (R33) PASS] KpiZeroPreservedInDom=true, EmptyLogsNoFabricated0900=true, LogsErrorRetryRecovered=true, RealServerTaskLogsRendered=true'
     );
 
-    console.log('=== [ALL R14-R34 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 10 (R35 & R36): AI Copilot Drawer UI E2E (REFUSED / UNVERIFIED / VERIFIED DOM states)
+    // =========================================================================
+    console.log('--- Running Scenario 10: R35 & R36 AI Copilot Drawer UI E2E ---');
+    const aiServiceBackend = require('../src/modules/ai/service');
+    await db.query(
+      `INSERT INTO leave_balances (employee_id, leave_type_id, year, total_days, used_days)
+       VALUES ($1, 'LT-AL', 2026, 12, 4)
+       ON CONFLICT (employee_id, leave_type_id, year) DO UPDATE
+       SET total_days = 12, used_days = 4`,
+      [mgrR30Acc.emp.id]
+    );
+
+    app.locals.aiTestOptions = {
+      apiKey: 'test-key-e2e-r35-r36',
+      model: 'gemini-2.5-flash',
+      requestsPerMinute: 100,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        const lastContent = body.contents[body.contents.length - 1];
+        const fnRespPart = lastContent?.parts?.find((p) => p.functionResponse);
+        const userText =
+          body.contents
+            .filter((c) => c.role === 'user' && c.parts?.some((p) => p.text))
+            .map((c) => c.parts?.map((p) => p.text || '').join(' '))
+            .pop() || '';
+
+        if (userText.includes('Xin chào trợ lý')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ text: 'Xin chào bạn! Tôi có thể hỗ trợ tra cứu phép, công, lương hoặc quy chế nội bộ.' }],
+                  },
+                },
+              ],
+            }),
+          };
+        }
+
+        if (!fnRespPart) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ functionCall: { name: 'get_my_leave_balance', args: { year: 2026 } } }],
+                  },
+                },
+              ],
+            }),
+          };
+        }
+
+        const toolResult = fnRespPart.functionResponse.response.result;
+        const b = toolResult.balances[0];
+        const replyText = userText.includes('thử phản hồi sai nguồn')
+          ? 'Năm 2026 tổng phép của bạn là 12 ngày, đã nghỉ 8 ngày và còn lại 4 ngày phép.'
+          : `Năm ${b.year}, tổng phép được cấp của bạn là ${b.entitlement} ngày, đã sử dụng ${b.used} ngày và số phép còn lại là ${b.remaining} ngày.`;
+
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  role: 'model',
+                  parts: [{ text: replyText }],
+                },
+              },
+            ],
+          }),
+        };
+      },
+    };
+
+    try {
+      await cdp.eval(`(() => {
+        const closeBtn = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes('Hủy Bỏ') || b.innerText.includes('Đóng Cửa Sổ'));
+        if (closeBtn) closeBtn.click();
+      })()`);
+      await new Promise((r) => setTimeout(r, 400));
+
+      // Open AI Copilot Drawer via Topbar button
+      await cdp.click('button[title="Mở trợ lý hỗ trợ"]', 800);
+      await cdp.waitForSelector('[data-testid="ai-copilot-drawer"]');
+
+      // 10a. Send message that triggers semantic field swap (used=8, remaining=4 vs DB used=4, remaining=8) -> REFUSED in UI
+      await cdp.fillInput(
+        '[data-testid="ai-copilot-input"]',
+        'Tôi còn bao nhiêu ngày phép năm 2026? (thử phản hồi sai nguồn)'
+      );
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
+
+      const refusedUiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          refusedBadge: lastBot?.querySelector('[data-testid="ai-msg-refused-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+          hasRetryBtn: Boolean(lastBot?.querySelector('[data-testid="ai-msg-retry-btn"]')),
+          hasSources: Boolean(lastBot?.querySelector('[data-testid="ai-msg-sources"]')),
+        };
+      })()`);
+      assert.equal(refusedUiState.verificationState, 'REFUSED', 'R35 UI: Semantic field swap must render REFUSED state');
+      assert.match(refusedUiState.refusedBadge, /ANSWER_SOURCE_MISMATCH/, 'R35 UI: Refused badge must display ANSWER_SOURCE_MISMATCH');
+      assert.equal(refusedUiState.hasRetryBtn, true, 'R35 UI: Refused message must render retry button');
+      assert.equal(refusedUiState.hasSources, false, 'R35 UI: Refused message must not render verified sources');
+      assert.equal(
+        refusedUiState.msgText.includes('đã nghỉ 8 ngày'),
+        false,
+        'R35 UI: Swapped/unverified numbers must never be shown to the user'
+      );
+
+      // 10b. Send pure greeting -> UNVERIFIED guidance state in UI
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Xin chào trợ lý!');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1000);
+
+      const unverifiedUiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          unverifiedBadge: lastBot?.querySelector('[data-testid="ai-msg-unverified-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+        };
+      })()`);
+      assert.equal(unverifiedUiState.verificationState, 'UNVERIFIED', 'R35 UI: Greeting must render UNVERIFIED state');
+      assert.match(unverifiedUiState.unverifiedBadge, /chưa trích xuất dữ liệu/i);
+      assert.match(unverifiedUiState.msgText, /Xin chào bạn/i);
+
+      // 10c. Send grounded query -> VERIFIED state with sources in UI
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Tôi còn bao nhiêu ngày phép năm 2026?');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
+
+      const verifiedUiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          verifiedBadge: lastBot?.querySelector('[data-testid="ai-msg-verified-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+          hasSources: Boolean(lastBot?.querySelector('[data-testid="ai-msg-sources"]')),
+          sourcesText: lastBot?.querySelector('[data-testid="ai-msg-sources"]')?.innerText || '',
+        };
+      })()`);
+      assert.equal(verifiedUiState.verificationState, 'VERIFIED', 'R35 UI: Grounded answer must render VERIFIED state');
+      assert.match(verifiedUiState.verifiedBadge, /Đã đối chiếu dữ liệu hệ thống/i);
+      assert.match(verifiedUiState.msgText, /còn lại là 8 ngày/i);
+      assert.equal(verifiedUiState.hasSources, true, 'R35 UI: Verified answer must render tool sources');
+      assert.match(verifiedUiState.sourcesText, /Quỹ phép cá nhân năm 2026/i);
+    } finally {
+      delete app.locals.aiTestOptions;
+      aiServiceBackend.clearAiRuntimeState();
+    }
+
+    console.log(
+      '[ASSERT 10 (R35+R36) PASS] AiCopilotRefusedDomRendered=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
+    );
+
+    console.log('=== [ALL R14-R36 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});

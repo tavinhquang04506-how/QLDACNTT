@@ -2,6 +2,7 @@
 // routes.js — AI Module Router (Grounded Gemini + Scoped Read-Only Tools)
 // ============================================
 const express = require('express');
+const db = require('../../config/db');
 const {
   runCopilot,
   resolveActorScopeFromDb,
@@ -20,14 +21,20 @@ router.post('/copilot', requirePermission('ai.copilot'), async (req, res, next) 
   try {
     const { message, conversationId, context } = req.body || {};
 
-    // R31: Always resolve authoritative actor scope (userId, employeeId, roleCode, departmentId)
-    // directly from PostgreSQL on every request, ignoring any client body/context fields.
-    const actor = await resolveActorScopeFromDb({
-      userId: req.user.userId,
-      employeeId: req.user.employeeId || null,
-      roleCode: req.user.roleCode,
-      departmentId: req.user.departmentId || null,
-    });
+    // R31 & R36: Always resolve authoritative actor scope (userId, employeeId, roleCode, departmentId)
+    // directly from PostgreSQL on every request, ignoring any client body/context fields,
+    // and mark __requireDbUser=true so pre-release re-verification fails closed if user is locked/deleted.
+    const actor = await resolveActorScopeFromDb(
+      {
+        userId: req.user.userId,
+        employeeId: req.user.employeeId || null,
+        roleCode: req.user.roleCode,
+        departmentId: req.user.departmentId || null,
+        __requireDbUser: true,
+      },
+      db,
+      { forceRefresh: true, requireDbUser: true }
+    );
 
     const testOptions =
       process.env.NODE_ENV === 'test' && req.app?.locals?.aiTestOptions
@@ -39,7 +46,10 @@ router.post('/copilot', requirePermission('ai.copilot'), async (req, res, next) 
       message,
       conversationId,
       clientContextProvided: Boolean(context && typeof context === 'object'),
-      options: testOptions,
+      options: {
+        ...testOptions,
+        requireDbUser: true,
+      },
     });
 
     res.json(result);
