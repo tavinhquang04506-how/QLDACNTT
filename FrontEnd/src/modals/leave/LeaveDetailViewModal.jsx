@@ -136,7 +136,7 @@ export default function LeaveDetailViewModal({ isOpen, onClose, payload, onAppro
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <Avatar
-              src={item.employeeAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'}
+              src={item.employeeAvatar || '/default-avatar.jpg'}
               name={item.employeeName || 'Nhân viên'}
               id={item.employeeId || 'NV-0000'}
               size="lg"

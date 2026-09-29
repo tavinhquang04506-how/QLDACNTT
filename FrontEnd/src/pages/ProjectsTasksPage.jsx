@@ -173,7 +173,7 @@ export default function ProjectsTasksPage() {
             role: e.job_title || e.role || 'Nhân sự',
             departmentId: e.department_id || '',
             departmentName: e.department_name || '',
-            avatar: e.avatar_url || e.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+            avatar: e.avatar_url || e.avatar || '/default-avatar.jpg',
             activeTasks: 0,
             workload: 0,
             kpiCapacity: 100,

@@ -1,20 +1,17 @@
-// High quality, reliable curated portrait avatars with zero broken links
+export const DEFAULT_AVATAR_URL = '/default-avatar.jpg';
+
+// Unified default avatar for all accounts across the system
 export const AVATAR_SEEDS = {
-  // Cấp 1: CEO
-  CEO: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&auto=format&fit=crop&q=80', // Lê Vũ Ngọc Duy
-  // Cấp 2A: HRD
-  HRD: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=200&auto=format&fit=crop&q=80', // Trần Mai Hương
-  // Cấp 2B: Team Lead
-  LEAD: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80', // Vũ Đình Khang
-  // Cấp 3: Employee
-  EMPLOYEE: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=200&auto=format&fit=crop&q=80', // Phạm Minh Quân
-  // Other staff
-  FEMALE_1: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=200&auto=format&fit=crop&q=80', // Female Avatar 1
-  MALE_1: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=200&auto=format&fit=crop&q=80', // Male Avatar 1
-  FEMALE_2: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80', // Female Avatar 2
-  MALE_2: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=200&auto=format&fit=crop&q=80', // Male Avatar 2
-  FEMALE_3: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&auto=format&fit=crop&q=80', // Female Avatar 3
-  MALE_3: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&auto=format&fit=crop&q=80', // Male Avatar 3
+  CEO: DEFAULT_AVATAR_URL,
+  HRD: DEFAULT_AVATAR_URL,
+  LEAD: DEFAULT_AVATAR_URL,
+  EMPLOYEE: DEFAULT_AVATAR_URL,
+  FEMALE_1: DEFAULT_AVATAR_URL,
+  MALE_1: DEFAULT_AVATAR_URL,
+  FEMALE_2: DEFAULT_AVATAR_URL,
+  MALE_2: DEFAULT_AVATAR_URL,
+  FEMALE_3: DEFAULT_AVATAR_URL,
+  MALE_3: DEFAULT_AVATAR_URL,
 };
 
 // Gradient color palettes for initials
@@ -30,7 +27,6 @@ const GRADIENTS = [
 
 /**
  * Get 2-character uppercase initials from full Vietnamese name
- * e.g. "Trần Mai Hương" -> "MH", "Lê Vũ Ngọc Duy" -> "ND", "Phạm Minh Quân" -> "MQ"
  */
 export function getInitials(name = '') {
   if (!name) return 'HR';
@@ -54,25 +50,11 @@ export function getGradientForName(name = '') {
 }
 
 /**
- * Return reliable avatar URL with smart fallback
+ * Return unified default avatar URL
  */
-export function getSafeAvatar(src, name = '', id = '') {
-  // If src is a broken googleusercontent URL, replace with reliable Unsplash portrait
-  if (!src || src.includes('googleusercontent.com')) {
-    if (name.includes('Hương')) return AVATAR_SEEDS.HRD;
-    if (name.includes('Duy')) return AVATAR_SEEDS.CEO;
-    if (name.includes('Khang')) return AVATAR_SEEDS.LEAD;
-    if (name.includes('Quân')) return AVATAR_SEEDS.EMPLOYEE;
-    if (name.includes('Chi')) return AVATAR_SEEDS.FEMALE_1;
-    if (name.includes('Tuấn')) return AVATAR_SEEDS.MALE_1;
-    if (name.includes('Trang')) return AVATAR_SEEDS.FEMALE_2;
-    if (name.includes('Long')) return AVATAR_SEEDS.MALE_2;
-    if (name.includes('Thảo')) return AVATAR_SEEDS.FEMALE_3;
-
-    // Default fallback by id hash
-    const keys = Object.keys(AVATAR_SEEDS);
-    const charCode = (id || name).charCodeAt(0) || 65;
-    return AVATAR_SEEDS[keys[charCode % keys.length]];
+export function getSafeAvatar(src) {
+  if (!src || src.includes('googleusercontent.com') || src.includes('unsplash.com') || src.includes('pravatar.cc')) {
+    return DEFAULT_AVATAR_URL;
   }
   return src;
 }

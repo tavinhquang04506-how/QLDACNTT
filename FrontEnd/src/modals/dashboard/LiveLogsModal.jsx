@@ -27,7 +27,7 @@ export default function LiveLogsModal({ isOpen, onClose }) {
           gate: log.check_in_method || log.gate || 'Cổng A1',
           match: log.match || '99.5%',
           status: log.late_minutes > 0 ? `Trễ ${log.late_minutes}p` : (log.status || 'Đúng giờ'),
-          photo: log.avatar_url || log.photo || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80'
+          photo: log.avatar_url || log.photo || '/default-avatar.jpg'
         }));
         setLogs(normalized);
       }

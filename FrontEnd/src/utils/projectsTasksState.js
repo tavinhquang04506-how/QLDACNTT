@@ -143,7 +143,7 @@ export function mapServerTask(t, prjName) {
     assigneeRole: t.assignee_role || 'Nhân sự',
     assigneeAvatar:
       t.assignee_avatar ||
-      'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+      '/default-avatar.jpg',
     creatorId: t.creator_id || null,
     creator,
     createdAt: createdAtDisplay,
