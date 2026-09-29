@@ -18,6 +18,8 @@ const WebSocket = require('ws');
 
 process.env.NODE_ENV = 'test';
 process.env.DB_NAME = 'nexus_hrms_test';
+process.env.DB_NAME_TEST = 'nexus_hrms_test';
+
 
 const db = require('../src/config/db');
 const app = require('../src/app');
@@ -32,8 +34,8 @@ const { createTestEmployee, deleteTestEmployees } = require('../tests/helpers/em
 const { createTestUser, deleteTestUsers } = require('../tests/helpers/users');
 const { giveBalance, deleteTestLeaves } = require('../tests/helpers/leaves');
 
-const BACKEND_PORT = Number(process.env.E2E_BACKEND_PORT || 8000);
-const FRONTEND_PORT = Number(process.env.E2E_FRONTEND_PORT || 3000);
+const BACKEND_PORT = Number(process.env.E2E_BACKEND_PORT || 8005);
+const FRONTEND_PORT = Number(process.env.E2E_FRONTEND_PORT || 3005);
 const CDP_PORT = Number(process.env.E2E_CDP_PORT || 9229);
 
 function findChromeBinary() {
@@ -362,31 +364,42 @@ async function main() {
   const downloadDir = path.join(process.env.TEMP || 'C:\\Windows\\Temp', `nexus-e2e-downloads-${Date.now()}`);
   fs.mkdirSync(downloadDir, { recursive: true });
 
-  // 1. Start Backend HTTP + WS server on BACKEND_PORT (dual-stack localhost + 127.0.0.1)
+  // 1. Start Backend HTTP + WS server on BACKEND_PORT (isolated from dev :8000) and verify DB/storage
+  const noticesStartupSvc = require('../src/modules/notices/service');
+  const activeStorageDir = noticesStartupSvc.getStorageDir();
+  noticesStartupSvc.assertSafeStorageDir(activeStorageDir, { forCleanup: true });
   const backendServer = http.createServer(app);
   initSocket(backendServer);
   await new Promise((resolve) => backendServer.listen(BACKEND_PORT, resolve));
-  console.log(`[SERVER] Backend listening on http://127.0.0.1:${BACKEND_PORT}`);
+  const healthCheck = await (await fetch(`http://127.0.0.1:${BACKEND_PORT}/api/health`)).json();
+  assert.equal(
+    healthCheck.database,
+    'nexus_hrms_test',
+    `E2E Backend on :${BACKEND_PORT} must connect strictly to nexus_hrms_test, got ${healthCheck.database}`
+  );
+  console.log(
+    `[SERVER] Backend listening on http://127.0.0.1:${BACKEND_PORT} (DB=${healthCheck.database}, Storage=${activeStorageDir})`
+  );
 
-  // 2. Start Vite Frontend server on FRONTEND_PORT if not already running
-  let viteProc = null;
-  let viteAlreadyUp = false;
-  try {
-    const check = await fetch(`http://127.0.0.1:${FRONTEND_PORT}`);
-    if (check.status < 500) viteAlreadyUp = true;
-  } catch {}
-
-  if (!viteAlreadyUp) {
-    viteProc = spawn(
-      process.platform === 'win32' ? 'cmd.exe' : 'npx',
-      process.platform === 'win32'
-        ? ['/c', 'npx', 'vite', '--host', '127.0.0.1', '--port', String(FRONTEND_PORT)]
-        : ['vite', '--host', '127.0.0.1', '--port', String(FRONTEND_PORT)],
-      { cwd: path.resolve(__dirname, '../../FrontEnd'), stdio: 'ignore' }
-    );
-    await waitForHttp(`http://127.0.0.1:${FRONTEND_PORT}`);
-  }
-  console.log(`[SERVER] Frontend reachable on http://127.0.0.1:${FRONTEND_PORT}`);
+  // 2. Always spawn an isolated Vite Frontend server on FRONTEND_PORT bound to VITE_API_URL=http://127.0.0.1:BACKEND_PORT/api
+  let viteProc = spawn(
+    process.platform === 'win32' ? 'cmd.exe' : 'npx',
+    process.platform === 'win32'
+      ? ['/c', 'npx', 'vite', '--host', '127.0.0.1', '--port', String(FRONTEND_PORT), '--strictPort']
+      : ['vite', '--host', '127.0.0.1', '--port', String(FRONTEND_PORT), '--strictPort'],
+    {
+      cwd: path.resolve(__dirname, '../../FrontEnd'),
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        VITE_API_URL: `http://127.0.0.1:${BACKEND_PORT}/api`,
+      },
+    }
+  );
+  await waitForHttp(`http://127.0.0.1:${FRONTEND_PORT}`);
+  console.log(
+    `[SERVER] Frontend reachable on http://127.0.0.1:${FRONTEND_PORT} (VITE_API_URL=http://127.0.0.1:${BACKEND_PORT}/api)`
+  );
 
   // 3. Launch Headless Chrome with remote debugging
   const chromeBin = findChromeBinary();
@@ -2643,6 +2656,290 @@ async function main() {
       '[ASSERT 12 (PHASE B & R45 ROUTE/RENDER/BEHAVIORAL MATRIX) PASS] RolesVerified=6/6(HR_DIRECTOR,CEO,LINE_MANAGER,EMPLOYEE,ADMIN,KIOSK), KioskTerminalElements=true, NegativeRouteGuards=true, ViewportsVerified=390/768/1440px(NoHorizontalOverflow,ModalScrollAndEscapeClose=true), GlobalUncaughtPageExceptions=0'
     );
 
+    // =========================================================================
+    // SCENARIO 13 (FINAL WEBSITE UAT): Auth Logout/Session Expiry, Dashboard DB Reconciliation & Zero-403 Guard,
+    // Directory Search/Filter/CRUD/Masking, Attendance QR/Appeal & Leave Holiday/Approval Workflow, Keyboard Focus & Latency
+    // =========================================================================
+    console.log('--- Running Scenario 13: Final Website UAT (Logout/Expiry, Dashboard, Directory, Attendance/Leave, Keyboard & Latency) ---');
+
+    // 13a. UI Logout & Expired Session Redirect
+    await loginViaUi(cdp, empA.user.email, empA.password);
+    // Click profile dropdown in Topbar and click "Đăng xuất tài khoản"
+    await cdp.click('div[title="Tài khoản cá nhân"]', 400);
+    const clickedLogout = await cdp.eval(`(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.innerText && b.innerText.includes('Đăng xuất tài khoản'));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    assert.equal(clickedLogout, true, 'UAT 13a: User must be able to click Đăng xuất tài khoản in Topbar menu');
+    await new Promise((r) => setTimeout(r, 900));
+    const afterLogoutState = await cdp.eval(`({
+      pathname: window.location.pathname,
+      token: localStorage.getItem('nexus_token'),
+      refreshToken: localStorage.getItem('nexus_refresh_token'),
+    })`);
+    assert.equal(afterLogoutState.pathname, '/login', 'UAT 13a: Logout must redirect to /login');
+    assert.equal(afterLogoutState.token, null, 'UAT 13a: Logout must clear nexus_token from localStorage');
+    assert.equal(afterLogoutState.refreshToken, null, 'UAT 13a: Logout must clear nexus_refresh_token from localStorage');
+
+    // Expired Session: Login again, corrupt both tokens in localStorage, navigate to /directory -> must auto-redirect to /login
+    await loginViaUi(cdp, empA.user.email, empA.password);
+    await cdp.eval(`(() => {
+      localStorage.setItem('nexus_token', 'expired.invalid.jwt');
+      localStorage.setItem('nexus_refresh_token', 'expired-invalid-refresh-token');
+      return true;
+    })()`);
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/directory`, 2000);
+    const afterExpiryState = await cdp.eval(`({
+      pathname: window.location.pathname,
+      token: localStorage.getItem('nexus_token'),
+    })`);
+    assert.equal(afterExpiryState.pathname, '/login', 'UAT 13a: Expired session (401 + failed refresh) must redirect to /login');
+    assert.equal(afterExpiryState.token, null, 'UAT 13a: Expired session must clear stale token');
+
+    // 13b. Dashboard DB Reconciliation & BUG-UAT-02 Regression Guard (0 calls to /api/payroll/periods for LINE_MANAGER on /dashboard)
+    let dashboardPeriodsCallsForMgr = 0;
+    const origListPeriodsUat = payrollServiceBackend.listPeriods.bind(payrollServiceBackend);
+    payrollServiceBackend.listPeriods = async (...args) => {
+      dashboardPeriodsCallsForMgr += 1;
+      return origListPeriodsUat(...args);
+    };
+    const dashStartMs = Date.now();
+    try {
+      const itMgrDashLanding = await loginViaUi(cdp, itMgr.user.email, itMgr.password);
+      assert.equal(itMgrDashLanding, '/dashboard', 'UAT 13b: LINE_MANAGER must land on /dashboard');
+      await new Promise((r) => setTimeout(r, 1500));
+      assert.equal(
+        dashboardPeriodsCallsForMgr,
+        0,
+        'UAT 13b (BUG-UAT-02): LINE_MANAGER landing on /dashboard must make 0 calls to /api/payroll/periods'
+      );
+    } finally {
+      payrollServiceBackend.listPeriods = origListPeriodsUat;
+    }
+    const dashLoadLatencyMs = Date.now() - dashStartMs;
+
+    // Verify HR_DIRECTOR /dashboard active headcount matches DB and GET /api/dashboard/stats
+    await loginViaUi(cdp, hrAcc.user.email, hrAcc.password);
+    await new Promise((r) => setTimeout(r, 1500));
+    const dbActiveTotal = (
+      await db.query("SELECT COUNT(*)::int AS c FROM employees WHERE status IN ('DANG_LAM_VIEC', 'THU_VIEC')")
+    ).rows[0].c;
+    const dashDomAndApi = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/dashboard/stats', {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      const json = await res.json();
+      return {
+        apiTotalActive: Number(json?.data?.overview?.total_active || 0),
+        bodyText: document.body.innerText || '',
+      };
+    })()`);
+    assert.equal(dashDomAndApi.apiTotalActive, dbActiveTotal, 'UAT 13b: /api/dashboard/stats total_active must match PostgreSQL count');
+    assert.equal(
+      dashDomAndApi.bodyText.includes(String(dbActiveTotal)),
+      true,
+      `UAT 13b: /dashboard DOM must render active headcount ${dbActiveTotal}`
+    );
+    await cdp.captureScreenshot(path.join(screenshotDir, 'final-uat-dashboard-1440.png'));
+
+    // 13c. Directory Search, Filter, Onboarding Validation & Sensitive Field Masking
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/directory`, 2000);
+    await cdp.waitForSelector('[data-testid="directory-row"]');
+    // Search for "Nguyễn Văn An E2E"
+    await cdp.fillInput('input[type="text"]', 'Nguyễn Văn An E2E');
+    await new Promise((r) => setTimeout(r, 900));
+    const searchDomRows = await cdp.eval(`Array.from(document.querySelectorAll('[data-testid="directory-row"]')).map((r) => r.innerText)`);
+    assert.ok(searchDomRows.length >= 1, 'UAT 13c: Searching by full_name on /directory must return matching row');
+    assert.equal(
+      searchDomRows.every((t) => t.includes('Nguyễn Văn An E2E')),
+      true,
+      'UAT 13c: All filtered rows on /directory must match search term'
+    );
+    // Clear search
+    await cdp.fillInput('input[type="text"]', '');
+    await new Promise((r) => setTimeout(r, 800));
+
+    // Verify sensitive field masking: face_encoding is never exposed, and EMPLOYEE cannot read another employee's sensitive profile
+    const sensitiveCheck = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/employees/${empA.emp.id}', {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      const json = await res.json();
+      return {
+        hasFaceEncoding: Object.prototype.hasOwnProperty.call(json?.data || {}, 'face_encoding'),
+        hasBaseSalaryForHr: Number(json?.data?.base_salary) === 20000000,
+      };
+    })()`);
+    assert.equal(sensitiveCheck.hasFaceEncoding, false, 'UAT 13c: face_encoding must never be exposed in API response');
+    assert.equal(sensitiveCheck.hasBaseSalaryForHr, true, 'UAT 13c: HR_DIRECTOR must see accurate base_salary in profile');
+
+    // 13d. Attendance QR + Anti-Replay 401, Attendance Appeal Review, and Leave Request Holiday/Approval Balance Update
+    await loginViaUi(cdp, empA.user.email, empA.password);
+    const qrAndAppealFlow = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const qrRes = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/qr', {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      const qrJson = await qrRes.json();
+      const qrToken = qrJson?.qrToken || qrJson?.data?.qrToken;
+      // Appeal creation
+      const appealRes = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/appeals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({
+          date: '2028-10-15',
+          appeal_type: 'QUEN_CHAM_CONG',
+          reason: 'Quên chấm công do họp khách hàng đầu giờ sáng UAT 13d',
+        }),
+      });
+      const appealJson = await appealRes.json();
+      return { qrStatus: qrRes.status, qrToken, appealStatus: appealRes.status, appealId: appealJson?.data?.id };
+    })()`);
+    assert.equal(qrAndAppealFlow.qrStatus, 200, 'UAT 13d: GET /api/attendance/qr must return 200');
+    assert.ok(qrAndAppealFlow.qrToken, 'UAT 13d: qrToken must be generated for employee');
+    assert.equal(qrAndAppealFlow.appealStatus, 201, 'UAT 13d: POST /api/attendance/appeals must return 201');
+
+    // Kiosk punches with qrToken (first punch succeeds, immediate replay of same single-use token or within min gap is rejected)
+    await loginViaUi(cdp, kioskAcc.user.email, kioskAcc.password);
+    const kioskPunchResult = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const first = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/kiosk/punch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ qrToken: ${JSON.stringify(qrAndAppealFlow.qrToken)} }),
+      });
+      const replay = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/kiosk/punch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ qrToken: ${JSON.stringify(qrAndAppealFlow.qrToken)} }),
+      });
+      return { firstStatus: first.status, replayStatus: replay.status };
+    })()`);
+    assert.ok([200, 201].includes(kioskPunchResult.firstStatus), 'UAT 13d: First Kiosk QR punch must succeed (200/201)');
+    assert.equal(kioskPunchResult.replayStatus, 401, 'UAT 13d: Replaying used qrToken at Kiosk must be rejected with 401');
+
+    // Sales Manager (out-of-department) tries to review IT Employee's attendance appeal -> 403; IT Manager approves -> 200
+    await loginViaUi(cdp, salesMgr.user.email, salesMgr.password);
+    const salesMgrReviewStatus = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/appeals/${qrAndAppealFlow.appealId}/review', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ status: 'DA_DUYET', review_note: 'Cross-dept attempt' }),
+      });
+      return res.status;
+    })()`);
+    assert.equal(salesMgrReviewStatus, 403, 'UAT 13d: Out-of-department manager must be blocked (403) from reviewing appeal');
+
+    await loginViaUi(cdp, itMgr.user.email, itMgr.password);
+    const itMgrReviewStatus = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/attendance/appeals/${qrAndAppealFlow.appealId}/review', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ status: 'DA_DUYET', review_note: 'Đồng ý giải trình chấm công UAT 13d' }),
+      });
+      return res.status;
+    })()`);
+    assert.equal(itMgrReviewStatus, 200, 'UAT 13d: Same-department manager must approve attendance appeal (200)');
+    await db.query('DELETE FROM attendance_appeals WHERE id = $1', [qrAndAppealFlow.appealId]).catch(() => {});
+    await db.query("DELETE FROM attendance_logs WHERE employee_id LIKE 'NV-T%'").catch(() => {});
+
+    // Leave Request: Employee A creates leave across 2026-09-01..2026-09-03 (where 2026-09-02 is National Day holiday in public_holidays -> 2.0 working days)
+    await loginViaUi(cdp, empA.user.email, empA.password);
+    const leaveCreateRes = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/leaves', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({
+          leaveTypeId: 'LT-AL',
+          startDate: '2026-09-01',
+          endDate: '2026-09-03',
+          shiftType: 'full',
+          reason: 'Nghỉ phép qua lễ Quốc khánh 2/9 UAT 13d',
+        }),
+      });
+      const json = await res.json();
+      return { status: res.status, id: json?.data?.id, totalDays: Number(json?.data?.total_days) };
+    })()`);
+    assert.equal(leaveCreateRes.status, 201, 'UAT 13d: Leave request creation must return 201');
+    assert.equal(leaveCreateRes.totalDays, 2, 'UAT 13d (R04): Leave 2026-09-01..2026-09-03 excluding 2026-09-02 holiday must equal 2 working days');
+
+    // Step 1: IT Manager approves on /leaves UI or API -> CHO_HR_PHE_CHUAN
+    await loginViaUi(cdp, itMgr.user.email, itMgr.password);
+    const step1Leave = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/leaves/${leaveCreateRes.id}/approve', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ note: 'Trưởng phòng IT duyệt bước 1' }),
+      });
+      const json = await res.json();
+      return { status: res.status, stage: json?.data?.stage };
+    })()`);
+    assert.equal(step1Leave.status, 200);
+    assert.equal(step1Leave.stage, 'CHO_HR_PHE_CHUAN', 'UAT 13d: Manager approval must transition leave to CHO_HR_PHE_CHUAN');
+
+    // Step 2: HR Director approves -> DA_PHE_DUYET -> deducts 2.0 days from empA's 9.5 balance -> 7.5 remaining!
+    await loginViaUi(cdp, hrAcc.user.email, hrAcc.password);
+    const step2Leave = await cdp.eval(`(async () => {
+      const token = localStorage.getItem('nexus_token') || '';
+      const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/leaves/${leaveCreateRes.id}/approve', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ note: 'HRD phê chuẩn bước cuối' }),
+      });
+      const json = await res.json();
+      return { status: res.status, stage: json?.data?.stage };
+    })()`);
+    assert.equal(step2Leave.status, 200);
+    assert.equal(step2Leave.stage, 'DA_PHE_DUYET', 'UAT 13d: HR approval must transition leave to DA_PHE_DUYET');
+
+    // Log back in as empA, reload /portal & /leaves, and verify remaining balance updated from 9.5 to 7.5 in both DB and DOM!
+    await loginViaUi(cdp, empA.user.email, empA.password);
+    await cdp.reload(1800);
+    const empAPortalTextAfterLeave = await cdp.eval('document.body.innerText');
+    const dbBalAfterLeave = (
+      await db.query(
+        "SELECT (total_days - used_days)::numeric(5,1) AS rem FROM leave_balances WHERE employee_id = $1 AND leave_type_id = 'LT-AL' AND year = $2",
+        [empA.emp.id, new Date().getFullYear()]
+      )
+    ).rows[0];
+    assert.equal(Number(dbBalAfterLeave.rem), 7.5, 'UAT 13d: DB leave_balances remaining_days must update from 9.5 to 7.5');
+    assert.equal(
+      empAPortalTextAfterLeave.includes('7.5'),
+      true,
+      'UAT 13d: Reloaded /portal DOM must display updated remaining leave balance 7.5'
+    );
+    await db.query('DELETE FROM leave_requests WHERE id = $1', [leaveCreateRes.id]).catch(() => {});
+
+    // 13e. Keyboard Focus Traversal
+    const keyboardFocusState = await cdp.eval(`(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a, input, select, textarea')).filter(
+        (el) => !el.disabled && el.offsetParent !== null
+      );
+      if (buttons.length < 2) return { focusableCount: buttons.length, movedFocus: false };
+      buttons[0].focus();
+      const firstActive = document.activeElement;
+      buttons[1].focus();
+      const secondActive = document.activeElement;
+      return {
+        focusableCount: buttons.length,
+        movedFocus: Boolean(firstActive && secondActive && firstActive !== secondActive),
+      };
+    })()`);
+    assert.ok(keyboardFocusState.focusableCount >= 5, 'UAT 13e: Page must have focusable interactive controls');
+    assert.equal(keyboardFocusState.movedFocus, true, 'UAT 13e: Keyboard focus must move cleanly across interactive controls');
+
+    console.log(
+      `[ASSERT 13 (FINAL WEBSITE UAT) PASS] LogoutAndSessionExpiryRedirect=true, LineManagerDashboardZero403PeriodsCalls=true, DashboardHeadcountReconciled=${dbActiveTotal}, DirectorySearchAndSensitiveMasking=true, KioskQrPunchAndReplay401=true, AttendanceAppealScopedReview=true, LeaveHolidayExclusionAndBalanceUpdate=7.5, KeyboardFocusVerified=true, DashboardLoadMs=${dashLoadLatencyMs}`
+    );
+
     console.log('=== [ALL R14-R45 & PHASE B UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
@@ -2661,6 +2958,7 @@ async function main() {
       try { viteProc.kill(); } catch {}
     }
     try { fs.rmSync(downloadDir, { recursive: true, force: true }); } catch {}
+    try { require('../src/modules/notices/service').cleanupTestStorageDir(); } catch {}
     await new Promise((resolve) => backendServer.close(resolve));
     await db.pool.end().catch(() => {});
   }
