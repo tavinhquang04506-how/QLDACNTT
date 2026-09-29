@@ -247,7 +247,7 @@ export default function Page1_Login() {
             </form>
 
             {/* Quick Test Accounts (4 Cấp độ) */}
-            <div className="mt-6 pt-5 border-t border-slate-100">
+            <div className="hidden mt-6 pt-5 border-t border-slate-100">
               <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider text-center mb-3">
                 Chọn nhanh tài khoản thử nghiệm (4 cấp độ):
               </p>
