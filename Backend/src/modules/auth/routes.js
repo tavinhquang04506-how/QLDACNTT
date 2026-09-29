@@ -51,7 +51,16 @@ router.post('/login', async (req, res) => {
         e.status AS employee_status,
         d.id AS department_id,
         d.name AS department_name,
-        p.name AS position_name
+        p.name AS position_name,
+        (
+          SELECT lb.remaining_days
+          FROM leave_balances lb
+          JOIN leave_types lt ON lt.id = lb.leave_type_id
+          WHERE lb.employee_id = e.id
+            AND (lt.id = 'LT-AL' OR lt.code = 'PHEP_NAM')
+          ORDER BY lb.year DESC
+          LIMIT 1
+        ) AS leave_balance
       FROM users u
       LEFT JOIN employees e ON u.employee_id = e.id
       LEFT JOIN departments d ON e.department_id = d.id
@@ -143,6 +152,7 @@ router.post('/login', async (req, res) => {
         positionName: user.position_name,
         kpiScore: user.kpi_score,
         attendanceRate: user.attendance_rate,
+        leaveBalance: user.leave_balance !== null && user.leave_balance !== undefined ? Number(user.leave_balance) : null,
       },
     });
   } catch (error) {
@@ -186,7 +196,16 @@ router.get('/me', authenticate, async (req, res) => {
         e.contract_type,
         d.id AS department_id,
         d.name AS department_name,
-        p.name AS position_name
+        p.name AS position_name,
+        (
+          SELECT lb.remaining_days
+          FROM leave_balances lb
+          JOIN leave_types lt ON lt.id = lb.leave_type_id
+          WHERE lb.employee_id = e.id
+            AND (lt.id = 'LT-AL' OR lt.code = 'PHEP_NAM')
+          ORDER BY lb.year DESC
+          LIMIT 1
+        ) AS leave_balance
       FROM users u
       LEFT JOIN employees e ON u.employee_id = e.id
       LEFT JOIN departments d ON e.department_id = d.id
@@ -215,6 +234,7 @@ router.get('/me', authenticate, async (req, res) => {
         positionName: u.position_name,
         kpiScore: u.kpi_score,
         attendanceRate: u.attendance_rate,
+        leaveBalance: u.leave_balance !== null && u.leave_balance !== undefined ? Number(u.leave_balance) : null,
         baseSalary: u.base_salary,
         status: u.status,
         joinedDate: u.joined_date,

@@ -4,6 +4,7 @@ const { badRequest, forbidden, notFound, conflict } = require('../../utils/AppEr
 const { parsePagination, paginationMeta } = require('../../utils/pagination');
 const { writeAudit } = require('../../utils/audit');
 const tokens = require('../auth/tokens');
+const { disconnectUserSockets } = require('../../socket');
 const { canAssignRole, canManageUserWithRole, generateTemporaryPassword } = require('./roleRules');
 
 const SELECT_USER = `
@@ -128,8 +129,14 @@ async function update(actor, id, body, req) {
     const role = body.role ?? target.roleCode;
     const active = body.isActive ?? target.isActive;
     await client.query('UPDATE users SET role_code = $2, is_active = $3, updated_at = NOW() WHERE id = $1', [id, role, active]);
-    if (role !== target.roleCode) await syncUserRoles(client, id, role);
-    if (active !== target.isActive) await tokens.revokeAllForUser(client, id);
+    if (role !== target.roleCode) {
+      await syncUserRoles(client, id, role);
+      disconnectUserSockets(id);
+    }
+    if (active !== target.isActive) {
+      await tokens.revokeAllForUser(client, id);
+      if (!active) disconnectUserSockets(id);
+    }
 
     await writeAudit(client, {
       user: actor, action: 'UPDATE_USER', table: 'users', recordId: id, req,
@@ -155,6 +162,7 @@ async function resetPassword(actor, id, req) {
       [id, hash]
     );
     await tokens.revokeAllForUser(client, id);
+    disconnectUserSockets(id);
     await writeAudit(client, { user: actor, action: 'RESET_PASSWORD', table: 'users', recordId: id, req });
   });
   return temporaryPassword;

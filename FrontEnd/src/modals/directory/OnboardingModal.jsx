@@ -44,70 +44,85 @@ export default function OnboardingModal({ isOpen, onClose }) {
   const [employeeId] = useState(() => `NV-${Math.floor(2000 + Math.random() * 7999)}`);
   const [badgeNumber] = useState(() => `NX-${Math.floor(1000 + Math.random() * 8999)}`);
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitted(true);
+    setErrorMsg('');
+
+    const finalName = fullName.trim();
+    if (!finalName) {
+      setErrorMsg('Vui lòng nhập họ và tên nhân sự');
+      setActiveStep(1);
+      return;
+    }
+
+    const cleanCccd = cccd.replace(/\s+/g, '');
+    if (!/^(?:\d{9}|\d{12})$/.test(cleanCccd)) {
+      setErrorMsg('Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số');
+      setActiveStep(1);
+      return;
+    }
+
+    const cleanPhone = phone.replace(/\s+/g, '');
+    if (!cleanPhone) {
+      setErrorMsg('Vui lòng nhập số điện thoại liên lạc');
+      setActiveStep(1);
+      return;
+    }
 
     const formattedDob = dob.includes('/') ? dob.split('/').reverse().join('-') : (dob || '1998-01-01');
+    const computedEmail = email.trim() || `${finalName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/g, '')}@nexus.vn`;
 
-    const finalName = fullName.trim() || 'Nhân viên mới';
-    const computedEmail = email.trim() || `${finalName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '.')}@nexus.vn`;
-
-    const newEmployee = {
-      id: employeeId,
-      name: finalName,
-      role: role,
-      department: DEPT_NAME_MAP[department] || 'Phòng Phát triển Phần mềm',
-      email: computedEmail,
-      phone: phone || '0901 234 567',
-      avatar: gender === 'Nữ'
-        ? 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'
-        : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      contractSalary: Number(salary) || 22000000,
-      status: 'active',
-      type: contractType.toLowerCase().includes('thử việc') ? 'Thử việc' : 'Toàn thời gian',
-      joinDate: new Date().toLocaleDateString('vi-VN'),
-      leaveBalance: 12,
-      cccd: cccd || '079198001234',
-      bankAccount: '1029 3847 55',
-      bankName: 'Vietcombank',
-      kpiScore: 100.0,
-      attendanceRate: 100.0,
-      badgeNumber: badgeNumber,
-      badgeId: badgeNumber
-    };
-
-    // 1. Try to persist to PostgreSQL backend API
+    setSubmitting(true);
     try {
-      await employeeService.create({
+      const res = await employeeService.create({
+        id: employeeId,
         fullName: finalName,
         departmentId: department,
         jobTitle: role,
         workEmail: computedEmail,
-        phoneNumber: phone || '0901234567',
-        citizenId: cccd && (cccd.length === 9 || cccd.length === 12) ? cccd : '079198001234',
+        phoneNumber: cleanPhone,
+        citizenId: cleanCccd,
         dateOfBirth: formattedDob,
         gender: gender === 'Nữ' ? 'Nu' : 'Nam',
         baseSalary: Number(salary) || 22000000,
         contractType: contractType.toLowerCase().includes('thử việc') ? 'THU_VIEC' : 'CHINH_THUC',
         joinedDate: new Date().toISOString().split('T')[0],
       });
+
+      const createdEmp = res?.data || {};
+      const newEmployee = {
+        ...createdEmp,
+        id: createdEmp.id || employeeId,
+        name: createdEmp.full_name || finalName,
+        role: createdEmp.job_title || role,
+        department: createdEmp.department_name || DEPT_NAME_MAP[department] || department,
+        email: createdEmp.work_email || computedEmail,
+        phone: createdEmp.phone_number || cleanPhone,
+        contractSalary: Number(createdEmp.base_salary ?? salary) || 22000000,
+        status: 'active',
+        badgeNumber,
+        badgeId: badgeNumber,
+      };
+
+      setSubmitted(true);
+      window.dispatchEvent(new CustomEvent('nexus:employee-added', { detail: newEmployee }));
+
+      try {
+        confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
+      } catch {}
+
+      setTimeout(() => {
+        setSubmitted(false);
+        onClose();
+      }, 1400);
     } catch (err) {
-      console.warn('API save notice (fallback to local state):', err.message || err);
+      setErrorMsg(err?.message || 'Không thể lưu hồ sơ nhân sự mới vào cơ sở dữ liệu.');
+    } finally {
+      setSubmitting(false);
     }
-
-    // 2. Dispatch custom event so Page4_Directory updates immediately in UI
-    window.dispatchEvent(new CustomEvent('nexus:employee-added', { detail: newEmployee }));
-
-    try {
-      confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
-    } catch (err) {}
-
-    setTimeout(() => {
-      setSubmitted(false);
-      onClose();
-    }, 1400);
   };
 
   return (
@@ -201,6 +216,11 @@ export default function OnboardingModal({ isOpen, onClose }) {
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          {errorMsg && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold">
+              {errorMsg}
+            </div>
+          )}
           {/* STEP 1: Hồ sơ & Hợp đồng */}
           {activeStep === 1 && (
             <div className="space-y-3 animate-in fade-in duration-200">
@@ -534,7 +554,7 @@ export default function OnboardingModal({ isOpen, onClose }) {
 
                 <button
                   type="submit"
-                  disabled={submitted}
+                  disabled={submitted || submitting}
                   className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-md shadow-blue-500/20 flex items-center gap-2 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
                 >
                   {submitted ? (
@@ -545,7 +565,7 @@ export default function OnboardingModal({ isOpen, onClose }) {
                   ) : (
                     <>
                       <UserPlus className="w-4 h-4" />
-                      <span>Hoàn tất & Cấp tài khoản nhân sự</span>
+                      <span>{submitting ? 'Đang lưu hồ sơ...' : 'Hoàn tất & Cấp tài khoản nhân sự'}</span>
                     </>
                   )}
                 </button>

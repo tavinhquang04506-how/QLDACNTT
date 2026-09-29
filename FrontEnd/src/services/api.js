@@ -1,138 +1,154 @@
 // ============================================
-// services/api.js — Axios-like Fetch wrapper + JWT + Auto Refresh
+// services/api.js — Fetch wrapper + JWT + Single-flight Auto Refresh (F21)
 // ============================================
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const DEFAULT_BASE_URL =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) ||
+  'http://localhost:8000/api';
 
-/**
- * Lấy JWT token từ localStorage
- */
-const getToken = () => localStorage.getItem('nexus_token');
-const getRefreshToken = () => localStorage.getItem('nexus_refresh_token');
-
-/**
- * Thử refresh token khi gặp 401
- */
-let isRefreshing = false;
-let refreshSubscribers = [];
-
-function onRefreshed(newToken) {
-  refreshSubscribers.forEach((cb) => cb(newToken));
-  refreshSubscribers = [];
-}
-
-async function tryRefreshToken() {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return null;
-
-  try {
-    const res = await fetch(`${BASE_URL}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    });
-
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const newAccessToken = data.accessToken || data.token;
-    if (newAccessToken) {
-      localStorage.setItem('nexus_token', newAccessToken);
-      if (data.refreshToken) {
-        localStorage.setItem('nexus_refresh_token', data.refreshToken);
-      }
-      return newAccessToken;
+export function createApiClient({
+  baseUrl = DEFAULT_BASE_URL,
+  fetchImpl = (...args) => fetch(...args),
+  storage = typeof localStorage !== 'undefined' ? localStorage : null,
+  onUnauthorizedRedirect = () => {
+    if (typeof window !== 'undefined' && window.location && window.location.pathname !== '/login') {
+      window.location.href = '/login';
     }
-    return null;
-  } catch {
-    return null;
-  }
-}
+  },
+} = {}) {
+  const getToken = () => storage?.getItem('nexus_token') || null;
+  const getRefreshToken = () => storage?.getItem('nexus_refresh_token') || null;
 
-/**
- * Core fetch wrapper với JWT auto-attach & auto-refresh
- */
-async function request(endpoint, options = {}, isRetry = false) {
-  const url = `${BASE_URL}${endpoint}`;
-  const token = getToken();
-  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  let refreshPromise = null;
 
-  const headers = {
-    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
-  };
-
-  const config = {
-    ...options,
-    headers,
-  };
-
-  // Nếu có body và không phải FormData, stringify
-  if (config.body && typeof config.body === 'object' && !isFormData) {
-    config.body = JSON.stringify(config.body);
+  function clearSession() {
+    if (!storage) return;
+    storage.removeItem('nexus_token');
+    storage.removeItem('nexus_refresh_token');
+    storage.removeItem('nexus_user');
+    storage.removeItem('nexus_role_key');
   }
 
-  try {
-    const response = await fetch(url, config);
+  async function performRefresh() {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return null;
 
-    // Đọc body stream một lần duy nhất
-    const isJson = response.headers.get('content-type')?.includes('application/json');
-    const data = isJson ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
+    try {
+      const res = await fetchImpl(`${baseUrl}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
 
-    // Token hết hạn → cố gắng refresh token một lần
-    if (response.status === 401 && !isRetry && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-      if (!isRefreshing) {
-        isRefreshing = true;
-        const newToken = await tryRefreshToken();
-        isRefreshing = false;
+      if (!res.ok) return null;
 
-        if (newToken) {
-          onRefreshed(newToken);
-          return request(endpoint, options, true);
-        } else {
-          localStorage.removeItem('nexus_token');
-          localStorage.removeItem('nexus_refresh_token');
-          localStorage.removeItem('nexus_user');
-          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-            window.location.href = '/login';
-          }
-          return { success: false, status: 401, message: 'Phiên làm việc đã hết hạn' };
+      const data = await res.json().catch(() => ({}));
+      const newAccessToken = data.accessToken || data.token;
+      if (newAccessToken) {
+        storage?.setItem('nexus_token', newAccessToken);
+        if (data.refreshToken) {
+          storage?.setItem('nexus_refresh_token', data.refreshToken);
         }
-      } else {
-        // Đợi refresh hoàn tất rồi retry
-        return new Promise((resolve) => {
-          refreshSubscribers.push((newToken) => {
-            if (newToken) {
-              resolve(request(endpoint, options, true));
-            } else {
-              resolve({ success: false, status: 401, message: 'Phiên làm việc đã hết hạn' });
-            }
-          });
-        });
+        return newAccessToken;
       }
+      return null;
+    } catch {
+      return null;
     }
-
-    if (!response.ok) {
-      const errObj = typeof data === 'object' ? data : { message: data };
-      throw { success: false, status: response.status, ...errObj, message: errObj.message || `Lỗi HTTP ${response.status}` };
-    }
-
-    return data;
-  } catch (error) {
-    if (error && error.status) throw error; // API error — re-throw
-    console.error(`❌ API Error [${endpoint}]:`, error);
-    throw { success: false, message: error?.message || 'Không thể kết nối server' };
   }
+
+  function refreshTokenOnce() {
+    if (!refreshPromise) {
+      refreshPromise = performRefresh().finally(() => {
+        refreshPromise = null;
+      });
+    }
+    return refreshPromise;
+  }
+
+  async function request(endpoint, options = {}, isRetry = false) {
+    const url = `${baseUrl}${endpoint}`;
+    const token = getToken();
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+
+    const headers = {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    };
+
+    const config = {
+      ...options,
+      headers,
+    };
+
+    if (config.body && typeof config.body === 'object' && !isFormData) {
+      config.body = JSON.stringify(config.body);
+    }
+
+    try {
+      const response = await fetchImpl(url, config);
+
+      const contentType = response.headers?.get?.('content-type') || '';
+      const isJson = contentType.includes('application/json');
+      const data = isJson
+        ? await response.json().catch(() => ({}))
+        : await response.text().catch(() => '');
+
+      // Token hết hạn → dùng single-flight refreshPromise cho mọi request 401 đồng thời
+      if (
+        response.status === 401 &&
+        !isRetry &&
+        !endpoint.includes('/auth/login') &&
+        !endpoint.includes('/auth/refresh')
+      ) {
+        const newToken = await refreshTokenOnce();
+        if (newToken) {
+          return request(endpoint, options, true);
+        }
+
+        clearSession();
+        onUnauthorizedRedirect();
+        throw {
+          success: false,
+          status: 401,
+          code: 'SESSION_EXPIRED',
+          message: 'Phiên làm việc đã hết hạn, vui lòng đăng nhập lại',
+        };
+      }
+
+      if (!response.ok) {
+        const errObj = typeof data === 'object' && data !== null ? data : { message: String(data || '') };
+        throw {
+          success: false,
+          status: response.status,
+          ...errObj,
+          message: errObj.message || `Lỗi HTTP ${response.status}`,
+        };
+      }
+
+      return data;
+    } catch (error) {
+      if (error && error.status) throw error;
+      throw {
+        success: false,
+        status: 0,
+        code: 'NETWORK_ERROR',
+        message: error?.message || 'Không thể kết nối máy chủ',
+      };
+    }
+  }
+
+  return {
+    request,
+    get: (endpoint, options = {}) => request(endpoint, { ...options, method: 'GET' }),
+    post: (endpoint, body, options = {}) => request(endpoint, { ...options, method: 'POST', body }),
+    put: (endpoint, body, options = {}) => request(endpoint, { ...options, method: 'PUT', body }),
+    patch: (endpoint, body, options = {}) => request(endpoint, { ...options, method: 'PATCH', body }),
+    delete: (endpoint, options = {}) => request(endpoint, { ...options, method: 'DELETE' }),
+  };
 }
 
-// Convenience methods
-const api = {
-  get: (endpoint) => request(endpoint, { method: 'GET' }),
-  post: (endpoint, body) => request(endpoint, { method: 'POST', body }),
-  put: (endpoint, body) => request(endpoint, { method: 'PUT', body }),
-  patch: (endpoint, body) => request(endpoint, { method: 'PATCH', body }),
-  delete: (endpoint) => request(endpoint, { method: 'DELETE' }),
-};
+const api = createApiClient();
 
 export default api;

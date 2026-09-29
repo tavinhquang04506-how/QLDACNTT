@@ -6,7 +6,20 @@ const n = async (sql, params = []) => (await db.query(sql, params)).rows[0].n;
 const EMPTY = (scope) => ({
   scope,
   overview: {
-    total_active: 0, total_inactive: 0, present_today: 0, late_today: 0, pending_leaves: 0, active_projects: 0, open_tasks: 0, last_refreshed: new Date(),
+    total_active: 0,
+    total_inactive: 0,
+    present_today: 0,
+    late_today: 0,
+    pending_leaves: 0,
+    actionable_pending_leaves: 0,
+    active_projects: 0,
+    open_tasks: 0,
+    total_male: 0,
+    total_female: 0,
+    total_official: 0,
+    total_probation: 0,
+    avg_tenure_years: 0,
+    last_refreshed: new Date(),
   },
   departmentStats: [],
   pendingLeaves: [],
@@ -20,24 +33,31 @@ async function companyOrDepartment(user, scope) {
   const isCeo = user.roleCode === 'CEO';
   const isHr = user.roleCode === 'HR_DIRECTOR';
 
-  let leaveWhere = '';
-  let leaveParams = [];
+  // F30: Separate total pending leaves within the scope (overview.pending_leaves)
+  // from the actionable approval queue that the current actor is permitted to approve (pendingLeaves & actionable_pending_leaves).
+  const scopeLeaveWhere = isManager
+    ? `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN') AND e.department_id = $1`
+    : `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN')`;
+  const scopeLeaveParams = isManager ? [dept] : [];
+
+  let actionableLeaveWhere = '';
+  let actionableLeaveParams = [];
 
   if (isManager) {
     // Trưởng phòng chỉ duyệt đơn của cấp dưới trong phòng ở trạng thái chờ Trưởng phòng duyệt, không duyệt đơn của chính mình
-    leaveWhere = `WHERE lr.stage = 'CHO_TRUONG_PHONG_DUYET' AND e.department_id = $1 AND lr.employee_id <> $2`;
-    leaveParams = [dept, user.employeeId || ''];
+    actionableLeaveWhere = `WHERE lr.stage = 'CHO_TRUONG_PHONG_DUYET' AND e.department_id = $1 AND lr.employee_id <> $2`;
+    actionableLeaveParams = [dept, user.employeeId || ''];
   } else if (isCeo) {
     // CEO duyệt các đơn cấp cao (Trưởng phòng, Giám đốc, đơn > 3 ngày) và có quyền giám sát toàn bộ đơn công ty
-    leaveWhere = `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN') AND lr.employee_id <> $1`;
-    leaveParams = [user.employeeId || ''];
+    actionableLeaveWhere = `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN') AND lr.employee_id <> $1`;
+    actionableLeaveParams = [user.employeeId || ''];
   } else if (isHr) {
     // HRD duyệt các đơn chờ HR phê chuẩn (trừ đơn của chính mình và đơn của Trưởng phòng/Giám đốc do CEO duyệt)
-    leaveWhere = `WHERE lr.stage = 'CHO_HR_PHE_CHUAN' AND lr.employee_id <> $1 AND NOT (e.job_title LIKE '%Trưởng%' OR e.job_title LIKE '%Giám Đốc%')`;
-    leaveParams = [user.employeeId || ''];
+    actionableLeaveWhere = `WHERE lr.stage = 'CHO_HR_PHE_CHUAN' AND lr.employee_id <> $1 AND NOT (e.job_title LIKE '%Trưởng%' OR e.job_title LIKE '%Giám Đốc%')`;
+    actionableLeaveParams = [user.employeeId || ''];
   } else {
-    leaveWhere = `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN')`;
-    leaveParams = [];
+    actionableLeaveWhere = `WHERE lr.stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN')`;
+    actionableLeaveParams = [];
   }
 
   const deptSql = isManager ? 'AND e.department_id IS NOT DISTINCT FROM $1' : '';
@@ -62,7 +82,8 @@ async function companyOrDepartment(user, scope) {
     total_inactive: await n(emp("e.status = 'DA_NGHI_VIEC'"), p),
     present_today: await n(att('a.check_in_time IS NOT NULL'), p),
     late_today: await n(att("a.status = 'DI_MUON'"), p),
-    pending_leaves: await n(`SELECT COUNT(*)::int AS n FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id ${leaveWhere}`, leaveParams),
+    pending_leaves: await n(`SELECT COUNT(*)::int AS n FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id ${scopeLeaveWhere}`, scopeLeaveParams),
+    actionable_pending_leaves: await n(`SELECT COUNT(*)::int AS n FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id ${actionableLeaveWhere}`, actionableLeaveParams),
     active_projects: await n(`SELECT COUNT(*)::int AS n FROM projects pr WHERE pr.status = 'in_progress' ${isManager ? 'AND pr.department_id IS NOT DISTINCT FROM $1' : ''}`, p),
     open_tasks: await n(`SELECT COUNT(*)::int AS n FROM tasks t JOIN projects pr ON pr.id = t.project_id
                           WHERE t.stage IN ('todo', 'in_progress') ${isManager ? 'AND pr.department_id IS NOT DISTINCT FROM $1' : ''}`, p),
@@ -70,7 +91,7 @@ async function companyOrDepartment(user, scope) {
     total_female: demographicRow.female_total ?? 0,
     total_official: demographicRow.official_total ?? 0,
     total_probation: demographicRow.probation_total ?? 0,
-    avg_tenure_years: Number(demographicRow.avg_tenure_years) || 1.8,
+    avg_tenure_years: demographicRow.avg_tenure_years != null ? Number(demographicRow.avg_tenure_years) : 0,
     last_refreshed: (await db.query('SELECT NOW() AS t')).rows[0].t,
   };
 
@@ -89,8 +110,8 @@ async function companyOrDepartment(user, scope) {
   const pendingLeaves = (await db.query(
     `SELECT lr.id, lr.stage, lr.total_days, lr.start_date, e.full_name, e.department_id, e.id AS employee_id, lt.name AS leave_type
        FROM leave_requests lr JOIN employees e ON lr.employee_id = e.id JOIN leave_types lt ON lr.leave_type_id = lt.id
-      ${leaveWhere}
-      ORDER BY lr.submitted_at DESC LIMIT 5`, leaveParams)).rows;
+      ${actionableLeaveWhere}
+      ORDER BY lr.submitted_at DESC LIMIT 5`, actionableLeaveParams)).rows;
 
   return { scope: isManager ? 'department' : 'company', overview, departmentStats, pendingLeaves };
 }

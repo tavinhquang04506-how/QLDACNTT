@@ -189,23 +189,7 @@ export default function EmployeePortalPage() {
         setPunchMessage('Đã chấm công ra ca thành công!');
       }
     } catch (err) {
-      console.warn('Attendance punch API fallback:', err);
-      if (!isClockedIn) {
-        const now = new Date();
-        setClockInTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-        setIsClockedIn(true);
-        setPunchMessage('Đã chấm công vào ca!');
-        try {
-          confetti({
-            particleCount: 50,
-            spread: 60,
-            origin: { y: 0.7 }
-          });
-        } catch (e) {}
-      } else {
-        setIsClockedIn(false);
-        setPunchMessage('Đã chấm công ra ca!');
-      }
+      setPunchMessage(`Lỗi chấm công: ${err?.message || 'Không thể ghi nhận chấm công'}`);
     } finally {
       setClockLoading(false);
       setTimeout(() => setPunchMessage(''), 4000);
