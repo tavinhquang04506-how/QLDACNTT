@@ -12,6 +12,8 @@ const fs = require('fs');
 
 // Load .env relative to Backend directory
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+process.env.NODE_ENV = 'test';
+const config = require('../src/config/env');
 
 const { pool } = require('../db');
 
@@ -68,7 +70,7 @@ async function testDatabase() {
   console.log('║   🐘 NEXUS HRMS — PostgreSQL Connection & Schema Test      ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log(`📡 Host:      ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 5432}`);
-  console.log(`📦 Database:  ${process.env.DB_NAME || 'nexus_hrms'}`);
+  console.log(`📦 Database:  ${config.db.database}`);
   console.log(`👤 User:      ${process.env.DB_USER || 'postgres'}`);
   console.log('────────────────────────────────────────────────────────────');
 
@@ -83,6 +85,7 @@ async function testDatabase() {
     const dbInfoRes = await client.query('SELECT version(), current_database(), NOW() AS server_time');
     const dbInfo = dbInfoRes.rows[0];
     console.log(`ℹ️  DB Version:   ${dbInfo.version.split(' on ')[0]}`);
+    console.log(`ℹ️  Active DB:    ${dbInfo.current_database} (current_database() verified)`);
     console.log(`ℹ️  Server Time:  ${dbInfo.server_time}`);
     console.log('');
 

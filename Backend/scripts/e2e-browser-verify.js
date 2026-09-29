@@ -27,6 +27,7 @@ const {
   reconcilePayrollReportCsv,
   reconcileBankTransferCsv,
 } = require('../src/utils/csvReconciler');
+const { assertSafeTestDatabase } = require('../src/utils/testDbGuard');
 const { createTestEmployee, deleteTestEmployees } = require('../tests/helpers/employees');
 const { createTestUser, deleteTestUsers } = require('../tests/helpers/users');
 const { giveBalance, deleteTestLeaves } = require('../tests/helpers/leaves');
@@ -245,17 +246,18 @@ async function waitForDownloadedCsv(downloadDir, prefix, timeoutMs = 8000) {
 
 async function main() {
   assert.match(process.env.DB_NAME || '', /_test$/, 'E2E verification must only run on *_test database');
-  console.log('=== [R14-R19 UI-DRIVEN E2E VERIFICATION START] ===');
+  const verifiedDb = await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.main' });
+  console.log('=== [R14-R23 UI-DRIVEN E2E VERIFICATION START] ===');
   console.log(`TIMESTAMP=${new Date().toISOString()}`);
-  console.log(`DB_NAME=${process.env.DB_NAME}`);
+  console.log(`DB_NAME=${process.env.DB_NAME} (current_database()=${verifiedDb})`);
 
   const downloadDir = path.join(process.env.TEMP || 'C:\\Windows\\Temp', `nexus-e2e-downloads-${Date.now()}`);
   fs.mkdirSync(downloadDir, { recursive: true });
 
-  // 1. Start Backend HTTP + WS server on BACKEND_PORT
+  // 1. Start Backend HTTP + WS server on BACKEND_PORT (dual-stack localhost + 127.0.0.1)
   const backendServer = http.createServer(app);
   initSocket(backendServer);
-  await new Promise((resolve) => backendServer.listen(BACKEND_PORT, '127.0.0.1', resolve));
+  await new Promise((resolve) => backendServer.listen(BACKEND_PORT, resolve));
   console.log(`[SERVER] Backend listening on http://127.0.0.1:${BACKEND_PORT}`);
 
   // 2. Start Vite Frontend server on FRONTEND_PORT if not already running
@@ -932,11 +934,185 @@ async function main() {
       `[ASSERT 5 (R18+R19) PASS] Multi-Period Stale Guard & Full CSV Reconciliation: R18StaleBlocked=true, R18BonusPreserved=${Number(slip10Emp1AfterRecalc.bonus)}, 2028-10(reportRows=${recReport10.rowCount}, bankPayable=${recBank10.payableRowCount}, bankExcluded=${recBank10.excludedRowCount}, netSum=${recReport10.sums.netSalary}), 2028-09(reportRows=${recReport09.rowCount}, bankPayable=${recBank09.payableRowCount}, netSum=${recReport09.sums.netSalary}), NegativeTests(crossPeriod+swappedAmounts+droppedRow)=3/3 FAILED_AS_EXPECTED`
     );
 
-    console.log('=== [ALL R14-R19 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 6 (R20 + R22): Uncreated Period / Failed GET Guard & 505+ Multi-Page Export
+    // =========================================================================
+    // 6a. R20: Select uncreated period Tháng 11/2028 (2028-11) in UI -> must NOT fallback to apiPeriods[0]
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 2200);
+    await cdp.waitForSelector('[data-testid="payroll-period-select"]');
+    await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 11/2028');
+    await new Promise((r) => setTimeout(r, 800));
+
+    const r20UncreatedState = await cdp.eval(`({
+      uncreatedBanner: document.querySelector('[data-testid="payroll-uncreated-period-banner"]')?.innerText || '',
+      hasCalculateBtn: Boolean(document.querySelector('[data-testid="calculate-payroll-btn"]')),
+      totalNetText: document.querySelector('[data-testid="payroll-total-net-value"]')?.innerText || '',
+      statusBadge: document.querySelector('[data-testid="payroll-period-status-badge"]')?.innerText || '',
+      lockDisabled: Boolean(document.querySelector('[data-testid="open-payroll-lock-modal-btn"]')?.disabled),
+      bankDisabled: Boolean(document.querySelector('[data-testid="open-bank-transfer-modal-btn"]')?.disabled),
+      exportDisabled: Boolean(document.querySelector('[data-testid="export-payroll-csv-btn"]')?.disabled),
+      anomaliesDisabled: Boolean(document.querySelector('[data-testid="open-anomalies-modal-btn"]')?.disabled),
+    })`);
+    assert.match(r20UncreatedState.uncreatedBanner, /2028-11/, 'R20: Uncreated period banner must mention 2028-11');
+    assert.equal(r20UncreatedState.hasCalculateBtn, true, 'R20: Uncreated period banner must render calculate button');
+    assert.equal(r20UncreatedState.totalNetText.trim(), '0 đ', 'R20: Uncreated period must show 0 đ totalNet (never Period A totalNet)');
+    assert.match(r20UncreatedState.statusBadge, /Chưa khởi tạo kỳ lương/i);
+    assert.equal(r20UncreatedState.lockDisabled, true, 'R20: Lock button must be disabled for uncreated period');
+    assert.equal(r20UncreatedState.bankDisabled, true, 'R20: Bank Transfer button must be disabled for uncreated period');
+    assert.equal(r20UncreatedState.exportDisabled, true, 'R20: CSV Export button must be disabled for uncreated period');
+    assert.equal(r20UncreatedState.anomaliesDisabled, true, 'R20: Anomalies button must be disabled for uncreated period');
+
+    // Force DOM click on Lock & Bank Transfer buttons while on uncreated 2028-11 -> must NOT open any modal with 2028-10 ID!
+    await cdp.eval(`(() => {
+      document.querySelector('[data-testid="open-payroll-lock-modal-btn"]')?.click();
+      document.querySelector('[data-testid="open-bank-transfer-modal-btn"]')?.click();
+      return true;
+    })()`);
+    await new Promise((r) => setTimeout(r, 400));
+    const modalOpenedOnUncreated = await cdp.eval(`Boolean(document.querySelector('[data-testid="payroll-lock-modal"]'))`);
+    assert.equal(modalOpenedOnUncreated, false, 'R20: Clicking disabled lock button on uncreated period must never open modal');
+
+    // 6b. R20: Switch to existing period Tháng 10/2028 while GET /api/payroll/payslips fails with 500 -> must block actions & clear stale data
+    const origDbQueryR20 = db.query.bind(db);
+    let failPayslipsGet = true;
+    db.query = async (sql, params) => {
+      if (failPayslipsGet && /FROM payslips ps/i.test(String(sql)) && /LIMIT/i.test(String(sql))) {
+        throw new Error('SIMULATED_PAYSLIPS_GET_500');
+      }
+      return origDbQueryR20(sql, params);
+    };
+    try {
+      await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 10/2028');
+      await new Promise((r) => setTimeout(r, 1000));
+      const r20ErrorState = await cdp.eval(`({
+        errorBanner: document.querySelector('[data-testid="payroll-period-error-banner"]')?.innerText || '',
+        hasRetryBtn: Boolean(document.querySelector('[data-testid="payroll-period-retry-btn"]')),
+        totalNetText: document.querySelector('[data-testid="payroll-total-net-value"]')?.innerText || '',
+        lockDisabled: Boolean(document.querySelector('[data-testid="open-payroll-lock-modal-btn"]')?.disabled),
+        bankDisabled: Boolean(document.querySelector('[data-testid="open-bank-transfer-modal-btn"]')?.disabled),
+        exportDisabled: Boolean(document.querySelector('[data-testid="export-payroll-csv-btn"]')?.disabled),
+      })`);
+      assert.ok(r20ErrorState.errorBanner.length > 0, 'R20: Failed GET on period switch must show error banner');
+      assert.equal(r20ErrorState.hasRetryBtn, true, 'R20: Failed GET on period switch must show retry button');
+      assert.equal(r20ErrorState.totalNetText.trim(), '0 đ', 'R20: Failed GET must reset totalNet to 0 đ');
+      assert.equal(r20ErrorState.lockDisabled, true);
+      assert.equal(r20ErrorState.bankDisabled, true);
+      assert.equal(r20ErrorState.exportDisabled, true);
+    } finally {
+      failPayslipsGet = false;
+      db.query = origDbQueryR20;
+    }
+
+    // Click Retry -> loads Tháng 10/2028 cleanly
+    await cdp.click('[data-testid="payroll-period-retry-btn"]', 1200);
+    const r20AfterRetryExportDisabled = await cdp.eval(
+      `Boolean(document.querySelector('[data-testid="export-payroll-csv-btn"]')?.disabled)`
+    );
+    assert.equal(r20AfterRetryExportDisabled, false, 'R20: Retry must restore period readiness');
+
+    // 6b-slow. R20: Slow in-flight response when switching from Tháng 10/2028 to Tháng 09/2028 -> buttons disabled & totalNet=0 while loading
+    let delayPayslipsMs = 1000;
+    db.query = async (sql, params) => {
+      if (delayPayslipsMs > 0 && /FROM payslips ps/i.test(String(sql)) && /LIMIT/i.test(String(sql))) {
+        await new Promise((r) => setTimeout(r, delayPayslipsMs));
+      }
+      return origDbQueryR20(sql, params);
+    };
+    try {
+      await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 09/2028');
+      await new Promise((r) => setTimeout(r, 250)); // inspect while request is still in-flight!
+      const r20SlowInFlightState = await cdp.eval(`({
+        loadingBanner: document.querySelector('[data-testid="payroll-period-loading-banner"]')?.innerText || '',
+        totalNetText: document.querySelector('[data-testid="payroll-total-net-value"]')?.innerText || '',
+        lockDisabled: Boolean(document.querySelector('[data-testid="open-payroll-lock-modal-btn"]')?.disabled),
+        bankDisabled: Boolean(document.querySelector('[data-testid="open-bank-transfer-modal-btn"]')?.disabled),
+        exportDisabled: Boolean(document.querySelector('[data-testid="export-payroll-csv-btn"]')?.disabled),
+      })`);
+      assert.ok(r20SlowInFlightState.loadingBanner.length > 0, 'R20: Slow in-flight period switch must render loading banner');
+      assert.equal(r20SlowInFlightState.totalNetText.trim(), '0 đ', 'R20: Slow in-flight period switch must not show previous period totalNet');
+      assert.equal(r20SlowInFlightState.lockDisabled, true, 'R20: Lock button must be disabled while slow period response is in-flight');
+      assert.equal(r20SlowInFlightState.bankDisabled, true, 'R20: Bank Transfer button must be disabled while slow period response is in-flight');
+      assert.equal(r20SlowInFlightState.exportDisabled, true, 'R20: Export button must be disabled while slow period response is in-flight');
+      await new Promise((r) => setTimeout(r, 1200)); // wait for slow response to finish
+    } finally {
+      delayPayslipsMs = 0;
+      db.query = origDbQueryR20;
+    }
+
+    // 6c. R22: Seed additional active employees so total active employees >= 505 with real attendance in 2028-11, then initialize & export 2028-11 via UI
+    const activeCountBeforeR22 = (
+      await db.query("SELECT COUNT(*)::int AS n FROM employees WHERE status = 'DANG_LAM_VIEC'")
+    ).rows[0].n;
+    const extraNeededFor505 = Math.max(0, 505 - activeCountBeforeR22);
+    if (extraNeededFor505 > 0) {
+      const valuesSql = [];
+      const params = [];
+      for (let i = 1; i <= extraNeededFor505; i++) {
+        const id = `NV-TR22E-${String(i).padStart(4, '0')}`;
+        const offset = params.length;
+        params.push(
+          id,
+          `Nhân sự E2E R22 ${String(i).padStart(4, '0')}`,
+          `${id.toLowerCase()}@e2e.test`,
+          16000000 + (i % 8) * 500000,
+          `007199${String(i).padStart(6, '0')}`,
+          'Vietcombank'
+        );
+        valuesSql.push(
+          `($${offset + 1}, $${offset + 2}, 'DEPT-IT', NULL, 'Kỹ sư R22', $${offset + 3}, '2023-01-01'::date, $${offset + 4}, 'DANG_LAM_VIEC', $${offset + 5}, $${offset + 6})`
+        );
+      }
+      await db.query(
+        `INSERT INTO employees (id, full_name, department_id, position_id, job_title, work_email, joined_date, base_salary, status, bank_account, bank_name)
+         VALUES ${valuesSql.join(', ')}`,
+        params
+      );
+    }
+
+    // Add 15 attendance days in 2028-11 for all active employees so 500+ payslips have positive net_salary > 0
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT e.id, ('2028-11-01'::date + g), 'DUNG_GIO', CASE WHEN g = 0 THEN 1 ELSE 0 END
+         FROM employees e
+         CROSS JOIN generate_series(0, 14) g
+        WHERE e.status = 'DANG_LAM_VIEC'`
+    );
+
+    // Select uncreated Tháng 11/2028 and click `Khởi tạo & Tính bảng lương kỳ 2028-11` button in UI
+    await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 11/2028');
+    await new Promise((r) => setTimeout(r, 800));
+    await cdp.click('[data-testid="calculate-payroll-btn"]', 3200);
+
+    // Export Payroll Report CSV and Bank Transfer CSV for Tháng 11/2028 (which spans 2 pages: 500 + 5+ rows) via UI
+    await cdp.click('[data-testid="export-payroll-csv-btn"]', 1000);
+    const reportCsv11 = await waitForDownloadedCsv(downloadDir, 'Bao_Cao_Tong_Hop_Quy_Luong_Tháng_11_2028', 12000);
+
+    await cdp.click('[data-testid="open-bank-transfer-modal-btn"]', 1200);
+    await cdp.click('[data-testid="bank-transfer-export-csv-btn"]', 1000);
+    const bankCsv11 = await waitForDownloadedCsv(downloadDir, 'Lenh_Chi_Luong_Vietcombank_Th_ng_11_2028', 12000);
+
+    const period11Row = (await db.query("SELECT * FROM payroll_periods WHERE period = '2028-11'")).rows[0];
+    const dbSlips11 = await queryDbPayslipsForReconciliation(period11Row.id);
+    assert.ok(dbSlips11.length >= 505, `R22: Expected >= 505 DB payslips in 2028-11, got ${dbSlips11.length}`);
+
+    const recReport11 = reconcilePayrollReportCsv(reportCsv11.content, dbSlips11);
+    const recBank11 = reconcileBankTransferCsv(bankCsv11.content, dbSlips11);
+    assert.equal(recReport11.rowCount, dbSlips11.length, 'R22: UI CSV export must include all 505+ rows across multiple pages without truncating at 500');
+    assert.ok(recReport11.sums.netSalary > 0, 'R22: 505+ multi-page export must have positive total net salary');
+    assert.ok(recBank11.payableRowCount >= 450, `R22: Bank transfer CSV must include all payable rows across pages, got ${recBank11.payableRowCount}`);
+
+    console.log(
+      `[ASSERT 6 (R20+R22) PASS] Uncreated/Error/Slow Period Guard & 505+ Multi-Page UI Export: uncreatedTotalNet="${r20UncreatedState.totalNetText.trim()}", slowInFlightDisabled=true, buttonsDisabledOnUncreated=true, modalOpenedOnUncreated=${modalOpenedOnUncreated}, 2028-11MultiPageExportRows=${recReport11.rowCount} (DB=${dbSlips11.length}, bankPayable=${recBank11.payableRowCount}, netSum=${recReport11.sums.netSalary})`
+    );
+
+    console.log('=== [ALL R14-R23 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
+    await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
+    await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});
     await db.query("DELETE FROM system_policy_versions WHERE effective_from LIKE '2028-%' OR effective_from = '2026-06'").catch(() => {});
     await settingsService.updateSettings({ employeeId: null, role: 'HR_DIRECTOR' }, originalSettings, null).catch(() => {});
     await db.query("DELETE FROM audit_logs WHERE action IN ('CALCULATE_PAYROLL', 'LOCK_PAYROLL', 'UPDATE_PAYSLIP', 'UPDATE_SETTINGS')").catch(() => {});
+    await db.query("DELETE FROM payslips WHERE period_id IN (SELECT id FROM payroll_periods WHERE period LIKE '2028-%')").catch(() => {});
     await db.query("DELETE FROM payroll_periods WHERE period LIKE '2028-%'").catch(() => {});
     await deleteTestLeaves().catch(() => {});
     await deleteTestUsers().catch(() => {});

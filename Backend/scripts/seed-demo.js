@@ -1,9 +1,10 @@
 /**
  * Idempotent demo data for the modules added after the base schema seed (notices, handbook, performance reviews).
- * Run against the development database: `npm run seed:demo`. Safe to run repeatedly.
+ * Guarded by assertSafeTestDatabase so it can never accidentally write to nexus_hrms.
  */
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const db = require('../src/config/db');
+const { assertSafeTestDatabase } = require('../src/utils/testDbGuard');
 
 const NOTICES = [
   { key: 'seed-welcome', title: 'Chào mừng bạn đến với NEXUS HR v2.0', category: 'general', pinned: true, content: 'Hệ thống nhân sự mới hỗ trợ chấm công QR, nghỉ phép nhiều cấp duyệt, bảng lương và quản lý dự án.' },
@@ -17,6 +18,7 @@ const HANDBOOK = [
 ];
 
 async function main() {
+  await assertSafeTestDatabase(db, 'scripts/seed-demo.js');
   const author = (await db.query("SELECT employee_id FROM users WHERE email = 'hrd@fwbnexus.vn'")).rows[0]?.employee_id ?? null;
 
   for (const n of NOTICES) {

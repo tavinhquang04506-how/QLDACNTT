@@ -1,5 +1,6 @@
 const { Pool, types } = require('pg');
 const config = require('./env');
+const { assertSafeTestDatabase, assertTestDatabaseName } = require('../utils/testDbGuard');
 
 // Return DATE columns as 'YYYY-MM-DD' strings. The default parser builds a local-midnight Date that
 // JSON.stringify shifts to the previous day in timezones ahead of UTC.
@@ -18,13 +19,50 @@ pool.on('error', (err) => {
   console.error('❌ PostgreSQL pool error:', err.message);
 });
 
-const query = (text, params) => pool.query(text, params);
-const getClient = () => pool.connect();
+let testPoolVerifiedPromise = null;
+
+async function ensureTestPoolSafe(contextLabel) {
+  if (!config.isTest) return;
+  assertTestDatabaseName(config.db.database, contextLabel);
+  if (pool.connect?.mock || pool.query?.mock) {
+    return;
+  }
+  if (!testPoolVerifiedPromise) {
+    testPoolVerifiedPromise = assertSafeTestDatabase(
+      {
+        configuredDatabase: config.db.database,
+        query: (t, p) => pool.query(t, p),
+      },
+      contextLabel
+    ).catch((err) => {
+      testPoolVerifiedPromise = null;
+      throw err;
+    });
+  }
+  await testPoolVerifiedPromise;
+}
+
+const query = async (text, params) => {
+  if (config.isTest && !/^\s*SELECT\s+current_database\(\)/i.test(String(text || ''))) {
+    await ensureTestPoolSafe('db.query');
+  }
+  return pool.query(text, params);
+};
+
+const getClient = async () => {
+  if (config.isTest) {
+    await ensureTestPoolSafe('db.getClient');
+  }
+  return pool.connect();
+};
 
 /**
  * Run `fn(client)` inside BEGIN/COMMIT; ROLLBACK and rethrow on any error.
  */
 async function withTransaction(fn) {
+  if (config.isTest) {
+    await ensureTestPoolSafe('db.withTransaction');
+  }
   const client = await pool.connect();
   let releaseError;
   try {

@@ -3,6 +3,7 @@ import AppleModal from '../../components/motion/AppleModal';
 import { Building2, FileSpreadsheet, X, FileText, AlertTriangle } from 'lucide-react';
 import payrollService from '../../services/payrollService';
 import { generateCSVContent, downloadFile } from '../../utils/fileExportUtils';
+import { parsePeriodCode } from '../../utils/payrollPeriodState';
 
 export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const [selectedBank, setSelectedBank] = useState('vcb'); // 'vcb', 'tcb', 'napas'
@@ -10,45 +11,84 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const [fetchedList, setFetchedList] = useState([]);
   const [missingList, setMissingList] = useState([]);
   const [batchError, setBatchError] = useState('');
+  const [batchLoading, setBatchLoading] = useState(false);
+
+  const periodId = payload?.periodId || payload?.period?.id || null;
+  const periodName = payload?.period?.period || payload?.period?.name || payload?.period || 'Kỳ lương hiện tại';
+  const periodCode = payload?.periodCode || parsePeriodCode(periodName);
 
   useEffect(() => {
     if (!isOpen) return;
     setBatchError('');
     setMissingList([]);
-    const periodId = payload?.periodId || payload?.period?.id;
+    setFetchedList([]);
+
+    if (!periodId) {
+      setBatchError('Kỳ lương chưa được khởi tạo hoặc chưa tải xong dữ liệu kỳ lương. Không thể kết xuất lệnh chi.');
+      return;
+    }
+
     let isMounted = true;
     (async () => {
+      setBatchLoading(true);
       try {
-        if (periodId) {
-          const btRes = await payrollService.getBankTransfer(periodId).catch(() => null);
-          const btData = btRes?.data || btRes;
-          if (btData && Array.isArray(btData.items) && isMounted) {
-            const combined = [
-              ...btData.items.map((it) => ({ ...it, net_salary: it.amount })),
-              ...(btData.missingBank || []).map((m) => ({ ...m, bank_account: '', bank_name: '', net_salary: 0 })),
-            ];
-            setFetchedList(combined);
-            setMissingList(btData.missingBank || []);
-            return;
-          }
+        const btRes = await payrollService.getBankTransfer(periodId).catch(() => null);
+        const btData = btRes?.data || btRes;
+        if (btData && Array.isArray(btData.items) && isMounted) {
+          const combined = [
+            ...btData.items.map((it) => ({ ...it, net_salary: it.amount })),
+            ...(btData.missingBank || []).map((m) => ({ ...m, bank_account: '', bank_name: '', net_salary: 0 })),
+          ];
+          setFetchedList(combined);
+          setMissingList(btData.missingBank || []);
+          setBatchLoading(false);
+          return;
         }
-        if ((!payload?.slips || payload.slips.length === 0) && (!payload?.employees || payload.employees.length === 0)) {
-          const res = await payrollService.getPayslips({ limit: 500 });
-          const slips = res?.data || res || [];
-          if (Array.isArray(slips) && isMounted) {
-            setFetchedList(slips);
+
+        if (Array.isArray(payload?.slips) && payload.slips.length > 0) {
+          if (
+            payload.expectedTotal != null &&
+            payload.slips.length !== Number(payload.expectedTotal)
+          ) {
+            throw new Error(
+              `Danh sách phiếu lương (${payload.slips.length}) không khớp tổng số bản ghi của kỳ (${payload.expectedTotal}).`
+            );
           }
+          if (isMounted) {
+            setFetchedList(payload.slips);
+            setBatchLoading(false);
+          }
+          return;
+        }
+
+        if (!periodCode) {
+          throw new Error('Thiếu mã kỳ lương để tải danh sách chi trả.');
+        }
+
+        const allPages = await payrollService.getAllPayslipsForPeriod(periodCode, 500);
+        if (isMounted) {
+          setFetchedList(allPages.data || []);
+          setBatchLoading(false);
         }
       } catch (err) {
-        if (isMounted) setBatchError(err?.message || 'Không thể tải danh sách chi lương từ máy chủ.');
+        if (isMounted) {
+          setFetchedList([]);
+          setBatchError(err?.message || 'Không thể tải đầy đủ danh sách chi lương từ máy chủ.');
+          setBatchLoading(false);
+        }
       }
     })();
     return () => { isMounted = false; };
-  }, [isOpen, payload]);
+  }, [isOpen, periodId, periodCode, payload]);
 
-  const rawList = (payload?.slips && payload.slips.length > 0)
-    ? payload.slips
-    : fetchedList;
+  const rawList =
+    !batchError && !batchLoading
+      ? fetchedList.length > 0
+        ? fetchedList
+        : Array.isArray(payload?.slips)
+        ? payload.slips
+        : []
+      : [];
 
   const displayAccounts = rawList.map((item, idx) => {
     const rawNet = Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0);
@@ -72,9 +112,10 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const totalEmp = displayAccounts.length;
   const totalAmount = validAccounts.reduce((acc, curr) => acc + (curr.rawAmount || 0), 0);
   const totalAmountStr = `${totalAmount.toLocaleString('vi-VN')} đ`;
-  const periodName = payload?.period?.period || payload?.period?.name || payload?.period || 'Kỳ lương hiện tại';
+  const canExportBatch = Boolean(periodId && !batchLoading && !batchError && validAccounts.length > 0);
 
   const handleExport = () => {
+    if (!canExportBatch) return;
     const headers = ['STT', 'Mã Nhân Viên', 'Họ Và Tên', 'Số Tài Khoản', 'Ngân Hàng Thụ Hưởng', 'Số Tiền Thực Nhận (VNĐ)', 'Trạng Thái'];
     const rows = validAccounts.map((a, idx) => [
       idx + 1,
@@ -106,7 +147,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold text-slate-900">Xuất lệnh chi lương Ngân hàng và Ủy nhiệm chi (UNC)</h3>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Sẵn sàng kết xuất
+                  {batchLoading ? 'Đang tải...' : batchError ? 'Lỗi dữ liệu' : 'Sẵn sàng kết xuất'}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
@@ -190,7 +231,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
         </div>
 
         {batchError && (
-          <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold">
+          <div data-testid="bank-transfer-batch-error" className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold">
             {batchError}
           </div>
         )}
@@ -249,16 +290,18 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
 
           <div className="flex items-center gap-2.5">
             <button
+              disabled={!canExportBatch}
               onClick={handleExport}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl text-xs flex items-center gap-1.5 transition"
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed text-slate-800 font-bold rounded-xl text-xs flex items-center gap-1.5 transition"
             >
               <FileText className="w-3.5 h-3.5 text-slate-600" />
               In Ủy nhiệm chi (PDF)
             </button>
             <button
               data-testid="bank-transfer-export-csv-btn"
+              disabled={!canExportBatch}
               onClick={handleExport}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
             >
               <FileSpreadsheet className="w-4 h-4" />
               Xuất File CSV Lệnh Chi Ngân Hàng
