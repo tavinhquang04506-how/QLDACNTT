@@ -14,9 +14,10 @@ const KIOSK_ALLOWED = [
 const reject = (res, status, message, code) => res.status(status).json({ success: false, ...(code && { code }), message });
 
 /**
- * Verify the Bearer token, then load the account so that deactivation, offboarding and role
- * changes take effect immediately instead of when the token expires.
- * Sets req.user = { userId, employeeId, roleCode, email } from the database.
+ * Verify the Bearer token, then load the account (and bound employee department/status)
+ * so that deactivation, offboarding, department moves, and role changes take effect immediately
+ * instead of when the token expires.
+ * Sets req.user = { userId, employeeId, roleCode, email, departmentId, employeeStatus } from the database.
  */
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -36,11 +37,24 @@ const authenticate = async (req, res, next) => {
 
   try {
     const { rows } = await db.query(
-      'SELECT id, employee_id, role_code, email, is_active FROM users WHERE id = $1', [decoded.userId]);
+      `SELECT u.id, u.employee_id, u.role_code, u.email, u.is_active,
+              e.department_id, e.status AS employee_status
+         FROM users u
+         LEFT JOIN employees e ON e.id = u.employee_id
+        WHERE u.id = $1`,
+      [decoded.userId]
+    );
     const user = rows[0];
     if (!user || !user.is_active) return reject(res, 401, 'Tài khoản đã bị vô hiệu hóa', 'ACCOUNT_DISABLED');
 
-    req.user = { userId: user.id, employeeId: user.employee_id, roleCode: user.role_code, email: user.email };
+    req.user = {
+      userId: user.id,
+      employeeId: user.employee_id || null,
+      roleCode: user.role_code,
+      email: user.email,
+      departmentId: user.department_id || null,
+      employeeStatus: user.employee_status || null,
+    };
 
     if (user.role_code === 'KIOSK') {
       const path = req.originalUrl.split('?')[0].replace(/\/+$/, '');
