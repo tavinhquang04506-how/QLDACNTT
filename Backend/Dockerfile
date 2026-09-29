@@ -21,8 +21,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy application source code (.dockerignore excludes host storage/)
 COPY . .
 
-# Create persistent storage mount directory, non-root user, and set permissions
-RUN mkdir -p /app/storage/notice_attachments && \
+# Create persistent storage mount directory (both prod and isolated test), non-root user, and set permissions
+RUN mkdir -p /app/storage/notice_attachments /app/storage_test/notice_attachments && \
     addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001 -G nodejs && \
     chown -R nodejs:nodejs /app
