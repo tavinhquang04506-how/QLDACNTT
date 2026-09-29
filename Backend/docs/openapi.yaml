@@ -1,0 +1,2545 @@
+openapi: 3.0.3
+info:
+  title: NEXUS HRMS Backend API
+  version: 1.4.0
+  description: >
+    REST API for the NEXUS HRMS frontend. Success bodies are `{ success: true, data, pagination? }`
+    (some legacy endpoints add extra top-level fields). Error bodies are
+    `{ success: false, code, message, details? }`. Messages are Vietnamese.
+    Send `Authorization: Bearer <accessToken>` on every endpoint except login, refresh, logout and health.
+    Access tokens are short-lived; use POST /auth/refresh with the refresh token to get a new pair.
+    Every request re-checks the account in the database, so deactivation, offboarding and role changes apply
+    immediately (401 `ACCOUNT_DISABLED` / 403). KIOSK accounts can only call POST /attendance/kiosk/punch,
+    GET /auth/me and POST /auth/change-password.
+    DATE fields are `YYYY-MM-DD` strings; timestamps are ISO 8601 (UTC). The company time zone is Asia/Ho_Chi_Minh.
+servers:
+  - url: http://localhost:8000/api
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: users
+  - name: employees
+  - name: contracts
+  - name: attendance
+  - name: leaves
+  - name: overtime
+  - name: medical
+  - name: payroll
+  - name: projects
+  - name: tasks
+  - name: squads
+  - name: notifications
+  - name: notices
+  - name: handbook
+  - name: analytics
+  - name: dashboard
+  - name: departments
+  - name: positions
+  - name: audit
+paths:
+  /health:
+    get:
+      tags: [auth]
+      summary: Health check (no auth)
+      security: []
+      responses:
+        '200':
+          description: Server and database are up
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in with email and password
+      description: Returns the legacy `token` (same value as `accessToken`) plus a refresh token. Locked after 5 failed attempts for 15 minutes.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  token: { type: string, description: Legacy alias of accessToken }
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+                  expiresIn: { type: integer, description: Access token lifetime in seconds }
+                  mustChangePassword: { type: boolean }
+                  user: { $ref: '#/components/schemas/SessionUser' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403':
+          description: Account disabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423':
+          description: Account locked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Exchange a refresh token for a new access + refresh pair
+      description: >
+        The refresh token is single-use (rotation). Presenting an already-used token revokes the whole
+        session chain and returns 401 `REFRESH_TOKEN_REUSED`; the user must log in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  token: { type: string }
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+                  expiresIn: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401':
+          description: INVALID_REFRESH_TOKEN, REFRESH_TOKEN_REUSED or ACCOUNT_DISABLED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token (idempotent)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Logged out
+        '400': { $ref: '#/components/responses/Error' }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Profile of the current user
+      responses:
+        '200':
+          description: Current user
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/change-password:
+    post:
+      tags: [auth]
+      summary: Change own password
+      description: New password needs at least 8 characters with a letter and a digit. Clears `mustChangePassword` and revokes all refresh tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Password changed
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /users:
+    get:
+      tags: [users]
+      summary: List accounts
+      description: Roles CEO, HR_DIRECTOR, ADMIN.
+      parameters:
+        - { name: search, in: query, schema: { type: string }, description: Matches email, full name or employee id }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+        - { name: active, in: query, schema: { type: string, enum: ['true', 'false'] } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [users]
+      summary: Create an account
+      description: >
+        CEO may assign any role; HR_DIRECTOR and ADMIN only EMPLOYEE, LINE_MANAGER, KIOSK.
+        Without `password` a temporary password is generated and returned once as `temporaryPassword`.
+        The account must change its password at first login. `employeeId` is optional only for KIOSK and ADMIN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                employeeId: { type: string }
+                email: { type: string }
+                role: { $ref: '#/components/schemas/Role' }
+                password: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/User' }
+                  temporaryPassword: { type: string, description: Shown once, only when no password was supplied }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /users/{id}:
+    get:
+      tags: [users]
+      summary: Get one account
+      parameters:
+        - { $ref: '#/components/parameters/userId' }
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [users]
+      summary: Change role or active flag
+      description: >
+        Nobody can change their own role or deactivate themselves. Any activation change revokes all refresh tokens.
+        HR_DIRECTOR cannot manage CEO/ADMIN accounts; ADMIN can only manage EMPLOYEE, LINE_MANAGER and KIOSK accounts.
+      parameters:
+        - { $ref: '#/components/parameters/userId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: Updated account
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /users/{id}/reset-password:
+    post:
+      tags: [users]
+      summary: Set a temporary password
+      description: Unlocks the account, forces a password change at next login and revokes all sessions. The temporary password is returned once.
+      parameters:
+        - { $ref: '#/components/parameters/userId' }
+      responses:
+        '200':
+          description: Temporary password issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  temporaryPassword: { type: string }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /users/{id}/unlock:
+    post:
+      tags: [users]
+      summary: Clear the lockout and failed-attempt counter
+      parameters:
+        - { $ref: '#/components/parameters/userId' }
+      responses:
+        '200':
+          description: Updated account
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /employees:
+    get:
+      tags: [employees]
+      summary: List employees
+      description: >
+        LINE_MANAGER sees only their own department (or only themselves without one). Sensitive fields
+        (base_salary, citizen_id, bank_account, bank_name, date_of_birth, address, termination_reason) are removed
+        unless the caller is the record owner, HR_DIRECTOR or CEO. face_encoding is never returned.
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: department, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/EmployeeStatus' } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page of employees (snake_case rows)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Employee' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+    post:
+      tags: [employees]
+      summary: Create an employee (onboarding)
+      description: Roles CEO, HR_DIRECTOR. Creates the initial active contract from contractType, baseSalary and joinedDate. `id` is generated (`NV-<n>`) when omitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeInput' }
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /employees/import:
+    post:
+      tags: [employees]
+      summary: Bulk import employees
+      description: >
+        Roles CEO, HR_DIRECTOR. 1 to 500 rows, each shaped like the create body. Every row runs in its own savepoint:
+        bad rows are reported in `failed` (1-based `row`) and the good ones are kept. With `dryRun` nothing is written.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rows]
+              properties:
+                rows:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/EmployeeInput' }
+                dryRun: { type: boolean }
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  dryRun: { type: boolean }
+                  created: { type: integer }
+                  createdIds:
+                    type: array
+                    items: { type: string }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        row: { type: integer }
+                        code: { type: string }
+                        message: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /employees/{id}:
+    get:
+      tags: [employees]
+      summary: Employee detail (Profile 360)
+      description: EMPLOYEE may open only their own record; LINE_MANAGER only their department; others all.
+      parameters:
+        - { $ref: '#/components/parameters/empId' }
+      responses:
+        '200':
+          description: Employee
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [employees]
+      summary: Update an employee
+      description: "Partial update; `null` clears a nullable field. `status: DA_NGHI_VIEC` is refused (use offboard) and a terminated employee cannot change status."
+      parameters:
+        - { $ref: '#/components/parameters/empId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeInput' }
+      responses:
+        '200':
+          description: Updated
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /employees/{id}/offboard:
+    post:
+      tags: [employees]
+      summary: End an employment
+      description: >
+        Roles CEO, HR_DIRECTOR. Sets status DA_NGHI_VIEC with termination date and reason, disables the login,
+        revokes all refresh tokens, terminates the active contract and clears the department head role.
+        `directReports` is the number of active employees still reporting to this person.
+      parameters:
+        - { $ref: '#/components/parameters/empId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [terminationDate, reason]
+              properties:
+                terminationDate: { type: string, format: date }
+                reason: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Employee terminated
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /employees/{id}/contracts:
+    get:
+      tags: [contracts]
+      summary: Contracts of an employee, newest first
+      description: HR_DIRECTOR and CEO for anyone; an EMPLOYEE only for themselves.
+      parameters:
+        - { $ref: '#/components/parameters/empId' }
+      responses:
+        '200':
+          description: Contracts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Contract' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [contracts]
+      summary: Create a contract
+      description: >
+        Roles CEO, HR_DIRECTOR. With status HIEU_LUC (default) the employee's active contract ends the day before
+        this one starts (409 CONTRACT_OVERLAP if this one does not start later) and the employee's base_salary and
+        contract_type are synced. CHO_KY creates a draft that changes nothing until activated.
+      parameters:
+        - { $ref: '#/components/parameters/empId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, startDate, salary]
+              properties:
+                contractNo: { type: string, description: Generated when omitted }
+                type: { $ref: '#/components/schemas/ContractType' }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date, nullable: true }
+                salary: { type: number, minimum: 0 }
+                status: { type: string, enum: [HIEU_LUC, CHO_KY] }
+                fileUrl: { type: string, nullable: true }
+                signedAt: { type: string, format: date-time, nullable: true }
+                note: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /contracts/{id}:
+    get:
+      tags: [contracts]
+      summary: Get one contract
+      parameters:
+        - { $ref: '#/components/parameters/contractId' }
+      responses:
+        '200':
+          description: Contract
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [contracts]
+      summary: Edit a draft or active contract
+      description: Editable fields are salary, endDate, fileUrl, signedAt, note. Ended contracts return 409. A salary edit on the active contract syncs the employee.
+      parameters:
+        - { $ref: '#/components/parameters/contractId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                salary: { type: number, minimum: 0 }
+                endDate: { type: string, format: date, nullable: true }
+                fileUrl: { type: string, nullable: true }
+                signedAt: { type: string, format: date-time, nullable: true }
+                note: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Updated
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /contracts/{id}/activate:
+    post:
+      tags: [contracts]
+      summary: Activate a draft (CHO_KY) contract
+      parameters:
+        - { $ref: '#/components/parameters/contractId' }
+      responses:
+        '200':
+          description: Activated
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /contracts/{id}/terminate:
+    post:
+      tags: [contracts]
+      summary: Terminate a contract
+      description: The end date defaults to today and cannot precede the start date.
+      parameters:
+        - { $ref: '#/components/parameters/contractId' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                terminationDate: { type: string, format: date }
+                note: { type: string }
+      responses:
+        '200':
+          description: Terminated
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /departments:
+    get:
+      tags: [departments]
+      summary: List active departments with head count
+      description: "`budget_yearly` is included only for CEO and HR_DIRECTOR."
+      responses:
+        '200':
+          description: Departments
+    post:
+      tags: [departments]
+      summary: Create a department
+      description: Roles CEO, HR_DIRECTOR. The id is `DEPT-<code>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code: { type: string, description: 2-15 letters or digits, stored upper-case }
+                name: { type: string }
+                description: "{ type: string, nullable: true }"
+                budgetYearly: { type: number, minimum: 0 }
+                managerId: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /departments/{id}:
+    get:
+      tags: [departments]
+      summary: Get one department
+      description: "`budget_yearly` is included only for CEO and HR_DIRECTOR."
+      parameters:
+        - { $ref: '#/components/parameters/deptId' }
+      responses:
+        '200':
+          description: Department
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [departments]
+      summary: Update a department
+      parameters:
+        - { $ref: '#/components/parameters/deptId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: "{ type: string, nullable: true }"
+                budgetYearly: { type: number, minimum: 0 }
+                managerId: { type: string, nullable: true }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [departments]
+      summary: Deactivate a department
+      description: Refused with 409 `DEPARTMENT_HAS_EMPLOYEES` while non-terminated employees remain. Idempotent.
+      parameters:
+        - { $ref: '#/components/parameters/deptId' }
+      responses:
+        '200':
+          description: Deactivated
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /departments/{id}/employees:
+    get:
+      tags: [departments]
+      summary: Active employees of a department
+      parameters:
+        - { $ref: '#/components/parameters/deptId' }
+      responses:
+        '200':
+          description: Employees
+  /positions:
+    get:
+      tags: [positions]
+      summary: List positions (job titles)
+      parameters:
+        - { name: includeInactive, in: query, schema: { type: string, enum: ['true', 'false'] } }
+      responses:
+        '200':
+          description: Positions ordered by level then name
+    post:
+      tags: [positions]
+      summary: Create a position
+      description: Roles CEO, HR_DIRECTOR. The id is `POS-<code>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code: { type: string }
+                name: { type: string }
+                level: { type: integer, minimum: 0, maximum: 10 }
+                description: "{ type: string, nullable: true }"
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /positions/{id}:
+    get:
+      tags: [positions]
+      summary: Get one position
+      parameters:
+        - { $ref: '#/components/parameters/posId' }
+      responses:
+        '200':
+          description: Position
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [positions]
+      summary: Update a position
+      parameters:
+        - { $ref: '#/components/parameters/posId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                level: { type: integer, minimum: 0, maximum: 10 }
+                description: "{ type: string, nullable: true }"
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [positions]
+      summary: Deactivate a position
+      description: Refused with 409 `POSITION_IN_USE` while non-terminated employees hold it.
+      parameters:
+        - { $ref: '#/components/parameters/posId' }
+      responses:
+        '200':
+          description: Deactivated
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /attendance:
+    get:
+      tags: [attendance]
+      summary: Attendance history (paged)
+      description: >
+        EMPLOYEE sees only their own rows, LINE_MANAGER their department, HR/CEO everyone. A KIOSK account cannot read.
+      parameters:
+        - { name: date, in: query, schema: { type: string } }
+        - { name: month, in: query, schema: { type: string } }
+        - { name: department, in: query, schema: { type: string } }
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page of attendance rows
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /attendance/check-in:
+    post:
+      tags: [attendance]
+      summary: Check in for today (company time zone)
+      description: >
+        Method is one of gps, manual, qr, kiosk (face_id is no longer accepted). The DB trigger computes late minutes against 08:00 Vietnam time. 409 when already checked in; 403 when the account has no employee record.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method: { type: string, enum: [gps, manual, qr, kiosk] }
+                gpsLat: { type: number, minimum: -90, maximum: 90 }
+                gpsLng: { type: number, minimum: -180, maximum: 180 }
+      responses:
+        '201':
+          description: Checked in
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /attendance/check-out:
+    post:
+      tags: [attendance]
+      summary: Check out for today
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method: { type: string, enum: [gps, manual, qr, kiosk] }
+      responses:
+        '200':
+          description: Checked out (work_hours and ot_hours computed)
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /attendance/me/today:
+    get:
+      tags: [attendance]
+      summary: Today's punch state of the caller
+      responses:
+        '200':
+          description: row (or null), checkedIn, checkedOut
+        '403': { $ref: '#/components/responses/Error' }
+  /attendance/qr:
+    get:
+      tags: [attendance]
+      summary: The caller's attendance QR token
+      description: >
+        Short-lived (60 s) and single-use. Render it as a QR code; a kiosk scans it and posts it to /attendance/kiosk/punch. It is signed with a key derived from the JWT secret and cannot be used as an access token.
+      responses:
+        '200':
+          description: "{ qrToken, expiresIn, employeeId }"
+        '403': { $ref: '#/components/responses/Error' }
+  /attendance/kiosk/punch:
+    post:
+      tags: [attendance]
+      summary: Kiosk scans an employee QR
+      description: >
+        Roles KIOSK, HR_DIRECTOR, CEO. The first scan of the day checks in (201, action CHECK_IN), the second checks out (200, CHECK_OUT), a third is 409. A second scan sooner than PUNCH_MIN_GAP_SECONDS is 409 PUNCH_TOO_SOON. Errors: 401 INVALID_QR_TOKEN / QR_TOKEN_USED, 404 unknown employee, 409 terminated employee.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qrToken]
+              properties:
+                qrToken: { type: string }
+      responses:
+        '200':
+          description: Punch recorded
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /attendance/adjust:
+    post:
+      tags: [attendance]
+      summary: Correct one day (upsert)
+      description: >
+        Roles CEO, HR_DIRECTOR. Times are ISO 8601 with offset; the trigger recomputes late minutes, hours and status from them. A status-only day (for example NGHI_PHEP) needs no times. 201 when the day was created, 200 when updated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeId, workDate]
+              properties:
+                employeeId: { type: string }
+                workDate: { type: string, format: date }
+                checkIn: { type: string, format: date-time }
+                checkOut: { type: string, format: date-time }
+                status: { $ref: '#/components/schemas/AttendanceStatus' }
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated day
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /attendance/timesheet:
+    get:
+      tags: [attendance]
+      summary: Monthly timesheet matrix
+      description: >
+        One row per employee with `cells` (date -> status) and `totals` (work_days, late_days, leave_days, absent_days, ot_hours). Scoped by role.
+      parameters:
+        - { name: month, in: query, required: true, schema: { type: string, example: 2026-09 } }
+        - { name: department, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: "{ month, days, rows }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /attendance/exceptions:
+    get:
+      tags: [attendance]
+      summary: Late and absent employees for a day
+      description: >
+        Roles CEO, HR_DIRECTOR, LINE_MANAGER (own department). `absent` lists active employees with no punch and no approved leave; it is empty on weekends.
+      parameters:
+        - { name: date, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: "{ date, late, absent }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /attendance/live:
+    get:
+      tags: [attendance]
+      summary: Today's latest punches (max 50)
+      responses:
+        '200':
+          description: Latest events, newest first
+        '403': { $ref: '#/components/responses/Error' }
+  /leaves:
+    post:
+      tags: [leaves]
+      summary: Submit a leave request
+      description: >
+        snake_case field names are accepted too. Refused with 409 LEAVE_OVERLAP (overlaps an active request), 409 INSUFFICIENT_BALANCE (balance minus pending requests), 400 for inactive types or invalid dates. Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leaveTypeId, startDate, endDate, reason]
+              properties:
+                leaveTypeId: { type: string, example: LT-AL }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                totalDays: { type: number, multipleOf: 0.5, description: Optional; Monday-Friday days are computed when omitted }
+                reason: { type: string }
+                handoverTo: { type: string, nullable: true }
+                attachmentUrl: { type: string, nullable: true }
+                attachmentName: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Created (stage depends on the requester)
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      tags: [leaves]
+      summary: List leave requests (paged)
+      parameters:
+        - { name: stage, in: query, schema: { type: string, enum: [CHO_TRUONG_PHONG_DUYET, CHO_HR_PHE_CHUAN, DA_PHE_DUYET, TU_CHOI, DA_HUY] } }
+        - { name: month, in: query, schema: { type: string } }
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page of requests, scoped by role
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /leaves/calendar:
+    get:
+      tags: [leaves]
+      summary: Leaves overlapping a month
+      parameters:
+        - { name: month, in: query, required: true, schema: { type: string, example: 2026-09 } }
+        - { name: department, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Pending and approved leaves
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /leaves/types:
+    get:
+      tags: [leaves]
+      summary: Leave types
+      responses:
+        '200':
+          description: Leave types
+  /leaves/balances/{employeeId}:
+    get:
+      tags: [leaves]
+      summary: Leave balances for the current year
+      description: >
+        Use `me` for the caller. LINE_MANAGER may read their department, HR/CEO everyone.
+      parameters:
+        - { name: employeeId, in: path, required: true, schema: { type: string, example: me } }
+      responses:
+        '200':
+          description: Balances
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /leaves/{id}:
+    get:
+      tags: [leaves]
+      summary: Leave request detail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: LP-2026-101 } }
+      responses:
+        '200':
+          description: Request with approver names
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /leaves/{id}/approve:
+    patch:
+      tags: [leaves]
+      summary: Approve the current step
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request. Final approval fails with 409 INSUFFICIENT_BALANCE when the days no longer fit; the balance trigger charges the days.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: LP-2026-101 } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated request
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /leaves/{id}/reject:
+    patch:
+      tags: [leaves]
+      summary: Reject the request
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: LP-2026-101 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, description: Required }
+      responses:
+        '200':
+          description: Rejected request
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /leaves/{id}/cancel:
+    patch:
+      tags: [leaves]
+      summary: Cancel own request
+      description: >
+        Approved leave is refunded by the trigger; a leave that already ended cannot be cancelled (409 LEAVE_ALREADY_TAKEN).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: LP-2026-101 } }
+      responses:
+        '200':
+          description: Cancelled request
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /ot-requests:
+    post:
+      tags: [overtime]
+      summary: Submit overtime request
+      description: >
+        Hours are computed from the times (max 4 h a day). 409 OT_OVERLAP for an overlapping request that day and 409 OT_MONTHLY_LIMIT above 40 h a month (legal limit). An approved request of a past day cannot be cancelled. Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workDate, startTime, endTime, reason]
+              properties:
+                workDate: { type: string, format: date }
+                startTime: { type: string, example: "18:00" }
+                endTime: { type: string, example: "20:30" }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      tags: [overtime]
+      summary: List overtime requests (paged)
+      parameters:
+        - { name: stage, in: query, schema: { type: string } }
+        - { name: month, in: query, schema: { type: string } }
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page, scoped by role
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /ot-requests/{id}:
+    get:
+      tags: [overtime]
+      summary: overtime request detail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: OT-2026-001 } }
+      responses:
+        '200':
+          description: Detail
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /ot-requests/{id}/approve:
+    patch:
+      tags: [overtime]
+      summary: Approve the current step
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: OT-2026-001 } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /ot-requests/{id}/reject:
+    patch:
+      tags: [overtime]
+      summary: Reject
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: OT-2026-001 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, description: Required }
+      responses:
+        '200':
+          description: Rejected
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /ot-requests/{id}/cancel:
+    patch:
+      tags: [overtime]
+      summary: Cancel own request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: OT-2026-001 } }
+      responses:
+        '200':
+          description: Cancelled
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /medical-claims:
+    post:
+      tags: [medical]
+      summary: Submit medical claim
+      description: >
+        An approved claim cannot be cancelled (409 CLAIM_ALREADY_APPROVED). Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claimDate, amount, description]
+              properties:
+                claimDate: { type: string, format: date, description: Not in the future }
+                amount: { type: number, exclusiveMinimum: true, minimum: 0 }
+                hospital: { type: string, nullable: true }
+                description: "{ type: string }"
+                attachmentUrl: { type: string, nullable: true }
+                leaveRequestId: { type: string, nullable: true, description: Must be the caller's own approved sick leave }
+      responses:
+        '201':
+          description: Created
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      tags: [medical]
+      summary: List medical claims (paged)
+      parameters:
+        - { name: stage, in: query, schema: { type: string } }
+        - { name: month, in: query, schema: { type: string } }
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page, scoped by role
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /medical-claims/{id}:
+    get:
+      tags: [medical]
+      summary: medical claim detail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: MC-2026-001 } }
+      responses:
+        '200':
+          description: Detail
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /medical-claims/{id}/approve:
+    patch:
+      tags: [medical]
+      summary: Approve the current step
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: MC-2026-001 } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /medical-claims/{id}/reject:
+    patch:
+      tags: [medical]
+      summary: Reject
+      description: >
+        Chain: employee -> LINE_MANAGER of the same department -> HR_DIRECTOR. Requests of a LINE_MANAGER or HR_DIRECTOR are approved only by the CEO, a CEO request is approved automatically, the CEO may approve any pending step directly, and nobody acts on their own request.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: MC-2026-001 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, description: Required }
+      responses:
+        '200':
+          description: Rejected
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /medical-claims/{id}/cancel:
+    patch:
+      tags: [medical]
+      summary: Cancel own request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: MC-2026-001 } }
+      responses:
+        '200':
+          description: Cancelled
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /payroll/periods:
+    get:
+      tags: [payroll]
+      summary: Payroll periods (latest 24)
+      description: >
+        Roles CEO, HR_DIRECTOR.
+      responses:
+        '200':
+          description: Periods
+        '403': { $ref: '#/components/responses/Error' }
+  /payroll/periods/{id}:
+    get:
+      tags: [payroll]
+      summary: One payroll period
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      responses:
+        '200':
+          description: Period
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /payroll/periods/{id}/lock:
+    post:
+      tags: [payroll]
+      summary: Lock (chốt) a draft period
+      description: >
+        DU_THAO -> DA_CHOT. 409 NO_PAYSLIPS when nothing was calculated, 409 ANOMALIES_PENDING (details = the violations) when legal violations exist unless `acknowledgeAnomalies` is true. A locked period can never be recalculated.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledgeAnomalies: { type: boolean }
+      responses:
+        '200':
+          description: Locked period
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /payroll/periods/{id}/transfer:
+    post:
+      tags: [payroll]
+      summary: Mark a locked period as paid by bank transfer
+      description: >
+        DA_CHOT -> DA_CHUYEN_KHOAN and every payslip gets paid_date. 409 MISSING_BANK_ACCOUNT (details = employees) until all payslips have bank details.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      responses:
+        '200':
+          description: Transferred period
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /payroll/periods/{id}/anomalies:
+    get:
+      tags: [payroll]
+      summary: Anomaly report of a period
+      description: >
+        Types: OT_OVER_LIMIT (violation, > 40 h), OT_UNAPPROVED, MISSING_BANK, NO_ATTENDANCE. Sorted by severity (Cao, Trung bình, Thấp).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      responses:
+        '200':
+          description: Anomalies
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /payroll/periods/{id}/bank-transfer:
+    get:
+      tags: [payroll]
+      summary: Bank transfer batch of a locked period
+      description: >
+        `totalAmount` is the sum of the `items` lines; `periodTotalNet` is the period total, which is higher while employees without bank details are still listed in `missingBank`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      responses:
+        '200':
+          description: "{ period, status, count, totalAmount, periodTotalNet, items, missingBank }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /payroll/payslips:
+    get:
+      tags: [payroll]
+      summary: Payslips (paged)
+      description: >
+        CEO and HR_DIRECTOR see everything including drafts. Everyone else (EMPLOYEE, LINE_MANAGER) sees only their own payslips and only for locked periods. ADMIN and KIOSK get 403.
+      parameters:
+        - { name: period, in: query, schema: { type: string, example: 2026-09 } }
+        - { $ref: '#/components/parameters/page' }
+        - { name: limit, in: query, description: Clamped to 1..500, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        '200':
+          description: Page of payslips
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /payroll/payslips/{id}:
+    get:
+      tags: [payroll]
+      summary: One payslip
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: '1' } }
+      responses:
+        '200':
+          description: Payslip
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /payroll/me:
+    get:
+      tags: [payroll]
+      summary: The caller's latest 12 published payslips
+      responses:
+        '200':
+          description: Payslips
+        '403': { $ref: '#/components/responses/Error' }
+  /payroll/calculate:
+    post:
+      tags: [payroll]
+      summary: Calculate (or recalculate) the draft payroll of a month
+      description: >
+        Roles CEO, HR_DIRECTOR. Includes probation staff and employees who left during the month; days above 22 are capped; progressive personal income tax and capped insurance are applied. 409 PERIOD_LOCKED for a locked or transferred period.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period]
+              properties:
+                period: { type: string, example: 2026-09 }
+      responses:
+        '200':
+          description: "{ period, headcount, totalNet, totalBhxh, totalTax, totalOtHours }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /projects:
+    get:
+      tags: [projects]
+      summary: "Projects visible to the caller"
+      description: "CEO and HR_DIRECTOR see all; LINE_MANAGER the department's projects and those they manage; EMPLOYEE only projects they manage, hold tasks in or belong to through a squad. Rows carry integer total_tasks and done_tasks."
+      responses:
+        '200':
+          description: "Projects"
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [projects]
+      summary: "Create a project"
+      description: "CEO, HR_DIRECTOR, LINE_MANAGER (own department only). The manager defaults to the creator. snake_case names (department_id, start_date, budget_hours) are accepted too."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                code: { type: string, description: "3-20 chars; generated when omitted" }
+                departmentId: { type: string }
+                managerId: { type: string }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                priority: { type: string, enum: ["Thấp", "Trung bình", "Cao", "Khẩn cấp"] }
+                description: { type: string }
+                budgetHours: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /projects/{id}:
+    get:
+      tags: [projects]
+      summary: "Project detail"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PRJ-1000" } }
+      responses:
+        '200':
+          description: "Project"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [projects]
+      summary: "Update a project"
+      description: "The project manager, the department manager, HR_DIRECTOR and CEO. Progress is computed from the tasks and cannot be set."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PRJ-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                departmentId: { type: string }
+                managerId: { type: string }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                priority: { type: string, enum: ["Thấp", "Trung bình", "Cao", "Khẩn cấp"] }
+                description: { type: string }
+                budgetHours: { type: integer, minimum: 0 }
+                status: { type: string, enum: [planned, in_progress, completed, paused, at_risk] }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [projects]
+      summary: "Delete a project"
+      description: "409 PROJECT_HAS_TASKS while tasks exist."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PRJ-1000" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /projects/{id}/tasks:
+    get:
+      tags: [projects]
+      summary: "Tasks of a project"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PRJ-1000" } }
+      responses:
+        '200':
+          description: "Tasks ordered by priority then deadline"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [projects]
+      summary: "Create a task"
+      description: "Any participant may create tasks assigned to themselves; assigning to someone else needs the project manager, department manager, HR_DIRECTOR or CEO. Defaults: assignee = creator, kpiWeight 20, estimatedHours 8, stage todo."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PRJ-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                assigneeId: { type: string }
+                deadline: { type: string, format: date }
+                priority: { type: string, enum: ["Thấp", "Trung bình", "Cao", "Khẩn cấp"] }
+                kpiWeight: { type: integer, minimum: 0, maximum: 100 }
+                estimatedHours: { type: number }
+                stage: { type: string, enum: [todo, in_progress] }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /projects/tasks/{id}/stage:
+    patch:
+      tags: [projects]
+      summary: "Move a task (legacy path)"
+      description: "Same as PATCH /tasks/{id}/stage."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              properties:
+                stage: { $ref: "#/components/schemas/TaskStage" }
+                note: { type: string }
+      responses:
+        '200':
+          description: "Moved task"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /projects/squads:
+    get:
+      tags: [squads]
+      summary: "Squads (legacy path of GET /squads)"
+      responses:
+        '200':
+          description: "Squads with members"
+        '403': { $ref: '#/components/responses/Error' }
+  /tasks/{id}:
+    get:
+      tags: [tasks]
+      summary: "Task detail"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      responses:
+        '200':
+          description: "Task"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [tasks]
+      summary: "Update a task"
+      description: "The project manager, department manager, task creator, HR and CEO edit everything. The assignee may only change progress, deliverableUrl and deliverableNote."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                assigneeId: { type: string }
+                deadline: { type: string, format: date }
+                priority: { type: string, enum: ["Thấp", "Trung bình", "Cao", "Khẩn cấp"] }
+                kpiWeight: { type: integer }
+                estimatedHours: { type: number }
+                progress: { type: integer, minimum: 0, maximum: 100 }
+                deliverableUrl: { type: string }
+                deliverableNote: { type: string }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [tasks]
+      summary: "Delete a task"
+      description: "Project manager, department manager, task creator, HR and CEO."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /tasks/{id}/stage:
+    patch:
+      tags: [tasks]
+      summary: "Move a task through the workflow"
+      description: "Allowed: todo<->in_progress and in_progress->review by the assignee or the manager side; review->done or review->in_progress (note required) only by the reviewer side and never by the assignee (403 SELF_REVIEW); done->in_progress/todo (reopen) by the project manager, HR or CEO. Anything else is 409 INVALID_TRANSITION. Done sets progress 100 and records reviewed_by."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              properties:
+                stage: { $ref: "#/components/schemas/TaskStage" }
+                note: { type: string }
+      responses:
+        '200':
+          description: "Moved task"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /tasks/{id}/review:
+    post:
+      tags: [tasks]
+      summary: "Accept or reject a submitted task"
+      description: "The task must be in review. `reject` needs a note and returns the task to in_progress; both outcomes are logged (REVIEW_ACCEPTED / REVIEW_REJECTED)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [accept, reject] }
+                note: { type: string }
+      responses:
+        '200':
+          description: "Reviewed task"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /tasks/{id}/logs:
+    get:
+      tags: [tasks]
+      summary: "Task history"
+      description: "Stage changes (with the acting employee) and review notes."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "TSK-1000" } }
+      responses:
+        '200':
+          description: "Log entries, oldest first"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /squads:
+    get:
+      tags: [squads]
+      summary: "Squads visible to the caller"
+      description: "Members, leads and project managers see their squads; HR_DIRECTOR and CEO see all."
+      responses:
+        '200':
+          description: "Squads with members"
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [squads]
+      summary: "Create a squad"
+      description: "CEO, HR_DIRECTOR and LINE_MANAGER (for projects they manage). The lead becomes a member with role TechLead."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                projectId: { type: string, nullable: true }
+                leadId: { type: string }
+                target: { type: string, nullable: true }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /squads/{id}:
+    get:
+      tags: [squads]
+      summary: "Squad detail"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+      responses:
+        '200':
+          description: "Squad"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [squads]
+      summary: "Update a squad"
+      description: "Lead, project manager, department manager, HR and CEO. Changing the lead adds the new lead as a member. Attaching the squad to another project requires managing that project (403 otherwise), because squad members gain access to their project."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                projectId: { type: string, nullable: true }
+                leadId: { type: string }
+                target: { type: string, nullable: true }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [squads]
+      summary: "Delete a squad"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /squads/{id}/members:
+    post:
+      tags: [squads]
+      summary: "Add a member"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeId]
+              properties:
+                employeeId: { type: string }
+                role: { type: string, example: Member }
+      responses:
+        '201':
+          description: "Squad with members"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /squads/{id}/members/{employeeId}:
+    delete:
+      tags: [squads]
+      summary: "Remove a member"
+      description: "409 CANNOT_REMOVE_LEAD for the lead."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+        - { name: employeeId, in: path, required: true, schema: { type: string, example: "NV-0842" } }
+      responses:
+        '200':
+          description: "Squad with members"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /squads/{id}/messages:
+    get:
+      tags: [squads]
+      summary: "Squad chat messages"
+      description: "Members and their oversight roles read. Without `since` the latest `limit` (default 50, max 200) messages are returned oldest first; with `since` (a message id) only newer messages, for polling."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+        - { name: since, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: "Messages"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [squads]
+      summary: "Post a message"
+      description: "Members only (max 2000 characters)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "SQ-100" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 2000 }
+      responses:
+        '201':
+          description: "Message"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: "My notifications"
+      description: "Notifications addressed to the caller or to their role, newest first. `is_read` is per user, also for role-addressed notifications. Response carries `unreadCount`."
+      parameters:
+        - { name: unread, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { name: type, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/page' }
+        - { name: limit, in: query, schema: { type: integer, default: 30, maximum: 100 } }
+      responses:
+        '200':
+          description: "Page of notifications"
+        '400': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [notifications]
+      summary: "Send a notification"
+      description: "CEO and HR_DIRECTOR. Address exactly one of userId or roleTarget."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                userId: { type: string, format: uuid }
+                roleTarget: { $ref: "#/components/schemas/Role" }
+                type: { type: string }
+                category: { type: string }
+                title: { type: string }
+                summary: { type: string }
+                priority: { type: string, enum: [low, normal, high] }
+                actionType: { type: string }
+                actionPayload: { type: object }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /notifications/unread-count:
+    get:
+      tags: [notifications]
+      summary: "Unread count"
+      responses:
+        '200':
+          description: "{ count }"
+  /notifications/read-all:
+    post:
+      tags: [notifications]
+      summary: "Mark everything visible to me as read"
+      responses:
+        '200':
+          description: "{ updated }"
+  /notifications/{id}/read:
+    patch:
+      tags: [notifications]
+      summary: "Mark one as read"
+      description: "404 for notifications not addressed to the caller."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "NOTIF-0001" } }
+      responses:
+        '200':
+          description: "Notification"
+        '404': { $ref: '#/components/responses/Error' }
+  /notifications/{id}:
+    delete:
+      tags: [notifications]
+      summary: "Delete a personal notification"
+      description: "Role-wide notifications cannot be deleted (403); mark them read instead."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "NOTIF-0001" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /notices:
+    get:
+      tags: [notices]
+      summary: "Company notices for me"
+      description: "Active, published, not expired and addressed to the caller's role and department; pinned first, then newest. HR_DIRECTOR and CEO may pass all=true to see every notice."
+      parameters:
+        - { name: category, in: query, schema: { type: string } }
+        - { name: all, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { $ref: '#/components/parameters/page' }
+        - { name: limit, in: query, schema: { type: integer, default: 30, maximum: 100 } }
+      responses:
+        '200':
+          description: "Page of notices"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [notices]
+      summary: "Publish a notice"
+      description: "CEO and HR_DIRECTOR. Leave targetRole and targetDepartmentId empty for everyone; set both to address a role inside a department."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title: { type: string }
+                content: { type: string }
+                category: { type: string, enum: [general, policy, event, urgent, benefit] }
+                priority: { type: string, enum: [low, normal, high] }
+                targetRole: { $ref: "#/components/schemas/Role" }
+                targetDepartmentId: { type: string }
+                isPinned: { type: boolean }
+                publishedAt: { type: string, format: date-time }
+                expiresAt: { type: string, format: date-time, nullable: true }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /notices/{id}:
+    get:
+      tags: [notices]
+      summary: "Notice detail"
+      description: "404 when the notice is not addressed to the caller."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "NT-0001" } }
+      responses:
+        '200':
+          description: "Notice"
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [notices]
+      summary: "Update a notice"
+      description: "`null` clears targetRole/targetDepartmentId/expiresAt; isActive false hides it."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "NT-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                content: { type: string }
+                category: { type: string, enum: [general, policy, event, urgent, benefit] }
+                priority: { type: string, enum: [low, normal, high] }
+                targetRole: { $ref: "#/components/schemas/Role" }
+                targetDepartmentId: { type: string }
+                isPinned: { type: boolean }
+                publishedAt: { type: string, format: date-time }
+                expiresAt: { type: string, format: date-time, nullable: true }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [notices]
+      summary: "Delete a notice"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "NT-0001" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /handbook:
+    get:
+      tags: [handbook]
+      summary: "Handbook documents (without the full text)"
+      description: "Rows carry an `excerpt` of the first 200 characters. HR_DIRECTOR and CEO may pass all=true to include deactivated documents."
+      parameters:
+        - { name: category, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: all, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { $ref: '#/components/parameters/page' }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 100 } }
+      responses:
+        '200':
+          description: "Page of documents"
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [handbook]
+      summary: "Create a document"
+      description: "CEO and HR_DIRECTOR. Version starts at 1."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title: { type: string }
+                category: { type: string, default: Chung }
+                content: { type: string }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /handbook/categories:
+    get:
+      tags: [handbook]
+      summary: "Categories of active documents"
+      responses:
+        '200':
+          description: "Category names"
+  /handbook/{id}:
+    get:
+      tags: [handbook]
+      summary: "Document with its content"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "HB-0001" } }
+      responses:
+        '200':
+          description: "Document"
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [handbook]
+      summary: "Update a document"
+      description: "The version increases only when the content changes. isActive true restores a deactivated document."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "HB-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                category: { type: string }
+                content: { type: string }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [handbook]
+      summary: "Deactivate a document"
+      description: "Soft delete: hidden from staff, kept for HR."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "HB-0001" } }
+      responses:
+        '200':
+          description: "Deactivated"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /analytics/reviews:
+    get:
+      tags: [analytics]
+      summary: "Performance reviews"
+      description: "EMPLOYEE sees only their own reviews, LINE_MANAGER their department, HR and CEO everyone. ADMIN and KIOSK have no access."
+      parameters:
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { name: period, in: query, schema: { type: string, example: "2026-Q3" } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: "Page of reviews"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [analytics]
+      summary: "Create a review"
+      description: "HR and CEO for anyone but themselves; a manager only for their own department. The 9-box cell (1 = low/low ... 9 = high/high, thresholds 60 and 80) is computed from the two scores. One review per employee and period (409)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeId, period, performanceScore, potentialScore]
+              properties:
+                employeeId: { type: string }
+                period: { type: string, example: "2026-Q3", description: "YYYY-Q1..Q4, YYYY-H1/H2 or YYYY-FY" }
+                performanceScore: { type: number, minimum: 0, maximum: 100 }
+                potentialScore: { type: number, minimum: 0, maximum: 100 }
+                comments: { type: string }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /analytics/reviews/{id}:
+    put:
+      tags: [analytics]
+      summary: "Update a review (recomputes the cell)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PR-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                performanceScore: { type: number }
+                potentialScore: { type: number }
+                comments: { type: string, nullable: true }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [analytics]
+      summary: "Delete a review"
+      description: "CEO and HR_DIRECTOR."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PR-0001" } }
+      responses:
+        '200':
+          description: "Deleted"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /analytics/nine-box:
+    get:
+      tags: [analytics]
+      summary: "9-box distribution of a period"
+      description: "Nine cells (9 first) with title, recommended action, count and the employees. Without `period` the latest period with reviews is used. HR/CEO all, LINE_MANAGER their department."
+      parameters:
+        - { name: period, in: query, schema: { type: string, example: "2026-Q3" } }
+      responses:
+        '200':
+          description: "{ period, data }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /analytics/department-scores:
+    get:
+      tags: [analytics]
+      summary: "Average performance score per department"
+      parameters:
+        - { name: period, in: query, schema: { type: string, example: "2026-Q3" } }
+      responses:
+        '200':
+          description: "{ period, data: [{ department_id, name, score, reviewed }] }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /analytics/summary:
+    get:
+      tags: [analytics]
+      summary: "Analytics overview"
+      description: "avgScore, topTalentsCount (9-box cells 8 and 9), atRiskCount (turnover risk level Cao) and departmentScores for a period."
+      parameters:
+        - { name: period, in: query, schema: { type: string, example: "2026-Q3" } }
+      responses:
+        '200':
+          description: "{ data: { period, avgScore, topTalentsCount, atRiskCount, departmentScores } }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /analytics/turnover-risk:
+    get:
+      tags: [analytics]
+      summary: "Turnover risk of active employees (riskiest first)"
+      description: "Computed on demand from pay versus peers in the same position, overtime load and trend, months without a contract or position change, review scores, unpaid absences and late arrivals. Each score (0-100) is the sum of explained signals; levels: Thấp < 30, Trung bình 30-59, Cao >= 60. Confidential: HR/CEO all, LINE_MANAGER their department (not themselves); EMPLOYEE (even about themselves), ADMIN and KIOSK get 403."
+      parameters:
+        - { name: level, in: query, schema: { type: string, enum: ["Thấp", "Trung bình", "Cao"] } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: "Page of { employee_id, full_name, department_id, score, level, signals }"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /analytics/turnover-risk/{employeeId}:
+    get:
+      tags: [analytics]
+      summary: "Turnover risk detail with its signals"
+      parameters:
+        - { name: employeeId, in: path, required: true, schema: { type: string, example: "NV-0842" } }
+      responses:
+        '200':
+          description: "Score, level and signals (code, title, points, detail)"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /analytics/pip:
+    get:
+      tags: [analytics]
+      summary: "Performance improvement plans"
+      description: "HR/CEO all, LINE_MANAGER their department, EMPLOYEE only their own plan."
+      parameters:
+        - { name: employeeId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [proposed, active, completed, failed, cancelled, rejected] } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: "Page of plans (proposed first, then active, then closed)"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [analytics]
+      summary: "Create a PIP"
+      description: "CEO and HR_DIRECTOR create an active plan. LINE_MANAGER submits a `proposed` plan for an employee of their department; HR is notified. Nobody can open a plan for themselves. 409 PIP_ALREADY_ACTIVE when the employee already has an open (proposed or active) plan."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employeeId, startDate, endDate, reason, goals]
+              properties:
+                employeeId: { type: string }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                reason: { type: string, minLength: 10, description: "Basis for the plan (review result, concrete facts)" }
+                goals: { type: array, minItems: 1, items: { type: object, required: [title], properties: { title: { type: string }, metric: { type: string }, target: { type: string }, dueDate: { type: string, format: date } } } }
+      responses:
+        '201':
+          description: "Created"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /analytics/pip/{id}:
+    get:
+      tags: [analytics]
+      summary: "PIP detail"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PIP-0001" } }
+      responses:
+        '200':
+          description: "Plan"
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [analytics]
+      summary: "Update or close a PIP"
+      description: "CEO and HR_DIRECTOR. Proposed and active plans can be edited (409 once closed). Closing (completed, failed, cancelled) is only allowed from active and requires `outcome`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PIP-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                reason: { type: string }
+                goals: { type: array, minItems: 1, items: { type: object, required: [title], properties: { title: { type: string }, metric: { type: string }, target: { type: string }, dueDate: { type: string, format: date }, status: { type: string, enum: [pending, achieved, missed] }, note: { type: string } } } }
+                status: { type: string, enum: [active, completed, failed, cancelled] }
+                outcome: { type: string }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /analytics/pip/{id}/decision:
+    post:
+      tags: [analytics]
+      summary: "Approve or reject a proposed PIP"
+      description: "CEO and HR_DIRECTOR. Approving activates the plan (dates may be adjusted); rejecting requires `note`. The proposer is notified. 409 when the plan is not proposed."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PIP-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                note: { type: string }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+      responses:
+        '200':
+          description: "Decided"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /analytics/pip/{id}/progress:
+    patch:
+      tags: [analytics]
+      summary: "Record goal results of an active PIP"
+      description: "CEO, HR_DIRECTOR, or LINE_MANAGER of the employee's department (not on their own plan). `goals` must have one entry per goal, in order."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "PIP-0001" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [goals]
+              properties:
+                goals: { type: array, minItems: 1, items: { type: object, required: [status], properties: { status: { type: string, enum: [pending, achieved, missed] }, note: { type: string } } } }
+      responses:
+        '200':
+          description: "Updated"
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /dashboard/stats:
+    get:
+      tags: [dashboard]
+      summary: "Dashboard KPIs (live)"
+      description: "CEO and HR_DIRECTOR: scope company. LINE_MANAGER: scope department. EMPLOYEE: scope self (checked_in_today, checked_out_today, leave_remaining, open_tasks, pending_requests). Company/department overview: total_active, total_inactive, present_today (checked in), late_today, pending_leaves, active_projects, open_tasks. No materialized view is refreshed."
+      responses:
+        '200':
+          description: "{ scope, overview, departmentStats, pendingLeaves }"
+        '403': { $ref: '#/components/responses/Error' }
+  /dashboard/notifications:
+    get:
+      tags: [dashboard]
+      summary: "Latest 30 notifications (legacy alias of GET /notifications)"
+      responses:
+        '200':
+          description: "{ data, unreadCount }"
+  /audit-logs:
+    get:
+      tags: [audit]
+      summary: System audit trail, newest first
+      description: >
+        Roles CEO and ADMIN. `from` is inclusive, `to` is exclusive. Passwords, token hashes and face data are never
+        stored. Salary and personal data are stored as written but redacted when ADMIN reads the log.
+      parameters:
+        - { name: table, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: userId, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { $ref: '#/components/parameters/page' }
+        - { $ref: '#/components/parameters/limit' }
+      responses:
+        '200':
+          description: Page of audit entries
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    limit:
+      name: limit
+      in: query
+      description: Clamped to 1..200
+      schema: { type: integer, default: 50, maximum: 200 }
+    userId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    empId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: NV-0842 }
+    contractId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: CT-00001 }
+    deptId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: DEPT-IT }
+    posId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: POS-MGR }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        code: { type: string, example: VALIDATION_ERROR }
+        message: { type: string }
+        details: { description: 'Field errors ([{path, message}]) or extra info' }
+    Pagination:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+        totalPages: { type: integer }
+    Role:
+      type: string
+      enum: [CEO, HR_DIRECTOR, LINE_MANAGER, EMPLOYEE, KIOSK, ADMIN]
+    AttendanceStatus:
+      type: string
+      enum: [DUNG_GIO, DI_MUON, VE_SOM, NGHI_PHEP, VANG_KHONG_PHEP, CONG_TAC, NGHI_LE]
+    TaskStage:
+      type: string
+      enum: [todo, in_progress, review, done]
+    EmployeeStatus:
+      type: string
+      enum: [DANG_LAM_VIEC, THU_VIEC, TAM_HOAN, DA_NGHI_VIEC]
+    ContractType:
+      type: string
+      enum: [CHINH_THUC, THU_VIEC, THOI_VU, CONG_TAC_VIEN]
+    Employee:
+      type: object
+      description: Snake_case row. Sensitive fields may be absent depending on the caller (see GET /employees).
+      properties:
+        id: { type: string, example: NV-0842 }
+        full_name: { type: string }
+        department_id: { type: string, nullable: true }
+        department_name: { type: string, nullable: true }
+        position_id: { type: string, nullable: true }
+        position_name: { type: string, nullable: true }
+        job_title: { type: string }
+        work_email: { type: string }
+        phone_number: { type: string, nullable: true }
+        gender: { type: string, enum: [Nam, Nu, Khac], nullable: true }
+        joined_date: { type: string, format: date }
+        termination_date: { type: string, format: date, nullable: true }
+        manager_id: { type: string, nullable: true }
+        manager_name: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/EmployeeStatus' }
+        contract_type: { $ref: '#/components/schemas/ContractType' }
+        avatar_url: { type: string, nullable: true }
+        kpi_score: { type: number }
+        attendance_rate: { type: number }
+        base_salary: { type: number, description: Sensitive }
+        citizen_id: { type: string, nullable: true, description: Sensitive }
+        bank_account: { type: string, nullable: true, description: Sensitive }
+        bank_name: { type: string, nullable: true, description: Sensitive }
+        date_of_birth: { type: string, format: date, nullable: true, description: Sensitive }
+        address: { type: string, nullable: true, description: Sensitive }
+        termination_reason: { type: string, nullable: true, description: Sensitive }
+    EmployeeInput:
+      type: object
+      description: camelCase input. On create `fullName`, `jobTitle`, `workEmail` and `joinedDate` are required.
+      properties:
+        id: { type: string, description: "3-20 chars [A-Za-z0-9-]; generated when omitted" }
+        fullName: { type: string }
+        jobTitle: { type: string }
+        workEmail: { type: string }
+        joinedDate: { type: string, format: date }
+        departmentId: { type: string, nullable: true }
+        positionId: { type: string, nullable: true }
+        phoneNumber: { type: string, nullable: true }
+        citizenId: { type: string, nullable: true, description: 9 or 12 digits }
+        dateOfBirth: { type: string, format: date, nullable: true }
+        gender: { type: string, enum: [Nam, Nu, Khac], nullable: true }
+        address: { type: string, nullable: true }
+        baseSalary: { type: number, minimum: 0 }
+        contractType: { $ref: '#/components/schemas/ContractType' }
+        managerId: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+        bankAccount: { type: string, nullable: true }
+        bankName: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/EmployeeStatus' }
+    Contract:
+      type: object
+      properties:
+        id: { type: string, example: CT-00001 }
+        employee_id: { type: string }
+        contract_no: { type: string }
+        type: { $ref: '#/components/schemas/ContractType' }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date, nullable: true }
+        salary: { type: number }
+        status: { type: string, enum: [CHO_KY, HIEU_LUC, HET_HAN, DA_CHAM_DUT] }
+        file_url: { type: string, nullable: true }
+        signed_at: { type: string, format: date-time, nullable: true }
+        note: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SessionUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employeeId: { type: string, nullable: true }
+        email: { type: string }
+        roleCode: { $ref: '#/components/schemas/Role' }
+        fullName: { type: string, nullable: true }
+        jobTitle: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+        departmentId: { type: string, nullable: true }
+        departmentName: { type: string, nullable: true }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employeeId: { type: string, nullable: true }
+        email: { type: string }
+        roleCode: { $ref: '#/components/schemas/Role' }
+        isActive: { type: boolean }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        lockedUntil: { type: string, format: date-time, nullable: true }
+        failedLoginAttempts: { type: integer }
+        mustChangePassword: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        fullName: { type: string, nullable: true }
+        departmentId: { type: string, nullable: true }
+        departmentName: { type: string, nullable: true }
