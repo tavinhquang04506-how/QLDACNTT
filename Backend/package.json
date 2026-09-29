@@ -11,6 +11,7 @@
     "db:preflight": "node scripts/check-schema-readiness.js",
     "db:rehearse-r16": "node scripts/rehearse-r16-migration.js",
     "attachments:reconcile": "node scripts/reconcile-attachments.js",
+    "docker:test:verify": "node scripts/verify-docker-test-isolation.js --action=verify",
     "db:test": "node scripts/test-db.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:unit": "node --require ./tests/helpers/env.js --test \"tests/unit/**/*.test.js\"",

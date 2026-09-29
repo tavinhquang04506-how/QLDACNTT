@@ -1,0 +1,124 @@
+# ============================================================
+# NEXUS HRMS — Isolated Docker Compose Configuration for Test Verification (R49)
+#
+# CRITICAL SAFETY INVARIANTS:
+# 1. NEVER shares container names, networks, volumes, host ports, DB name, or storage mount
+#    with production `docker-compose.yml`.
+# 2. All resources are project-managed (`-p <nexus-test-project>`) and stamped with
+#    `com.nexus.hrms.scope=isolated-test` + `com.nexus.hrms.test_run_id`.
+# 3. Always validate via `node Backend/scripts/verify-docker-test-isolation.js` before
+#    running `up`, `recreate`, or `down`.
+# ============================================================
+
+name: ${COMPOSE_PROJECT_NAME:-nexus-test-isolated}
+
+services:
+  # ------------------------------------------------------------
+  # 1. Isolated Test Database: PostgreSQL 16 Alpine
+  # ------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-nexus-test-isolated}-${NEXUS_TEST_RUN_ID:-run1}-db
+    restart: "no"
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
+      com.nexus.hrms.role: "test-db"
+    environment:
+      POSTGRES_DB: ${NEXUS_TEST_DB_NAME:-nexus_hrms_docker_test}
+      POSTGRES_USER: ${NEXUS_TEST_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${NEXUS_TEST_DB_PASSWORD:-nexus_test_only_pass_2026}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "127.0.0.1:${NEXUS_TEST_DB_PORT:-15432}:5432"
+    volumes:
+      - test-db-data:/var/lib/postgresql/data
+      - ./database/docker-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NEXUS_TEST_DB_USER:-postgres} -d ${NEXUS_TEST_DB_NAME:-nexus_hrms_docker_test}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - test-network
+
+  # ------------------------------------------------------------
+  # 2. Isolated Test Backend: Node.js 20 Express API
+  # ------------------------------------------------------------
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-nexus-test-isolated}-${NEXUS_TEST_RUN_ID:-run1}-backend
+    restart: "no"
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
+      com.nexus.hrms.role: "test-backend"
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${NEXUS_TEST_DB_NAME:-nexus_hrms_docker_test}
+      DB_USER: ${NEXUS_TEST_DB_USER:-postgres}
+      DB_PASSWORD: ${NEXUS_TEST_DB_PASSWORD:-nexus_test_only_pass_2026}
+      JWT_SECRET: ${NEXUS_TEST_JWT_SECRET:-nexus_test_only_jwt_secret_2026_isolated}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
+      APP_TIMEZONE: Asia/Ho_Chi_Minh
+      STORAGE_ROOT: /app/storage_test
+      NOTICE_ATTACHMENTS_DIR: /app/storage_test/notice_attachments
+      CORS_ORIGINS: http://localhost:${NEXUS_TEST_FRONTEND_PORT:-13000},http://127.0.0.1:${NEXUS_TEST_FRONTEND_PORT:-13000}
+    ports:
+      - "127.0.0.1:${NEXUS_TEST_BACKEND_PORT:-18000}:8000"
+    volumes:
+      - test-storage-data:/app/storage_test
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - test-network
+
+  # ------------------------------------------------------------
+  # 3. Isolated Test Frontend: Nginx 1.27 Alpine (SPA & Reverse Proxy)
+  # ------------------------------------------------------------
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    container_name: ${COMPOSE_PROJECT_NAME:-nexus-test-isolated}-${NEXUS_TEST_RUN_ID:-run1}-frontend
+    restart: "no"
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
+      com.nexus.hrms.role: "test-frontend"
+    ports:
+      - "127.0.0.1:${NEXUS_TEST_FRONTEND_PORT:-13000}:80"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - test-network
+
+# ------------------------------------------------------------
+# Project-Managed Isolated Networks & Persistent Volumes (No production names)
+# ------------------------------------------------------------
+networks:
+  test-network:
+    driver: bridge
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
+
+volumes:
+  test-db-data:
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
+  test-storage-data:
+    labels:
+      com.nexus.hrms.scope: "isolated-test"
+      com.nexus.hrms.test_run_id: "${NEXUS_TEST_RUN_ID:-run1}"
