@@ -60,20 +60,49 @@ function getKioskCode() {
   };
 }
 
-async function checkIn(user, body) {
-  const employeeId = requireEmployee(user);
+const SELF_PUNCH_METHODS = new Set(['gps', 'code', 'code_gps']);
 
-  // 1. Kiểm tra mã 6 số nếu có gửi lên hoặc phương thức là code_gps
-  if (body.code) {
-    const isCodeValid = validateKioskCode(body.code);
-    if (!isCodeValid) {
+async function validateSelfPunchPayload(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw badRequest('Dữ liệu chấm công không hợp lệ');
+  }
+  const method = body.method || 'code_gps';
+  if (!SELF_PUNCH_METHODS.has(method)) {
+    throw badRequest('Phương thức tự chấm công không hợp lệ (chỉ hỗ trợ gps, code hoặc code_gps)');
+  }
+
+  const needsCode = method === 'code' || method === 'code_gps';
+  const needsGps = method === 'gps' || method === 'code_gps';
+
+  if (needsCode) {
+    const rawCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!/^\d{6}$/.test(rawCode)) {
+      throw badRequest('Mã code Kiosk bắt buộc gồm đúng 6 chữ số');
+    }
+    if (!validateKioskCode(rawCode)) {
+      throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
+    }
+  } else if (body.code !== undefined && body.code !== null && body.code !== '') {
+    const rawCode = String(body.code).trim();
+    if (!/^\d{6}$/.test(rawCode) || !validateKioskCode(rawCode)) {
       throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
     }
   }
 
-  // 2. Kiểm tra GPS Geofencing (3 vùng thông minh, đọc bán kính & tọa độ từ system_settings)
-  let loc = { valid: true, distance: null, message: null };
-  if (body.gpsLat != null && body.gpsLng != null) {
+  let loc = { valid: true, distance: null, message: null, office: null };
+  if (needsGps) {
+    if (
+      typeof body.gpsLat !== 'number' ||
+      !Number.isFinite(body.gpsLat) ||
+      body.gpsLat < -90 ||
+      body.gpsLat > 90 ||
+      typeof body.gpsLng !== 'number' ||
+      !Number.isFinite(body.gpsLng) ||
+      body.gpsLng < -180 ||
+      body.gpsLng > 180
+    ) {
+      throw badRequest('Phương thức chấm công GPS bắt buộc cung cấp đầy đủ tọa độ (gpsLat, gpsLng) hợp lệ');
+    }
     const sys = await settingsService.getSettings(db);
     const radiusGreen = Number(sys.gps_radius_meters) || OFFICE_LOCATION.radiusGreen;
     loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy, {
@@ -88,7 +117,15 @@ async function checkIn(user, body) {
     }
   }
 
-  const row = await insertCheckIn(db, employeeId, body.method || 'code_gps', {
+  const dbMethod = method === 'code' ? 'code_gps' : method;
+  return { method, dbMethod, loc };
+}
+
+async function checkIn(user, body) {
+  const employeeId = requireEmployee(user);
+  const { dbMethod, loc } = await validateSelfPunchPayload(body);
+
+  const row = await insertCheckIn(db, employeeId, dbMethod, {
     ...body,
     distance: loc.distance,
     address: body.address || (body.gpsLat != null ? loc.office : null)
@@ -103,31 +140,7 @@ async function checkIn(user, body) {
 
 async function checkOut(user, body) {
   const employeeId = requireEmployee(user);
-
-  // 1. Kiểm tra mã 6 số nếu có gửi lên
-  if (body.code) {
-    const isCodeValid = validateKioskCode(body.code);
-    if (!isCodeValid) {
-      throw badRequest('Mã code Kiosk không chính xác hoặc đã hết hạn (Mã tự động đổi mỗi 20 giây)');
-    }
-  }
-
-  // 2. Kiểm tra GPS Geofencing
-  let loc = { valid: true, distance: null, message: null };
-  if (body.gpsLat != null && body.gpsLng != null) {
-    const sys = await settingsService.getSettings(db);
-    const radiusGreen = Number(sys.gps_radius_meters) || OFFICE_LOCATION.radiusGreen;
-    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy, {
-      officeLat: sys.office_lat,
-      officeLng: sys.office_lng,
-      officeName: sys.office_name,
-      radiusGreen,
-      radiusYellow: Math.max(radiusGreen * 4, 1000),
-    });
-    if (!loc.valid) {
-      throw badRequest(loc.message);
-    }
-  }
+  const { dbMethod, loc } = await validateSelfPunchPayload(body);
 
   const { rows } = await db.query(
     `UPDATE attendance_logs SET 
@@ -140,7 +153,7 @@ async function checkOut(user, body) {
      RETURNING *`,
     [
       employeeId, 
-      body.method || 'code_gps',
+      dbMethod,
       body.gpsLat ?? null,
       body.gpsLng ?? null,
       body.address || (body.gpsLat != null ? loc.office : null)
@@ -364,4 +377,4 @@ async function live(user, scope) {
   return rows;
 }
 
-module.exports = { checkIn, checkOut, today, myQr, kioskPunch, list, adjust, timesheet, exceptions, live, getKioskCode };
+module.exports = { checkIn, checkOut, today, myQr, kioskPunch, list, adjust, timesheet, exceptions, live, getKioskCode, validateSelfPunchPayload };
