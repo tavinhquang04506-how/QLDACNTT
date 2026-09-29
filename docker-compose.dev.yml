@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # ------------------------------------------------------------
+  # 1. Database: PostgreSQL 16 Alpine
+  # ------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: nexus-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexus_hrms}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_secure_pass_2026}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - nexus-db-data-dev:/var/lib/postgresql/data
+      - ./database/docker-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-nexus_hrms}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - nexus-network-dev
+
+  # ------------------------------------------------------------
+  # 2. Backend: Node.js 20 Dev Server (node --watch)
+  # ------------------------------------------------------------
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile.dev
+    container_name: nexus-backend-dev
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 8000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-nexus_hrms}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-nexus_secure_pass_2026}
+      JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_nexus_docker_2026_change_in_production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
+      APP_TIMEZONE: Asia/Ho_Chi_Minh
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./Backend:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - nexus-network-dev
+
+  # ------------------------------------------------------------
+  # 3. Frontend: Vite Dev Server with HMR Hot-Reload
+  # ------------------------------------------------------------
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: Dockerfile.dev
+    container_name: nexus-frontend-dev
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./FrontEnd:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - nexus-network-dev
+
+# ------------------------------------------------------------
+# Networks & Volumes
+# ------------------------------------------------------------
+networks:
+  nexus-network-dev:
+    name: nexus-network-dev
+    driver: bridge
+
+volumes:
+  nexus-db-data-dev:
+    name: nexus-db-data-dev
