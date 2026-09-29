@@ -34,7 +34,7 @@ export default function Modal5C_SnapshotLogs({ isOpen, onClose, payload }) {
             gate: l.check_in_method || l.gate || 'Kiosk Cổng Chính #01',
             score: l.confidence_score ? `${(Number(l.confidence_score) * 100).toFixed(1)}%` : '99.4%',
             status: l.late_minutes > 0 ? `Đi muộn ${l.late_minutes}p` : 'Hợp lệ',
-            snapshot: l.avatar_url || l.snapshot || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+            snapshot: l.avatar_url || l.snapshot || '/default-avatar.jpg',
             ip: l.ip_address || '192.168.10.45',
             gps: l.latitude && l.longitude ? `${l.latitude}° N, ${l.longitude}° E` : '10.8416° N, 106.7845° E',
           }));
@@ -137,7 +137,7 @@ export default function Modal5C_SnapshotLogs({ isOpen, onClose, payload }) {
                           src={item.snapshot}
                           alt="Snapshot"
                           onError={(e) => {
-                            e.currentTarget.src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80';
+                            e.currentTarget.src = '/default-avatar.jpg';
                           }}
                           className="w-full h-full object-cover"
                         />

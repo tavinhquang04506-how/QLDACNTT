@@ -109,7 +109,7 @@ export const ROLE_META = {
     roleBadge: 'Kiosk',
     roleColor: 'bg-slate-100 text-slate-800 border-slate-300',
     email: 'kiosk@fwbnexus.vn',
-    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
+    avatar: '/default-avatar.jpg',
     isStaff: false,
     canApproveLeave: false,
     canAccessPayroll: false,
