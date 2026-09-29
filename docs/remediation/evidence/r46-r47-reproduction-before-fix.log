@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-24T08:07:46.396Z",
+  "baselineCommit": "89ab5f5",
+  "r46": {
+    "repoRootRejected": false,
+    "storageParentRejected": false,
+    "inheritedProdEnvInTest": true,
+    "bugReproduced": true
+  },
+  "r47": {
+    "attachmentId": "NATT-1792829266399-9296993a",
+    "noticeId": "NT-0025",
+    "reconcileRestoredCount": 0,
+    "stateAfterReconcile": "staged",
+    "firstBinStillExistsAfterNewUpload": false,
+    "bugReproduced": true,
+    "secondUploadId": "NATT-1792829266408-1c9a87fa"
+  }
+}

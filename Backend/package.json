@@ -10,6 +10,7 @@
     "db:migrate": "node scripts/migrate.js",
     "db:preflight": "node scripts/check-schema-readiness.js",
     "db:rehearse-r16": "node scripts/rehearse-r16-migration.js",
+    "attachments:reconcile": "node scripts/reconcile-attachments.js",
     "db:test": "node scripts/test-db.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:unit": "node --require ./tests/helpers/env.js --test \"tests/unit/**/*.test.js\"",
