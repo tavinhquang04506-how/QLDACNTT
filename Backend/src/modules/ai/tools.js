@@ -46,6 +46,14 @@ function isValidPeriodMonth(value) {
   return year >= 2000 && year <= 2100;
 }
 
+function toFiniteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function isValidIsoDate(value) {
   if (typeof value !== 'string') return false;
   const trimmed = value.trim();
@@ -478,6 +486,7 @@ async function getMyPayslip(actor, args = {}, executor = db) {
       ok: true,
       found: false,
       employeeId: actor.employeeId,
+      period: !isLatestAlias && rawPeriodInput ? rawPeriodInput : null,
       message: 'Không tìm thấy phiếu lương cho kỳ được yêu cầu.',
       source: {
         id: `payslip:${actor.employeeId}:none`,
@@ -509,11 +518,13 @@ async function getMyPayslip(actor, args = {}, executor = db) {
     };
   }
 
-  const baseSalary = Number(r.base_salary || 0);
-  const standardWorkDays = Number(r.standard_work_days || 22);
-  const actualWorkDays = Number(r.actual_work_days || 0);
+  const baseSalary = toFiniteNumberOrNull(r.base_salary);
+  const standardWorkDays = toFiniteNumberOrNull(r.standard_work_days ?? 22);
+  const actualWorkDays = toFiniteNumberOrNull(r.actual_work_days);
   const workDaysSalary =
-    standardWorkDays > 0 ? Math.round((baseSalary * actualWorkDays) / standardWorkDays) : 0;
+    baseSalary !== null && actualWorkDays !== null && standardWorkDays !== null && standardWorkDays > 0
+      ? Math.round((baseSalary * actualWorkDays) / standardWorkDays)
+      : null;
 
   return {
     ok: true,
@@ -528,18 +539,18 @@ async function getMyPayslip(actor, args = {}, executor = db) {
     standardWorkDays,
     actualWorkDays,
     workDaysSalary,
-    totalAllowances: Number(r.allowances || 0),
-    bonus: Number(r.bonus || 0),
-    otPay: Number(r.ot_pay || 0),
-    grossIncome: Number(r.gross_income || 0),
-    bhxhEmp: Number(r.bhxh_amount || 0),
-    bhytEmp: Number(r.bhyt_amount || 0),
-    bhtnEmp: Number(r.bhtn_amount || 0),
-    taxableIncome: Number(r.pit_taxable || 0),
-    personalDeduction: Number(r.pit_deduction || 0),
-    pitAmount: Number(r.pit_amount || 0),
-    totalDeductions: Number(r.total_deductions || 0),
-    netSalary: Number(r.net_salary || 0),
+    totalAllowances: toFiniteNumberOrNull(r.allowances),
+    bonus: toFiniteNumberOrNull(r.bonus),
+    otPay: toFiniteNumberOrNull(r.ot_pay),
+    grossIncome: toFiniteNumberOrNull(r.gross_income),
+    bhxhEmp: toFiniteNumberOrNull(r.bhxh_amount),
+    bhytEmp: toFiniteNumberOrNull(r.bhyt_amount),
+    bhtnEmp: toFiniteNumberOrNull(r.bhtn_amount),
+    taxableIncome: toFiniteNumberOrNull(r.pit_taxable),
+    personalDeduction: toFiniteNumberOrNull(r.pit_deduction),
+    pitAmount: toFiniteNumberOrNull(r.pit_amount),
+    totalDeductions: toFiniteNumberOrNull(r.total_deductions),
+    netSalary: toFiniteNumberOrNull(r.net_salary),
     isLocked: isPublished,
     source: {
       id: `payslip:${r.id}`,
@@ -548,6 +559,28 @@ async function getMyPayslip(actor, args = {}, executor = db) {
       asOf: nowIso,
     },
   };
+}
+
+/**
+ * AI-V1-F02: Resolve distinct published payslip periods (DA_CHOT / DA_CHUYEN_KHOAN)
+ * for the authenticated actor from PostgreSQL, ordered by period DESC.
+ */
+async function resolveLatestPublishedPayslipPeriods(actor, limit = 2, executor = db) {
+  if (!actor || !actor.employeeId || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
+    return [];
+  }
+  const safeLimit = Math.max(1, Math.min(12, Number(limit) || 2));
+  const { rows } = await executor.query(
+    `SELECT DISTINCT pp.period AS period_code
+       FROM payslips ps
+       JOIN payroll_periods pp ON pp.id = ps.period_id
+      WHERE ps.employee_id = $1
+        AND pp.status IN ('DA_CHOT', 'DA_CHUYEN_KHOAN')
+      ORDER BY pp.period DESC
+      LIMIT $2`,
+    [actor.employeeId, safeLimit]
+  );
+  return (rows || []).map((r) => r.period_code).filter(Boolean);
 }
 
 async function getScopedDashboard(actor, args = {}, executor = db) {
@@ -1033,6 +1066,8 @@ module.exports = {
   TOOL_DECLARATIONS,
   TOOL_HANDLERS,
   executeToolCall,
+  resolveLatestPublishedPayslipPeriods,
+  toFiniteNumberOrNull,
   sanitizePolicyText,
   getCurrentClock,
   isValidPeriodMonth,

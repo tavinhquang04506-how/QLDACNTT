@@ -189,7 +189,7 @@ function detectPrimaryIntent(rawMessage = '', normMsg = '') {
 
 function isEllipticalFollowUpMessage(normMsg = '') {
   if (!normMsg) return false;
-  return /^(con\b|the con\b|vay con\b|entitled\b|what about\b|how about\b|con thang\b|con ky\b|con nam\b|thang truoc thi sao|nam ngoai thi sao|ky truoc thi sao)/i.test(
+  return /^(con\b|the con\b|vay con\b|entitled\b|what about\b|how about\b|con thang\b|con ky\b|con nam\b|thang truoc thi sao|nam ngoai thi sao|ky truoc thi sao|so sanh voi\b)/i.test(
     normMsg
   );
 }
@@ -204,6 +204,7 @@ function resolveIntentAndSlots({
   priorContext = null,
   hasConversationHistory = false,
   clientProvidedConversationId = false,
+  publishedPeriods = null,
 }) {
   const rawMsg = String(message || '').trim();
   const normMsg = normalizeTextAscii(rawMsg);
@@ -213,6 +214,18 @@ function resolveIntentAndSlots({
 
   let detectedIntent = detectPrimaryIntent(rawMsg, normMsg);
   const elliptical = isEllipticalFollowUpMessage(normMsg);
+  const hasCompareKeyword =
+    /\b(so sanh|khac nhau|chenh lech|tang hay giam|bien dong giua|vi sao .* khac|tai sao .* khac|compare|difference between)\b/i.test(
+      normMsg
+    );
+  if (
+    !detectedIntent &&
+    hasCompareKeyword &&
+    priorContext?.lastIntent &&
+    ['payslip_explanation', 'payslip_comparison'].includes(priorContext.lastIntent)
+  ) {
+    detectedIntent = 'payslip_comparison';
+  }
 
   // Extract raw time/entity slots from current message
   const extractedPeriods = extractAllPeriodsFromText(rawMsg, currentYear);
@@ -233,7 +246,9 @@ function resolveIntentAndSlots({
 
   let relativePeriodType = null;
   let singlePeriod = extractedPeriods[0] || null;
-  if (/\b(thang truoc|ky truoc|last month|previous month)\b/i.test(normMsg)) {
+  if (/\b(ky cong bo truoc|ky gan nhat truoc|ky da chot truoc|previous published)\b/i.test(normMsg)) {
+    relativePeriodType = 'previous_published';
+  } else if (/\b(thang truoc|ky truoc|last month|previous month)\b/i.test(normMsg)) {
     relativePeriodType = 'previous_month';
     if (!singlePeriod) singlePeriod = prevMonth;
   } else if (/\b(thang nay|ky nay|this month|current month)\b/i.test(normMsg)) {
@@ -436,7 +451,28 @@ function resolveIntentAndSlots({
     }
   } else if (detectedIntent === 'payslip_explanation') {
     // Notice: do NOT carry over leave year or leaveType when switching from leave_balance to payslip_explanation!
+    const sortedPublished = Array.isArray(publishedPeriods)
+      ? Array.from(new Set(publishedPeriods.filter(Boolean))).sort((a, b) => b.localeCompare(a))
+      : [];
+    const priorWasLatestPublished = priorContext?.lastSlots?.relativePeriodType === 'latest_published';
     if (
+      inheritedFromPrior &&
+      (relativePeriodType === 'previous_published' ||
+        (relativePeriodType === 'previous_month' && priorWasLatestPublished)) &&
+      extractedPeriods.length === 0
+    ) {
+      const priorPeriod = priorContext?.lastSlots?.period || sortedPublished[0] || null;
+      const nextPublished =
+        sortedPublished.length > 0
+          ? priorPeriod
+            ? sortedPublished.find((p) => p < priorPeriod) || null
+            : sortedPublished[1] || null
+          : priorPeriod
+            ? computePreviousMonthString(priorPeriod)
+            : null;
+      slots.period = nextPublished;
+      slots.relativePeriodType = 'previous_published';
+    } else if (
       inheritedFromPrior &&
       relativePeriodType === 'previous_month' &&
       extractedPeriods.length === 0 &&
@@ -451,9 +487,31 @@ function resolveIntentAndSlots({
     if (!slots.period && !relativePeriodType) {
       slots.relativePeriodType = 'latest_published';
     }
+    if (slots.relativePeriodType === 'latest_published' && !slots.period && sortedPublished.length > 0) {
+      slots.period = sortedPublished[0];
+    }
   } else if (detectedIntent === 'payslip_comparison') {
+    const sortedPublished = Array.isArray(publishedPeriods)
+      ? Array.from(new Set(publishedPeriods.filter(Boolean))).sort((a, b) => b.localeCompare(a))
+      : [];
+    const asksExplicitThisAndPrevMonth =
+      /\b(thang nay.*thang truoc|thang truoc.*thang nay|ky nay.*ky truoc|ky truoc.*ky nay)\b/i.test(normMsg);
+    const asksLatestTwoPublished =
+      /\b((?:2|hai)\s*(?:ky|thang)(?:\s+luong)?\s*(?:da\s+cong\s+bo\s*|chinh\s+thuc\s*)?(?:gan\s*nhat|moi\s*nhat)|ky\s+gan\s+nhat\s+(?:va|voi)\s+ky\s+(?:truoc|cong\s+bo\s+truoc|gan\s+nhat\s+truoc)|so\s+sanh\s+voi\s+ky\s+(?:cong\s+bo\s+truoc|gan\s+nhat\s+truoc)|latest\s+two|two\s+most\s+recent)\b/i.test(
+        normMsg
+      );
+
     if (extractedPeriods.length >= 2) {
-      slots.comparisonPeriods = extractedPeriods.slice(0, 2);
+      slots.comparisonPeriods = Array.from(new Set(extractedPeriods)).slice(0, 2);
+      slots.relativePeriodType = null;
+    } else if (asksExplicitThisAndPrevMonth && extractedPeriods.length === 0) {
+      // User explicitly asked for current month vs previous month: preserve requested calendar months
+      slots.comparisonPeriods = [prevMonth, currentMonth];
+      slots.relativePeriodType = 'current_and_previous_month';
+    } else if (asksLatestTwoPublished) {
+      // AI-V1-F02: "hai kỳ gần nhất" must resolve from actor's distinct published payslips in DB, never from calendar!
+      slots.relativePeriodType = 'latest_two_published';
+      slots.comparisonPeriods = sortedPublished.length >= 2 ? sortedPublished.slice(0, 2) : [];
     } else if (
       extractedPeriods.length === 1 &&
       /\b(thang truoc|ky truoc|last month|previous month)\b/i.test(normMsg)
@@ -470,12 +528,20 @@ function resolveIntentAndSlots({
     ) {
       slots.comparisonPeriods = [priorContext.lastSlots.period, extractedPeriods[0]];
     } else if (
-      /\b(2 ky gan nhat|hai ky gan nhat|thang nay.*thang truoc|thang truoc.*thang nay|ky nay.*ky truoc|ky truoc.*ky nay)\b/i.test(
-        normMsg
-      )
+      extractedPeriods.length === 0 &&
+      priorContext?.lastSlots?.period &&
+      ['payslip_explanation', 'payslip_comparison'].includes(priorContext?.lastIntent) &&
+      /\b(thang truoc|ky truoc|last month|previous month)\b/i.test(normMsg)
     ) {
-      slots.comparisonPeriods = [prevMonth, currentMonth];
-      slots.relativePeriodType = 'latest_two_published';
+      if (priorContext?.lastSlots?.relativePeriodType === 'latest_published' && /\bky truoc\b/i.test(normMsg)) {
+        slots.relativePeriodType = 'latest_two_published';
+        slots.comparisonPeriods = sortedPublished.length >= 2 ? sortedPublished.slice(0, 2) : [];
+      } else {
+        const prevOfPrior = computePreviousMonthString(priorContext.lastSlots.period);
+        if (prevOfPrior) {
+          slots.comparisonPeriods = [prevOfPrior, priorContext.lastSlots.period];
+        }
+      }
     }
   } else if (detectedIntent === 'policy_lookup') {
     slots.period = singlePeriod || null;

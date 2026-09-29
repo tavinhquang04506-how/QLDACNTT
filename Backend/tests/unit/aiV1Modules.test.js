@@ -18,8 +18,10 @@ const {
   formatNumberVi,
   computePayslipComparison,
   buildAnswerSectionsAndClaims,
+  renderNaturalVerifiedAnswer,
 } = require('../../src/modules/ai/claimRenderer');
 const { callGeminiGenerateContent } = require('../../src/modules/ai/geminiProvider');
+const { validateLiveEvalDatabaseEnvironment } = require('../../scripts/run-ai-v1-live-eval');
 
 describe('AI NEXUS V1 — Schema, Intent/Slot, Claim Renderer & Bounded Retry Unit Tests', () => {
   it('Phase B: computePreviousMonthString rolls back across year boundary (2026-01 -> 2025-12)', () => {
@@ -168,6 +170,63 @@ describe('AI NEXUS V1 — Schema, Intent/Slot, Claim Renderer & Bounded Retry Un
     assert.ok(r5.clarification.choices.length <= 3);
   });
 
+  it('AI-V1-F02: resolveIntentAndSlots does not guess calendar [prevMonth, currentMonth] for "hai kỳ gần nhất" and resolves DB publishedPeriods when provided', () => {
+    const octClock = {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      date: '2026-10-20',
+      month: '2026-10',
+      year: 2026,
+    };
+    const empActor = { userId: 'U-1', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' };
+
+    // Pure call without DB periods: keeps relativePeriodType='latest_two_published' and leaves comparisonPeriods=[] (never ['2026-09','2026-10'])
+    const pureRes = resolveIntentAndSlots({
+      message: 'So sánh lương hai kỳ gần nhất',
+      clock: octClock,
+      actor: empActor,
+    });
+    assert.equal(pureRes.intent, 'payslip_comparison');
+    assert.equal(pureRes.slots.relativePeriodType, 'latest_two_published');
+    assert.deepEqual(pureRes.slots.comparisonPeriods, []);
+    assert.equal(pureRes.needsClarification, false);
+
+    // With DB-resolved publishedPeriods (e.g. non-consecutive ['2026-08', '2026-06'] while 2026-10 is draft)
+    const dbResolvedRes = resolveIntentAndSlots({
+      message: 'So sánh lương hai kỳ gần nhất',
+      clock: octClock,
+      actor: empActor,
+      publishedPeriods: ['2026-08', '2026-06'],
+    });
+    assert.equal(dbResolvedRes.intent, 'payslip_comparison');
+    assert.equal(dbResolvedRes.slots.relativePeriodType, 'latest_two_published');
+    assert.deepEqual(dbResolvedRes.slots.comparisonPeriods, ['2026-08', '2026-06']);
+
+    // Explicit calendar request "So sánh lương tháng này và tháng trước" preserves ['2026-09', '2026-10']
+    const explicitCalendarRes = resolveIntentAndSlots({
+      message: 'So sánh lương tháng này và tháng trước',
+      clock: octClock,
+      actor: empActor,
+    });
+    assert.equal(explicitCalendarRes.intent, 'payslip_comparison');
+    assert.equal(explicitCalendarRes.slots.relativePeriodType, 'current_and_previous_month');
+    assert.deepEqual(explicitCalendarRes.slots.comparisonPeriods, ['2026-09', '2026-10']);
+
+    // Follow-up "Còn kỳ trước?" after "Giải thích lương kỳ gần nhất" (where latest published was 2026-08 and previous published was 2026-06)
+    const followUpAfterLatest = resolveIntentAndSlots({
+      message: 'Còn tháng trước?',
+      clock: octClock,
+      actor: empActor,
+      priorContext: {
+        lastIntent: 'payslip_explanation',
+        lastSlots: { period: null, relativePeriodType: 'latest_published' },
+      },
+      hasConversationHistory: true,
+      publishedPeriods: ['2026-08', '2026-06'],
+    });
+    assert.equal(followUpAfterLatest.intent, 'payslip_explanation');
+    assert.equal(followUpAfterLatest.slots.period, '2026-06');
+  });
+
   it('Phase B & D: claimRenderer formats vi-VN values (preserving 0 vs null vs 7.5) and computes exact payslip comparison deltas on server', () => {
     assert.equal(formatDateVi('2026-09-10'), '10/09/2026');
     assert.equal(formatVnd(0), '0 ₫');
@@ -230,6 +289,132 @@ describe('AI NEXUS V1 — Schema, Intent/Slot, Claim Renderer & Bounded Retry Un
     assert.equal(comp.deltas.bonus.delta, 500000);
     assert.equal(comp.deltas.otPay.delta, 300000);
     assert.equal(comp.deltas.pitAmount.delta, 100000);
+  });
+
+  it('AI-V1-F03: computePayslipComparison preserves null/undefined as unavailable (never 0), keeps true 0 values, and rejects invalid/unpublished/mismatched pairs', () => {
+    const evEarlier = {
+      tool: 'get_my_payslip',
+      entity: { employeeId: 'NV-0008', payslipId: 'PS-06' },
+      period: { period: '2026-06', periodStatus: 'DA_CHUYEN_KHOAN' },
+      fields: {
+        baseSalary: 20000000,
+        totalAllowances: 1500000,
+        bonus: 0,
+        otPay: 0,
+        grossIncome: 21500000,
+        bhxhEmp: 1600000,
+        bhytEmp: 300000,
+        bhtnEmp: 200000,
+        pitAmount: null, // missing on one side
+        totalDeductions: 2690000,
+        netSalary: null, // missing on both sides (repro from review 19)
+      },
+      sourceId: 'payslip:PS-06',
+    };
+    const evLater = {
+      tool: 'get_my_payslip',
+      entity: { employeeId: 'NV-0008', payslipId: 'PS-08' },
+      period: { period: '2026-08', periodStatus: 'DA_CHOT' },
+      fields: {
+        baseSalary: 20000000,
+        totalAllowances: 1500000,
+        bonus: 0,
+        otPay: 800000,
+        grossIncome: 22300000,
+        bhxhEmp: 1600000,
+        bhytEmp: 300000,
+        bhtnEmp: 200000,
+        pitAmount: 690000,
+        totalDeductions: 2790000,
+        netSalary: null,
+      },
+      sourceId: 'payslip:PS-08',
+    };
+
+    const comp = computePayslipComparison(evEarlier, evLater);
+    assert.ok(comp);
+    // netSalary is null on both -> unavailable=true, earlierValue=null, laterValue=null, delta=null (never 0!)
+    assert.equal(comp.deltas.netSalary.earlierValue, null);
+    assert.equal(comp.deltas.netSalary.laterValue, null);
+    assert.equal(comp.deltas.netSalary.delta, null);
+    assert.equal(comp.deltas.netSalary.available, false);
+    assert.equal(comp.deltas.netSalary.unavailable, true);
+
+    // pitAmount is null on one side -> unavailable=true, earlierValue=null, laterValue=690000, delta=null
+    assert.equal(comp.deltas.pitAmount.earlierValue, null);
+    assert.equal(comp.deltas.pitAmount.laterValue, 690000);
+    assert.equal(comp.deltas.pitAmount.delta, null);
+    assert.equal(comp.deltas.pitAmount.available, false);
+    assert.equal(comp.deltas.pitAmount.unavailable, true);
+
+    // True 0 values still compute exact deltas
+    assert.equal(comp.deltas.bonus.earlierValue, 0);
+    assert.equal(comp.deltas.bonus.laterValue, 0);
+    assert.equal(comp.deltas.bonus.delta, 0);
+    assert.equal(comp.deltas.bonus.available, true);
+    assert.equal(comp.deltas.otPay.earlierValue, 0);
+    assert.equal(comp.deltas.otPay.laterValue, 800000);
+    assert.equal(comp.deltas.otPay.delta, 800000);
+    assert.equal(comp.deltas.otPay.available, true);
+
+    // No calculationClaims or changedComponents for unavailable fields, and no NaN anywhere
+    assert.equal(comp.calculationClaims.some((c) => c.metric === 'netSalaryDelta'), false);
+    assert.equal(comp.calculationClaims.some((c) => c.metric === 'pitAmountDelta'), false);
+    assert.equal(comp.changedComponents.some((c) => c.key === 'netSalary' || c.key === 'pitAmount'), false);
+    assert.equal(JSON.stringify(comp).includes('NaN'), false);
+
+    // Section & answer rendering states "Chưa đủ dữ liệu đối chiếu" / "chưa đủ dữ liệu để tính chênh lệch"
+    const rendered = buildAnswerSectionsAndClaims({
+      intent: 'payslip_comparison',
+      structuredEvidence: [evEarlier, evLater],
+      sources: [
+        { id: 'payslip:PS-06', title: 'Phiếu lương 2026-06' },
+        { id: 'payslip:PS-08', title: 'Phiếu lương 2026-08' },
+      ],
+    });
+    const compSec = rendered.answerSections.find((s) => s.type === 'comparison');
+    assert.ok(compSec);
+    assert.match(compSec.text, /Chưa đủ dữ liệu đối chiếu/);
+    assert.equal(compSec.text.includes('NaN'), false);
+    const naturalText = renderNaturalVerifiedAnswer('So sánh lương hai kỳ gần nhất', [evEarlier, evLater], []);
+    assert.match(naturalText, /chưa đủ dữ liệu để tính chênh lệch/);
+
+    // Rejects mismatched employeeId, duplicate period, or unpublished periodStatus
+    assert.equal(
+      computePayslipComparison(evEarlier, { ...evLater, entity: { employeeId: 'NV-OTHER' } }),
+      null
+    );
+    assert.equal(
+      computePayslipComparison(evEarlier, { ...evLater, period: { period: '2026-06', periodStatus: 'DA_CHOT' } }),
+      null
+    );
+    assert.equal(
+      computePayslipComparison(evEarlier, { ...evLater, period: { period: '2026-08', periodStatus: 'DU_THAO' } }),
+      null
+    );
+  });
+
+  it('AI-V1-F01: validateLiveEvalDatabaseEnvironment rejects non-test DB_NAME, DB_NAME_TEST, DATABASE_URL, or NODE_ENV before any DB query', () => {
+    assert.throws(
+      () => validateLiveEvalDatabaseEnvironment({ DB_NAME: 'nexus_hrms' }),
+      (err) => err.code === 'TEST_DB_GUARD_FORBIDDEN'
+    );
+    assert.throws(
+      () => validateLiveEvalDatabaseEnvironment({ DB_NAME_TEST: 'nexus_hrms' }),
+      (err) => err.code === 'TEST_DB_GUARD_FORBIDDEN'
+    );
+    assert.throws(
+      () => validateLiveEvalDatabaseEnvironment({ DATABASE_URL: 'postgres://postgres:pass@localhost:5432/nexus_hrms' }),
+      (err) => err.code === 'TEST_DB_GUARD_FORBIDDEN'
+    );
+    assert.throws(
+      () => validateLiveEvalDatabaseEnvironment({ NODE_ENV: 'production', DB_NAME_TEST: 'nexus_hrms_test' }),
+      (err) => err.code === 'TEST_DB_GUARD_FORBIDDEN'
+    );
+    assert.equal(
+      validateLiveEvalDatabaseEnvironment({ NODE_ENV: 'test', DB_NAME_TEST: 'nexus_hrms_test' }),
+      true
+    );
   });
 
   it('Phase F: callGeminiGenerateContent retries transient 429/503 once within deadline and never retries 401/403/404', async () => {

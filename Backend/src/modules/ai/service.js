@@ -3,7 +3,13 @@ const db = require('../../config/db');
 const config = require('../../config/env');
 const { AppError, badRequest, forbidden, unauthorized } = require('../../utils/AppError');
 const kb = require('./hrKnowledgeBase');
-const { TOOL_DECLARATIONS, executeToolCall, getCurrentClock } = require('./tools');
+const {
+  TOOL_DECLARATIONS,
+  executeToolCall,
+  resolveLatestPublishedPayslipPeriods,
+  toFiniteNumberOrNull,
+  getCurrentClock,
+} = require('./tools');
 const { callGeminiGenerateContent, isRetiredGeminiModel } = require('./geminiProvider');
 const {
   computePreviousMonthString,
@@ -672,10 +678,11 @@ function extractAllowedNumbersFromToolResults(toolResults = [], structuredEviden
     ? structuredEvidence.filter((e) => e && e.tool === 'get_my_payslip')
     : [];
   if (payslipEvs.length >= 2) {
+    allowedSet.add(payslipEvs.length);
     const comp = computePayslipComparison(payslipEvs[0], payslipEvs[1]);
     if (comp && comp.deltas) {
       for (const d of Object.values(comp.deltas)) {
-        if (Number.isFinite(d.delta)) {
+        if (!d.unavailable && d.delta !== null && Number.isFinite(d.delta)) {
           allowedSet.add(d.delta);
           allowedSet.add(Math.abs(d.delta));
         }
@@ -738,22 +745,22 @@ function buildStructuredEvidenceFromTools(toolsUsed = [], rawToolResults = []) {
         entity: { employeeId: tr.employeeId, payslipId: tr.payslipId },
         period: { period: tr.period, periodStatus: tr.periodStatus },
         fields: {
-          baseSalary: Number(tr.baseSalary),
-          standardWorkDays: Number(tr.standardWorkDays),
-          actualWorkDays: Number(tr.actualWorkDays),
-          workDaysSalary: Number(tr.workDaysSalary),
-          totalAllowances: Number(tr.totalAllowances),
-          bonus: Number(tr.bonus),
-          otPay: Number(tr.otPay),
-          grossIncome: Number(tr.grossIncome),
-          bhxhEmp: Number(tr.bhxhEmp),
-          bhytEmp: Number(tr.bhytEmp),
-          bhtnEmp: Number(tr.bhtnEmp),
-          taxableIncome: Number(tr.taxableIncome),
-          personalDeduction: Number(tr.personalDeduction),
-          pitAmount: Number(tr.pitAmount),
-          totalDeductions: Number(tr.totalDeductions),
-          netSalary: Number(tr.netSalary),
+          baseSalary: toFiniteNumberOrNull(tr.baseSalary),
+          standardWorkDays: toFiniteNumberOrNull(tr.standardWorkDays),
+          actualWorkDays: toFiniteNumberOrNull(tr.actualWorkDays),
+          workDaysSalary: toFiniteNumberOrNull(tr.workDaysSalary),
+          totalAllowances: toFiniteNumberOrNull(tr.totalAllowances),
+          bonus: toFiniteNumberOrNull(tr.bonus),
+          otPay: toFiniteNumberOrNull(tr.otPay),
+          grossIncome: toFiniteNumberOrNull(tr.grossIncome),
+          bhxhEmp: toFiniteNumberOrNull(tr.bhxhEmp),
+          bhytEmp: toFiniteNumberOrNull(tr.bhytEmp),
+          bhtnEmp: toFiniteNumberOrNull(tr.bhtnEmp),
+          taxableIncome: toFiniteNumberOrNull(tr.taxableIncome),
+          personalDeduction: toFiniteNumberOrNull(tr.personalDeduction),
+          pitAmount: toFiniteNumberOrNull(tr.pitAmount),
+          totalDeductions: toFiniteNumberOrNull(tr.totalDeductions),
+          netSalary: toFiniteNumberOrNull(tr.netSalary),
         },
         sourceId: tr.source?.id || null,
       });
@@ -844,7 +851,8 @@ function extractMatchedFieldValues(normText, regexList) {
 function stripIdentifierAndDateTokens(text = '') {
   return String(text || '')
     .replace(/\b(?:NV|DEPT|HB|POL|APL|LR|PS|LT)-[A-Za-z0-9-]+\b/gi, ' ')
-    .replace(/\b20\d{2}-(0[1-9]|1[0-2])(?:-\d{2})?\b/g, ' ');
+    .replace(/\b20\d{2}-(0[1-9]|1[0-2])(?:-\d{2})?\b/g, ' ')
+    .replace(/\b(?:0?2|hai|two)\s*(?:ky|kỳ|thang|tháng|periods?|months?)(?:\s+luong|\s+lương)?\b/gi, ' ');
 }
 
 function detectLeaveTypeCategory(normText = '') {
@@ -1194,8 +1202,8 @@ function validateSemanticFieldBindings(
           const allPublishedValues = new Set();
           for (const pev of payslipEvs) {
             for (const v of Object.values(pev.fields || {})) {
-              const num = Number(v);
-              if (Number.isFinite(num)) allPublishedValues.add(num);
+              const num = toFiniteNumberOrNull(v);
+              if (num !== null) allPublishedValues.add(num);
             }
           }
           for (const n of clauseNums) {
@@ -1212,33 +1220,57 @@ function validateSemanticFieldBindings(
 
       const f = currentPayslipEv.fields || {};
       const pStatus = String(currentPayslipEv.period?.periodStatus || '').toUpperCase();
+      const periodsInClause = clause.match(/\b20\d{2}-(0[1-9]|1[0-2])\b/g) || [];
+      const isComparisonClause =
+        payslipEvs.length > 1 &&
+        (periodsInClause.length > 1 ||
+          /\b(so voi|so sanh|chenh lech|tang|giam|khong doi|cao hon|thap hon|compared|comparison|delta|difference|increased|decreased)\b/i.test(
+            normClause
+          ));
 
-      // Non-numeric periodStatus verification
-      if (
-        pStatus === 'DA_CHOT' &&
-        /\b(da chuyen khoan|da chi tra|da thanh toan|already paid|disbursed|du thao|chua chot|draft)\b/i.test(normClause)
-      ) {
-        return {
-          valid: false,
-          reason: `PAYSLIP_STATUS_MISMATCH: clause claimed paid/draft status when periodStatus=${pStatus}`,
-        };
+      // Non-numeric periodStatus verification (only when clause refers to a single period)
+      if (!isComparisonClause) {
+        if (
+          pStatus === 'DA_CHOT' &&
+          /\b(da chuyen khoan|da chi tra|da thanh toan|already paid|disbursed|du thao|chua chot|draft)\b/i.test(normClause)
+        ) {
+          return {
+            valid: false,
+            reason: `PAYSLIP_STATUS_MISMATCH: clause claimed paid/draft status when periodStatus=${pStatus}`,
+          };
+        }
+        if (
+          pStatus === 'DA_CHI' &&
+          /\b(chua chi tra|chua thanh toan|unpaid|du thao|chua chot|draft)\b/i.test(normClause)
+        ) {
+          return {
+            valid: false,
+            reason: `PAYSLIP_STATUS_MISMATCH: clause claimed unpaid/draft status when periodStatus=${pStatus}`,
+          };
+        }
       }
-      if (
-        pStatus === 'DA_CHI' &&
-        /\b(chua chi tra|chua thanh toan|unpaid|du thao|chua chot|draft)\b/i.test(normClause)
-      ) {
-        return {
-          valid: false,
-          reason: `PAYSLIP_STATUS_MISMATCH: clause claimed unpaid/draft status when periodStatus=${pStatus}`,
-        };
-      }
+
+      const matchesPayslipMetric = (val, fieldKey) => {
+        if (!isComparisonClause) {
+          return val === toFiniteNumberOrNull(f[fieldKey]);
+        }
+        for (const pev of payslipEvs) {
+          if (val === toFiniteNumberOrNull(pev.fields?.[fieldKey])) return true;
+        }
+        const comp = computePayslipComparison(payslipEvs[0], payslipEvs[1]);
+        const d = comp?.deltas?.[fieldKey];
+        if (d && !d.unavailable && d.delta !== null && (val === d.delta || val === Math.abs(d.delta))) {
+          return true;
+        }
+        return false;
+      };
 
       const netClaims = extractMatchedFieldValues(normClause, [
         new RegExp(`\\bnet\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
         new RegExp(`(?:thuc linh|luong net|net salary|take home)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
       for (const val of netClaims) {
-        if (val !== Number(f.netSalary)) {
+        if (!matchesPayslipMetric(val, 'netSalary')) {
           return {
             valid: false,
             reason: `PAYSLIP_NET_MISMATCH: claimed net=${val}, actual=${f.netSalary} for period ${currentPayslipEv.period?.period}`,
@@ -1251,7 +1283,7 @@ function validateSemanticFieldBindings(
         new RegExp(`(?:tong thu nhap|luong gross|gross income)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
       for (const val of grossClaims) {
-        if (val !== Number(f.grossIncome)) {
+        if (!matchesPayslipMetric(val, 'grossIncome')) {
           return {
             valid: false,
             reason: `PAYSLIP_GROSS_MISMATCH: claimed gross=${val}, actual=${f.grossIncome} for period ${currentPayslipEv.period?.period}`,
@@ -1264,7 +1296,7 @@ function validateSemanticFieldBindings(
         new RegExp(`(?:luong co ban|base salary)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
       for (const val of baseClaims) {
-        if (val !== Number(f.baseSalary)) {
+        if (!matchesPayslipMetric(val, 'baseSalary')) {
           return {
             valid: false,
             reason: `PAYSLIP_BASE_MISMATCH: claimed base=${val}, actual=${f.baseSalary} for period ${currentPayslipEv.period?.period}`,
@@ -1277,7 +1309,7 @@ function validateSemanticFieldBindings(
         new RegExp(`(?:thue tncn|income tax)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
       for (const val of pitClaims) {
-        if (val !== Number(f.pitAmount)) {
+        if (!matchesPayslipMetric(val, 'pitAmount')) {
           return {
             valid: false,
             reason: `PAYSLIP_PIT_MISMATCH: claimed pit=${val}, actual=${f.pitAmount} for period ${currentPayslipEv.period?.period}`,
@@ -1289,18 +1321,11 @@ function validateSemanticFieldBindings(
       // must belong to this period's fields (preventing cross-period number swaps even without field keywords),
       // unless the clause explicitly compares multiple periods and cites server-computed deltas.
       if (periodInClause && payslipEvs.length > 1) {
-        const periodsInClause = clause.match(/\b20\d{2}-(0[1-9]|1[0-2])\b/g) || [];
-        const isComparisonClause =
-          periodsInClause.length > 1 ||
-          /\b(so voi|so sanh|chenh lech|tang|giam|khong doi|cao hon|thap hon|compared|comparison|delta|difference|increased|decreased)\b/i.test(
-            normClause
-          );
-
         if (!isComparisonClause) {
           const periodFieldValues = new Set(
             Object.values(f)
-              .map((v) => Number(v))
-              .filter((v) => Number.isFinite(v))
+              .map((v) => toFiniteNumberOrNull(v))
+              .filter((v) => v !== null)
           );
           const clauseSalaryNums = extractNumbersFromText(stripIdentifierAndDateTokens(clause));
           for (const n of clauseSalaryNums) {
@@ -1316,13 +1341,13 @@ function validateSemanticFieldBindings(
           const allowedCompValues = new Set();
           for (const pev of payslipEvs) {
             for (const v of Object.values(pev.fields || {})) {
-              const num = Number(v);
-              if (Number.isFinite(num)) allowedCompValues.add(num);
+              const num = toFiniteNumberOrNull(v);
+              if (num !== null) allowedCompValues.add(num);
             }
           }
           if (comp && comp.deltas) {
             for (const d of Object.values(comp.deltas)) {
-              if (Number.isFinite(d.delta)) {
+              if (!d.unavailable && d.delta !== null && Number.isFinite(d.delta)) {
                 allowedCompValues.add(d.delta);
                 allowedCompValues.add(Math.abs(d.delta));
               }
@@ -1343,13 +1368,17 @@ function validateSemanticFieldBindings(
 
     const asksNetSalary = /\b(thuc linh|luong net|net salary|take home)\b/i.test(normMsg);
     if (asksNetSalary) {
-      const allAnswerNums = extractNumbersFromText(stripIdentifierAndDateTokens(finalAnswer));
-      const allNetValues = new Set(payslipEvs.map((e) => Number(e.fields?.netSalary)));
-      if (!allAnswerNums.some((n) => allNetValues.has(n))) {
-        return {
-          valid: false,
-          reason: 'PAYSLIP_INTENT_MISMATCH: query asked for netSalary but answer omitted actual netSalary',
-        };
+      const allNetValues = new Set(
+        payslipEvs.map((e) => toFiniteNumberOrNull(e.fields?.netSalary)).filter((v) => v !== null)
+      );
+      if (allNetValues.size > 0) {
+        const allAnswerNums = extractNumbersFromText(stripIdentifierAndDateTokens(finalAnswer));
+        if (!allAnswerNums.some((n) => allNetValues.has(n))) {
+          return {
+            valid: false,
+            reason: 'PAYSLIP_INTENT_MISMATCH: query asked for netSalary but answer omitted actual netSalary',
+          };
+        }
       }
     }
   }
@@ -1501,6 +1530,7 @@ const COMMON_GRAMMAR_TOKENS = new Set([
   'noi', 'tru', 'cong', 'le', 'linh', 'muoi', 'tram', 'nghin', 'ngan', 'trieu', 'ty',
   'mot', 'hai', 'ba', 'bon', 'lam', 'sau', 'bay', 'tam', 'chin', 'ruoi',
   'nen', 'the', 'viec', 'bo', 'gan', 'nhat', 'pham', 'vi', 'chinh', 'thuc', 'dan',
+  'len', 'xuong', 'giua', 'lien', 'ke',
   'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
   'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen',
   'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
@@ -1988,7 +2018,7 @@ async function runCopilot({
   const history = activeConvBeforeTurn ? [...(activeConvBeforeTurn.history || [])] : [];
   const priorContext = activeConvBeforeTurn ? activeConvBeforeTurn.contextState || null : null;
 
-  const intentInfo = resolveIntentAndSlots({
+  let intentInfo = resolveIntentAndSlots({
     message: rawMsg,
     clock,
     actor: resolvedActor,
@@ -1996,6 +2026,24 @@ async function runCopilot({
     hasConversationHistory: history.length > 0,
     clientProvidedConversationId: Boolean(conversationId),
   });
+
+  let dbPublishedPeriods = null;
+  if (
+    intentInfo.slots?.relativePeriodType === 'latest_two_published' ||
+    intentInfo.slots?.relativePeriodType === 'previous_published' ||
+    (intentInfo.inheritedFromPrior && priorContext?.lastSlots?.relativePeriodType === 'latest_published')
+  ) {
+    dbPublishedPeriods = await resolveLatestPublishedPayslipPeriods(resolvedActor, 4, executor);
+    intentInfo = resolveIntentAndSlots({
+      message: rawMsg,
+      clock,
+      actor: resolvedActor,
+      priorContext,
+      hasConversationHistory: history.length > 0,
+      clientProvidedConversationId: Boolean(conversationId),
+      publishedPeriods: dbPublishedPeriods,
+    });
+  }
 
   const contents = [
     ...history,
@@ -2015,6 +2063,7 @@ async function runCopilot({
 
   let finalAnswer = null;
   let toolRoundsExceeded = false;
+  let insufficientPublishedPeriods = false;
   let totalProviderCalls = 0;
   let totalRetriesUsed = 0;
   let aggregatedTokenUsage = null;
@@ -2025,6 +2074,50 @@ async function runCopilot({
 
   if (shouldShortCircuitClarification && intentInfo.clarification) {
     finalAnswer = intentInfo.clarification.question;
+  } else if (
+    intentInfo.intent === 'payslip_comparison' &&
+    intentInfo.slots?.relativePeriodType === 'latest_two_published' &&
+    (!Array.isArray(intentInfo.slots.comparisonPeriods) || intentInfo.slots.comparisonPeriods.length < 2)
+  ) {
+    insufficientPublishedPeriods = true;
+    const onlyPeriod = Array.isArray(dbPublishedPeriods) && dbPublishedPeriods.length === 1 ? dbPublishedPeriods[0] : null;
+    if (onlyPeriod) {
+      const singleRes = await executeToolCall('get_my_payslip', actorWithClock, { period: onlyPeriod }, executor);
+      rawToolResults.push(singleRes);
+      toolsUsed.push({
+        name: 'get_my_payslip',
+        ok: Boolean(singleRes?.ok),
+        found: singleRes?.found !== undefined ? Boolean(singleRes.found) : undefined,
+        errorCode: singleRes?.errorCode || null,
+      });
+      finalAnswer = `Hệ thống chỉ ghi nhận 01 kỳ lương đã công bố chính thức (${onlyPeriod}) của bạn nên chưa đủ hai kỳ lương đã công bố để thực hiện so sánh.`;
+    } else {
+      const emptyRes = await executeToolCall('get_my_payslip', actorWithClock, { period: 'latest_published' }, executor);
+      rawToolResults.push(emptyRes);
+      toolsUsed.push({
+        name: 'get_my_payslip',
+        ok: Boolean(emptyRes?.ok),
+        found: emptyRes?.found !== undefined ? Boolean(emptyRes.found) : undefined,
+        errorCode: emptyRes?.errorCode || null,
+      });
+      finalAnswer =
+        'Hệ thống chưa ghi nhận kỳ lương nào đã công bố chính thức của bạn nên chưa có dữ liệu để so sánh hai kỳ lương gần nhất.';
+    }
+  } else if (
+    intentInfo.intent === 'payslip_explanation' &&
+    intentInfo.slots?.relativePeriodType === 'previous_published' &&
+    !intentInfo.slots?.period
+  ) {
+    insufficientPublishedPeriods = true;
+    const emptyPrevRes = await executeToolCall('get_my_payslip', actorWithClock, { period: 'latest_published' }, executor);
+    rawToolResults.push(emptyPrevRes);
+    toolsUsed.push({
+      name: 'get_my_payslip',
+      ok: Boolean(emptyPrevRes?.ok),
+      found: emptyPrevRes?.found !== undefined ? Boolean(emptyPrevRes.found) : undefined,
+      errorCode: emptyPrevRes?.errorCode || null,
+    });
+    finalAnswer = 'Hệ thống chưa ghi nhận kỳ lương đã công bố nào trước kỳ lương gần nhất của bạn.';
   } else {
     for (let round = 0; round <= maxToolRounds; round += 1) {
       const data = await callGeminiGenerateContent({
@@ -2083,9 +2176,36 @@ async function runCopilot({
       });
 
       const responseParts = [];
+      const lockedComparisonPeriods =
+        intentInfo.intent === 'payslip_comparison' &&
+        Array.isArray(intentInfo.slots?.comparisonPeriods) &&
+        intentInfo.slots.comparisonPeriods.length === 2
+          ? intentInfo.slots.comparisonPeriods
+          : null;
+      const fetchedComparisonPeriods = new Set();
+
       for (const fcPart of functionCalls) {
-        const { name: toolName, args: toolArgs } = fcPart.functionCall;
-        const toolResult = await executeToolCall(toolName, actorWithClock, toolArgs || {}, executor);
+        const { name: toolName, args: rawToolArgs } = fcPart.functionCall;
+        let effectiveArgs = { ...(rawToolArgs || {}) };
+
+        // AI-V1-F02: Do not allow model tool args to skew server-resolved comparison periods
+        if (
+          toolName === 'get_my_payslip' &&
+          lockedComparisonPeriods &&
+          (!effectiveArgs.employeeId || String(effectiveArgs.employeeId).trim() === String(resolvedActor.employeeId))
+        ) {
+          const reqPeriod = effectiveArgs.period ? String(effectiveArgs.period).trim() : '';
+          if (!lockedComparisonPeriods.includes(reqPeriod) || fetchedComparisonPeriods.has(reqPeriod)) {
+            const nextLockedPeriod =
+              lockedComparisonPeriods.find((p) => !fetchedComparisonPeriods.has(p)) ||
+              lockedComparisonPeriods[0];
+            effectiveArgs.period = nextLockedPeriod;
+            fcPart.functionCall.args = { ...(fcPart.functionCall.args || {}), period: nextLockedPeriod };
+          }
+          fetchedComparisonPeriods.add(effectiveArgs.period);
+        }
+
+        const toolResult = await executeToolCall(toolName, actorWithClock, effectiveArgs, executor);
 
         rawToolResults.push(toolResult);
         toolsUsed.push({
@@ -2122,18 +2242,16 @@ async function runCopilot({
         });
       }
 
-      // If payslip_comparison has 2 target periods and the model only called get_my_payslip once in this turn,
-      // deterministically fetch the second comparison period on the server so both periods are available.
+      // If payslip_comparison has 2 target periods and not both were fetched by the model in this turn,
+      // deterministically fetch any remaining period(s) from lockedComparisonPeriods on the server.
       if (
-        intentInfo.intent === 'payslip_comparison' &&
+        lockedComparisonPeriods &&
         refusalCodes.length === 0 &&
-        toolsUsed.filter((t) => t.name === 'get_my_payslip').length === 1 &&
-        Array.isArray(intentInfo.slots?.comparisonPeriods) &&
-        intentInfo.slots.comparisonPeriods.length === 2
+        toolsUsed.some((t) => t.name === 'get_my_payslip')
       ) {
-        const alreadyFetchedPeriod = rawToolResults.find((r) => r && r.period)?.period;
-        const missingPeriod = intentInfo.slots.comparisonPeriods.find((p) => p !== alreadyFetchedPeriod);
-        if (missingPeriod) {
+        for (const missingPeriod of lockedComparisonPeriods) {
+          if (fetchedComparisonPeriods.has(missingPeriod)) continue;
+          fetchedComparisonPeriods.add(missingPeriod);
           const secondResult = await executeToolCall(
             'get_my_payslip',
             actorWithClock,
@@ -2191,7 +2309,7 @@ async function runCopilot({
   const hasVerifiedToolData = rawToolResults.some((tr) => isVerifiedToolDataResult(tr));
   const structuredEvidence = buildStructuredEvidenceFromTools(toolsUsed, rawToolResults);
 
-  if (!toolRoundsExceeded && !shouldShortCircuitClarification) {
+  if (!toolRoundsExceeded && !shouldShortCircuitClarification && !insufficientPublishedPeriods) {
     if (toolsUsed.length === 0) {
       // Fail-closed allowlist for tool-less responses: only pure greetings or pure clarification questions
       // with zero numbers (digits or written words in VI/EN) and zero factual assertions are permitted.
@@ -2432,12 +2550,15 @@ async function runCopilot({
   const latencyMs = Date.now() - startTime;
 
   const hasIncompleteComparison =
-    intentInfo.intent === 'payslip_comparison' &&
-    rawToolResults.some((tr) => tr && tr.ok === true && (tr.found === false || tr.published === false));
+    insufficientPublishedPeriods ||
+    (intentInfo.intent === 'payslip_comparison' &&
+      (rawToolResults.some((tr) => tr && tr.ok === true && (tr.found === false || tr.published === false)) ||
+        structuredEvidence.filter((e) => e.tool === 'get_my_payslip').length < 2));
 
   const isVerifiedResponse =
     hasVerifiedToolData &&
     !hasIncompleteComparison &&
+    !insufficientPublishedPeriods &&
     uniqueRefusalCodes.length === 0 &&
     !scopeInvalidatedBeforeRelease;
 
@@ -2446,6 +2567,8 @@ async function runCopilot({
     responseType = 'refusal';
   } else if (shouldShortCircuitClarification) {
     responseType = 'clarification';
+  } else if (insufficientPublishedPeriods) {
+    responseType = 'empty';
   } else if (toolsUsed.length === 0) {
     const isPureGreeting =
       intentInfo.intent === 'greeting' ||
@@ -2458,7 +2581,10 @@ async function runCopilot({
 
   const { answerSections, extraVerifiedClaims, payslipComparison } = buildAnswerSectionsAndClaims({
     intent: intentInfo.intent,
-    structuredEvidence: isVerifiedResponse || hasIncompleteComparison ? structuredEvidence : [],
+    structuredEvidence:
+      (isVerifiedResponse || hasIncompleteComparison) && !insufficientPublishedPeriods
+        ? structuredEvidence
+        : [],
     rawToolResults,
     toolsUsed,
     verifiedSources,

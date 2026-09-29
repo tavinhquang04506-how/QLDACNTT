@@ -1705,27 +1705,97 @@ async function main() {
     const screenshotDir = path.resolve(__dirname, '../../docs/remediation/evidence/screenshots');
     fs.mkdirSync(screenshotDir, { recursive: true });
 
-    await db.query(
-      `INSERT INTO leave_balances (employee_id, leave_type_id, year, total_days, used_days)
-       VALUES ($1, 'LT-AL', 2026, 12, 4)
-       ON CONFLICT (employee_id, leave_type_id, year) DO UPDATE
-       SET total_days = 12, used_days = 4`,
-      [mgrR30Acc.emp.id]
-    );
+      await db.query(
+        `INSERT INTO leave_balances (employee_id, leave_type_id, year, total_days, used_days)
+         VALUES ($1, 'LT-AL', 2026, 12, 4)
+         ON CONFLICT (employee_id, leave_type_id, year) DO UPDATE
+         SET total_days = 12, used_days = 4`,
+        [mgrR30Acc.emp.id]
+      );
 
-    app.locals.aiTestOptions = {
-      apiKey: 'test-key-e2e-r35-r38',
-      model: 'gemini-2.5-flash',
-      requestsPerMinute: 100,
-      fetchImpl: async (_url, init) => {
-        const body = JSON.parse(init.body);
-        const lastContent = body.contents[body.contents.length - 1];
-        const fnRespPart = lastContent?.parts?.find((p) => p.functionResponse);
-        const userText =
-          body.contents
-            .filter((c) => c.role === 'user' && c.parts?.some((p) => p.text))
-            .map((c) => c.parts?.map((p) => p.text || '').join(' '))
-            .pop() || '';
+      // AI-V1-F02 & F03 E2E fixtures: published 2026-06 & 2026-08 (with bonus=NULL), draft 2026-10
+      const e2eF02Periods = [
+        { period: '2026-06', status: 'DA_CHUYEN_KHOAN', base: 20000000, allow: 1000000, ot: 0, gross: 21000000, pit: 540000, ded: 2640000, net: 18360000 },
+        { period: '2026-08', status: 'DA_CHOT', base: 20000000, allow: 1500000, ot: 800000, gross: 22300000, pit: 690000, ded: 2790000, net: 19510000 },
+        { period: '2026-10', status: 'DU_THAO', base: 20000000, allow: 1500000, ot: 0, gross: 21500000, pit: 590000, ded: 2690000, net: 18810000 },
+      ];
+      for (const p of e2eF02Periods) {
+        const { rows: ppRows } = await db.query(
+          `INSERT INTO payroll_periods (period, status) VALUES ($1, $2)
+           ON CONFLICT (period) DO UPDATE SET status = EXCLUDED.status RETURNING id`,
+          [p.period, p.status]
+        );
+        await db.query(
+          `INSERT INTO payslips (
+             period_id, employee_id, base_salary, standard_work_days, actual_work_days,
+             allowances, bonus, ot_pay, gross_income,
+             bhxh_amount, bhyt_amount, bhtn_amount, pit_taxable, pit_deduction,
+             pit_amount, total_deductions, net_salary, status
+           ) VALUES ($1, $2, $3, 22, 22, $4, NULL, $5, $6, 1600000, 300000, 200000, 8400000, 11000000, $7, $8, $9, $10)
+           ON CONFLICT (period_id, employee_id) DO UPDATE SET
+             allowances = EXCLUDED.allowances,
+             bonus = NULL,
+             ot_pay = EXCLUDED.ot_pay,
+             gross_income = EXCLUDED.gross_income,
+             pit_amount = EXCLUDED.pit_amount,
+             total_deductions = EXCLUDED.total_deductions,
+             net_salary = EXCLUDED.net_salary,
+             status = EXCLUDED.status`,
+          [ppRows[0].id, mgrR30Acc.emp.id, p.base, p.allow, p.ot, p.gross, p.pit, p.ded, p.net, p.status]
+        );
+      }
+
+      app.locals.aiTestOptions = {
+        apiKey: 'test-key-e2e-r35-r38',
+        model: 'gemini-2.5-flash',
+        now: '2026-10-20T09:00:00+07:00',
+        requestsPerMinute: 100,
+        fetchImpl: async (_url, init) => {
+          const body = JSON.parse(init.body);
+          const lastContent = body.contents[body.contents.length - 1];
+          const fnRespPart = lastContent?.parts?.find((p) => p.functionResponse);
+          const userText =
+            body.contents
+              .filter((c) => c.role === 'user' && c.parts?.some((p) => p.text))
+              .map((c) => c.parts?.map((p) => p.text || '').join(' '))
+              .pop() || '';
+
+          if (userText.includes('So sánh lương hai kỳ gần nhất')) {
+            if (!fnRespPart) {
+              return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                  candidates: [
+                    {
+                      content: {
+                        role: 'model',
+                        parts: [{ functionCall: { name: 'get_my_payslip', args: { period: '2026-10' } } }],
+                      },
+                    },
+                  ],
+                }),
+              };
+            }
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                candidates: [
+                  {
+                    content: {
+                      role: 'model',
+                      parts: [
+                        {
+                          text: 'So sánh hai kỳ lương đã công bố gần nhất 2026-06 và 2026-08: lương thực lĩnh tăng từ 18360000 đồng lên 19510000 đồng (chênh lệch +1150000 đồng).',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+            };
+          }
 
         if (userText.includes('Xin chào trợ lý')) {
           return {
@@ -2061,6 +2131,29 @@ async function main() {
       await cdp.captureScreenshot(path.join(screenshotDir, 'ai-v1-copilot-mobile-390.png'));
       await cdp.send('Emulation.clearDeviceMetricsOverride');
 
+      // 10i. AI-V1-F02 & AI-V1-F03 UI E2E: "So sánh lương hai kỳ gần nhất" in 2026-10 resolves 2026-08 vs 2026-06 from DB (skipping draft 2026-10) and renders unavailable bonus field as "Chưa đủ dữ liệu đối chiếu" (never 0 or NaN)
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'So sánh lương hai kỳ gần nhất của tôi');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
+      const f02F03UiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          fullText: lastBot?.innerText || '',
+          sectionsText: lastBot?.querySelector('[data-testid="ai-msg-sections"]')?.innerText || '',
+        };
+      })()`);
+      assert.equal(f02F03UiState.verificationState, 'VERIFIED', 'AI-V1-F02 UI: Must render VERIFIED comparison for 2026-08 vs 2026-06');
+      assert.match(f02F03UiState.fullText, /2026-06/, 'AI-V1-F02 UI: Must render DB-resolved earlier period 2026-06');
+      assert.match(f02F03UiState.fullText, /2026-08/, 'AI-V1-F02 UI: Must render DB-resolved later period 2026-08');
+      assert.equal(f02F03UiState.fullText.includes('2026-10'), false, 'AI-V1-F02 UI: Must not include draft period 2026-10');
+      assert.match(
+        f02F03UiState.sectionsText,
+        /Chưa đủ dữ liệu đối chiếu/,
+        'AI-V1-F03 UI: Null bonus field must render "Chưa đủ dữ liệu đối chiếu" in DOM'
+      );
+      assert.equal(f02F03UiState.fullText.includes('NaN'), false, 'AI-V1-F03 UI: Must never render NaN in DOM');
+
       // Click "Làm mới" reset button and verify conversation resets to 1 welcome message with dynamic chips (no hardcoded 2026-08)
       await cdp.click('[data-testid="ai-copilot-reset-btn"]', 700);
       const afterResetState = await cdp.eval(`(() => {
@@ -2082,6 +2175,7 @@ async function main() {
     } finally {
       delete app.locals.aiTestOptions;
       aiServiceBackend.clearAiRuntimeState();
+      await db.query("DELETE FROM payslips WHERE period_id IN (SELECT id FROM payroll_periods WHERE period IN ('2026-06', '2026-08', '2026-10')) AND employee_id = $1", [mgrR30Acc.emp.id]).catch(() => {});
     }
 
     console.log(
