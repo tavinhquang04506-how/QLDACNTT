@@ -77,7 +77,7 @@
    - Gắn `requirePermission` từ `Backend/src/policies/matrix.js` cho `POST /api/attendance/appeals` và `GET /api/attendance/appeals`.
    - Chuẩn hóa đọc `req.user.employeeId`, `req.user.roleCode`, `req.scope` trong `attendance/controller.js` và `appealService.js`: kiểm tra scope phòng ban khi `LINE_MANAGER` duyệt đơn, cấm tự duyệt đơn của chính mình, bọc cập nhật `attendance_appeals` + `attendance_logs` + `audit_logs` trong `db.withTransaction(...)`, trả `404` khi ID không tồn tại và `409` khi đơn đã xử lý.
 3. **`F08`, `F31` (Squad Access & WebSocket Auth)**:
-   - Trong `Backend/src/modules/projects/access.js` và `squads.js`: tách hàm đọc giám sát (`assertMemberOrHr` dùng `HR_ROLES = ['CEO', 'HR_DIRECTOR']`) khỏi hàm gửi tin nhắn (`assertSquadMember` chỉ cho phép `squad.lead_id === user.employeeId` hoặc thành viên trong `squad_members`).
+   - Trong `Backend/src/modules/projects/access.js` và `squads.js`: tại `Backend/src/modules/squads/service.js:31`, giới hạn `isMember` chỉ cho thành viên thực sự (`squad.lead_id === user.employeeId` hoặc trong `squad.members`), giữ quyền đọc giám sát của `HR_ROLES = ['CEO', 'HR_DIRECTOR']` qua `canRead`/`canManage`.
    - Trong `Backend/src/socket.js`: xác thực JWT khi kết nối WebSocket, kiểm tra quyền squad từ DB và lưu tin nhắn vào `squad_messages`.
 4. **`F30` (Dashboard Company KPI vs Actionable Queue)**:
    - Trong `Backend/src/modules/dashboard/service.js`: tách điều kiện đếm `overview.pending_leaves` (tổng đơn chờ duyệt toàn scope công ty/phòng ban) khỏi bộ lọc `pendingLeaves` (hàng đợi đơn mà vai trò hiện tại được phép duyệt); bỏ fallback `|| 1.8`.
