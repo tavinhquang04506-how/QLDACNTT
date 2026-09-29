@@ -13,10 +13,10 @@
 📦 Database:  nexus_hrms
 👤 User:      postgres
 ────────────────────────────────────────────────────────────
-✅ [OK] Kết nối PostgreSQL thành công (34ms)
+✅ [OK] Kết nối PostgreSQL thành công (27ms)
 
 ℹ️  DB Version:   PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit
-ℹ️  Server Time:  Tue Oct 20 2026 22:28:22 GMT+0700 (Giờ Đông Dương)
+ℹ️  Server Time:  Tue Oct 20 2026 22:49:08 GMT+0700 (Giờ Đông Dương)
 
 📊 Tìm thấy tổng cộng: 31 base tables và 2 views trong public schema.
 📖 Đã load danh sách 20 bảng chuẩn từ: C:\Users\tavin\Downloads\QLDACNTT\database\schema.sql
@@ -49,5 +49,4 @@
 📈 Kết quả: 20/20 bảng chuẩn đã sẵn sàng (100%)
 🎉 TRẠNG THÁI: TẤT CẢ 20 BẢNG CHUẨN ĐỀU ĐÃ ĐỒNG BỘ VÀ KHỚP 100%!
 ────────────────────────────────────────────────────────────
-
-[EXIT_CODE=0]
+[EXIT_CODE=0] 
