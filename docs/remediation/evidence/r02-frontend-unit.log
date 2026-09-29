@@ -1,0 +1,95 @@
+﻿
+> nexus-hrms-frontend@1.0.0 test
+> node --test "tests/**/*.test.js"
+
+Γ£ö F21: concurrent 401 requests share a single refresh call and both retry with new token (110.0619ms)
+Γ£ö F21: when refresh fails, all concurrent 401 callers reject (never resolve false-401 object) and session is cleared (30.9453ms)
+Γû╢ Attendance Calculation and Verification Tests
+  Γ£ö validates supported punch methods (2.5141ms)
+  Γ£ö determines late status based on standard morning shift 08:15 threshold (0.4933ms)
+  Γ£ö formats attendance time and date safely without NaN (0.3747ms)
+Γ£ö Attendance Calculation and Verification Tests (5.7137ms)
+Γû╢ Dashboard Data Extraction Tests
+  Γ£ö correctly maps overview KPI figures and attendance rate (2.9988ms)
+  Γ£ö handles null stats gracefully without runtime exception (0.3835ms)
+Γ£ö Dashboard Data Extraction Tests (8.0995ms)
+Γû╢ Data Adapters Unit Tests
+  Γ£ö normalizeEmployee should return safe defaults for null or empty input without fabricating salary (27.6101ms)
+  Γ£ö normalizeEmployee should correctly map PostgreSQL snake_case fields and preserve 0 vs null (1.4627ms)
+  Γ£ö R07: normalizeLeaveBalance never fabricates 12 days on empty/error state and preserves 0 remaining days (0.7032ms)
+  Γ£ö R07: buildPortalSalaryView converts numeric strings before adding allowances+ot_pay and sums 10.5% insurance (BHXH+BHYT+BHTN) (41.2089ms)
+  Γ£ö R07: formatPortalWorkHours never fabricates 8.0 giß╗¥ when employee is only checked in (0.435ms)
+  Γ£ö normalizeLeaveRequest should handle missing fields safely (0.4199ms)
+  Γ£ö normalizePayslip should handle missing fields safely and compute netSalary (0.684ms)
+  Γ£ö normalizeTask should handle missing fields safely (1.1386ms)
+  Γ£ö normalizeDepartment should handle missing fields safely (4.1398ms)
+  Γ£ö formatVND formats currency correctly and distinguishes 0 from null/redacted (0.9882ms)
+  Γ£ö formatDateVN formats YYYY-MM-DD correctly (1.9306ms)
+Γ£ö Data Adapters Unit Tests (84.5738ms)
+Γû╢ Directory Filtering and Search Tests
+  Γ£ö filters employees by text query without case sensitivity or crashing on nulls (2.2424ms)
+  Γ£ö filters employees by department correctly (1.647ms)
+  Γ£ö handles empty or malformed employee safely with safe defaults (0.421ms)
+Γ£ö Directory Filtering and Search Tests (6.3344ms)
+Γû╢ File Export & Excel Import Unit Test Suite
+  Γ£ö generateCSVContent should produce UTF-8 BOM and correct rows (3.05ms)
+  Γ£ö getEmployeeTemplateCSV returns valid 10-column onboarding template (12.1002ms)
+  Γ£ö parseCSVToEmployeeRows correctly parses uploaded CSV text (0.9834ms)
+Γ£ö File Export & Excel Import Unit Test Suite (20.6776ms)
+Γû╢ Leave and Payroll Logic Tests
+  Γ£ö correctly counts pending requests without double subtraction (1.926ms)
+  Γ£ö scopes payroll visibility: filters employee payslips by role (4.2374ms)
+  Γ£ö formats payroll currency accurately with formatVND (39.7931ms)
+Γ£ö Leave and Payroll Logic Tests (53.7548ms)
+Γû╢ 9-Box Logic & Calculation Unit Tests
+  Γ£ö correctly calculates score levels with strict boundary conditions (3.3642ms)
+  Γ£ö correctly maps all 9 cells in the 9-box matrix (2.1694ms)
+  Γ£ö verifies tier groupings and grid order structure (2.0584ms)
+  Γ£ö computes arithmetic average safely with edge cases (0.7524ms)
+  Γ£ö handles period formatting and rollover calculations accurately (2.5242ms)
+Γ£ö 9-Box Logic & Calculation Unit Tests (13.507ms)
+Γû╢ PIP ΓÇô ng├áy th├íng
+  Γ£ö cß╗Öng ng├áy v├á t├¡nh khoß║úng c├ích kh├┤ng lß╗çch m├║i giß╗¥ (4.1218ms)
+Γ£ö PIP ΓÇô ng├áy th├íng (7.5086ms)
+Γû╢ PIP ΓÇô trß║íng th├íi v├á tiß║┐n ─æß╗Ö thß╗¥i gian
+  Γ£ö mß╗ìi trß║íng th├íi backend ─æß╗üu c├│ nh├ún hiß╗ân thß╗ï (1.8624ms)
+  Γ£ö t├¡nh phß║ºn tr─âm thß╗¥i gian, ng├áy c├▓n lß║íi, sß║»p hß║┐t hß║ín v├á qu├í hß║ín nghiß╗çm thu (0.5808ms)
+Γ£ö PIP ΓÇô trß║íng th├íi v├á tiß║┐n ─æß╗Ö thß╗¥i gian (2.7737ms)
+Γû╢ PIP ΓÇô mß╗Ñc ti├¬u v├á gß╗úi ├╜ nghiß╗çm thu
+  Γ£ö ─æß║┐m mß╗Ñc ti├¬u theo trß║íng th├íi (thiß║┐u status = ch╞░a ─æ├ính gi├í) (0.8224ms)
+  Γ£ö chß╗ë gß╗úi ├╜ kß║┐t quß║ú khi mß╗ìi mß╗Ñc ti├¬u ─æ├ú ─æ╞░ß╗úc ─æ├ính gi├í; ng╞░ß╗íng ─æß║ít 80% (1.1396ms)
+  Γ£ö tß╗òng hß╗úp danh s├ích: chß╗¥ duyß╗çt, ─æang chß║íy, qu├í hß║ín, tß╗╖ lß╗ç ─æß║ít (4.2197ms)
+Γ£ö PIP ΓÇô mß╗Ñc ti├¬u v├á gß╗úi ├╜ nghiß╗çm thu (6.769ms)
+Γû╢ PIP ΓÇô c─ân cß╗⌐ tß╗½ ─æ├ính gi├í 9-Box
+  Γ£ö xß║┐p hß║íng kß╗│ v├á lß║Ñy ─æ├ính gi├í gß║ºn nhß║Ñt cß╗ºa tß╗½ng nh├ón sß╗▒ (0.9267ms)
+  Γ£ö soß║ín c─ân cß╗⌐ lß║¡p PIP tß╗½ ─æiß╗âm v├á nhß║¡n x├⌐t thß║¡t (0.4937ms)
+Γ£ö PIP ΓÇô c─ân cß╗⌐ tß╗½ ─æ├ính gi├í 9-Box (1.8358ms)
+Γû╢ PIP ΓÇô bß║ún nh├íp
+  Γ£ö chia hß║ín mß╗Ñc ti├¬u theo c├íc mß╗æc ─æß╗üu nhau (2.9674ms)
+  Γ£ö b├ío lß╗ùi c├íc tr╞░ß╗¥ng bß║»t buß╗Öc v├á hß║ín mß╗Ñc ti├¬u ngo├ái kß╗│ (0.892ms)
+  Γ£ö l├ám sß║ích mß╗Ñc ti├¬u v├á escape HTML khi in (0.4828ms)
+Γ£ö PIP ΓÇô bß║ún nh├íp (4.7751ms)
+Γû╢ Profile 360 Review State & Fallback Tests
+  Γ£ö correctly maps 9-box cell metadata and period label for evaluated employee (2.0105ms)
+  Γ£ö correctly handles unreviewed or new employee state (0.3609ms)
+  Γ£ö correctly maps core and improvement cells for edge cases (1.4891ms)
+Γ£ö Profile 360 Review State & Fallback Tests (6.2053ms)
+Γû╢ Project Tasks and AI Analytics Logic Tests
+  Γ£ö correctly formats task review payload conforming to backend schema (2.3716ms)
+  Γ£ö correctly maps 9-box matrix coordinates based on performance and potential (1.9557ms)
+  Γ£ö normalizes task safely even with missing optional attributes (0.7186ms)
+Γ£ö Project Tasks and AI Analytics Logic Tests (7.0308ms)
+Γ£ö computeRiskStats correctly calculates distribution and talents at risk (1.872ms)
+Γ£ö isTopTalentAtRisk checks if employee is both high/mid risk and in talentIds (0.3513ms)
+Γ£ö filterRiskList filters by search, level, department and talent (0.4208ms)
+Γ£ö SIGNAL_DEFINITIONS covers all 8 retention risk factors (0.9763ms)
+Γä╣ tests 54
+Γä╣ suites 13
+Γä╣ pass 54
+Γä╣ fail 0
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 350.5262
+
+[EXIT_CODE=0]
