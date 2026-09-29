@@ -615,14 +615,6 @@ export default function PermissionsPage() {
           </h1>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              onClick={handleExportRoleMatrixCSV}
-              className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all cursor-pointer"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              <span>Xuất Ma trận Vai trò CSV</span>
-            </button>
-
             {canEditRoles && (
               <button
                 onClick={handleResetAllRolesToDefault}
