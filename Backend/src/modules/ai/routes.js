@@ -5,6 +5,7 @@ const express = require('express');
 const db = require('../../config/db');
 const {
   runCopilot,
+  resetConversation,
   resolveActorScopeFromDb,
   getHrKnowledgeBase,
   getPublishedKnowledgeSnapshot,
@@ -19,7 +20,8 @@ router.use(authenticate);
 // POST /api/ai/copilot
 router.post('/copilot', requirePermission('ai.copilot'), async (req, res, next) => {
   try {
-    const { message, conversationId, context } = req.body || {};
+    const { message, conversationId, context, clientGenerationId, resetConversation: resetConv } =
+      req.body || {};
 
     // R31 & R36: Always resolve authoritative actor scope (userId, employeeId, roleCode, departmentId)
     // directly from PostgreSQL on every request, ignoring any client body/context fields,
@@ -49,10 +51,48 @@ router.post('/copilot', requirePermission('ai.copilot'), async (req, res, next) 
       options: {
         ...testOptions,
         requireDbUser: true,
+        clientGenerationId: clientGenerationId ? String(clientGenerationId).trim() : null,
+        resetConversation: Boolean(resetConv),
       },
     });
 
     res.json(result);
+  } catch (err) {
+    if (err && err.status) {
+      return res.status(err.status).json({
+        success: false,
+        code: err.code || 'AI_ERROR',
+        message: err.message,
+      });
+    }
+    return next(err);
+  }
+});
+
+// POST /api/ai/copilot/reset
+router.post('/copilot/reset', requirePermission('ai.copilot'), async (req, res, next) => {
+  try {
+    const { conversationId } = req.body || {};
+    const actor = await resolveActorScopeFromDb(
+      {
+        userId: req.user.userId,
+        employeeId: req.user.employeeId || null,
+        roleCode: req.user.roleCode,
+        departmentId: req.user.departmentId || null,
+        __requireDbUser: true,
+      },
+      db,
+      { forceRefresh: true, requireDbUser: true }
+    );
+    const convId = conversationId
+      ? String(conversationId).trim()
+      : `conv-${actor.userId}-default`;
+    resetConversation(convId, actor);
+    res.json({
+      success: true,
+      conversationId: convId,
+      reset: true,
+    });
   } catch (err) {
     if (err && err.status) {
       return res.status(err.status).json({

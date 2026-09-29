@@ -5,7 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildBotMessageFromCopilotPayload,
+  buildRoleAwareWelcomeMessage,
   buildUserScopeWatchKey,
+  getVietnamCurrentYearAndMonth,
 } from '../src/utils/aiCopilotState.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -186,5 +188,43 @@ describe('R35, R36, R39 & Phase B — AI Copilot UI State, Notice Attachment & L
     );
     assert.equal(loginPageSource.includes("if (normalized === 'ADMIN') return '/directory';"), true);
     assert.equal(loginPageSource.includes("if (normalized === 'KIOSK') return '/kiosk';"), true);
+  });
+
+  it('AI NEXUS V1 Phase E: buildRoleAwareWelcomeMessage dynamically resolves year/month by timezone and scopes chips per role', () => {
+    const jan2028 = new Date('2028-01-15T08:00:00+07:00');
+    const ym = getVietnamCurrentYearAndMonth(jan2028);
+    assert.equal(ym.year, 2028);
+    assert.equal(ym.month, '2028-01');
+    assert.equal(ym.prevMonth, '2027-12');
+
+    const empWelcome = buildRoleAwareWelcomeMessage(
+      { id: 'u1', roleCode: 'EMPLOYEE', employeeId: 'NV-0008' },
+      jan2028
+    );
+    assert.ok(empWelcome.chips.some((c) => c.includes('2028')));
+    assert.ok(empWelcome.chips.some((c) => c.includes('2027-12')));
+    assert.equal(empWelcome.chips.some((c) => c.includes('2026')), false);
+
+    // ADMIN only gets policy chips, never personal leave/payslip or HR analytics chips
+    const adminWelcome = buildRoleAwareWelcomeMessage(
+      { id: 'u-admin', roleCode: 'ADMIN', employeeId: null },
+      jan2028
+    );
+    assert.equal(adminWelcome.chips.some((c) => c.includes('phiếu lương')), false);
+    assert.equal(adminWelcome.chips.some((c) => c.includes('số liệu nhân sự')), false);
+    assert.ok(adminWelcome.chips.every((c) => /Quy chế|Quy định/i.test(c)));
+  });
+
+  it('AI NEXUS V1 Phase E: AiCopilotDrawerModal.jsx supports reset button, generationId stale-response guard, answerSections, clarification choices, and navigationActions', () => {
+    const modalSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/analytics/AiCopilotDrawerModal.jsx'),
+      'utf8'
+    );
+    assert.equal(modalSource.includes('data-testid="ai-copilot-reset-btn"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-msg-sections"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-clarification-choice"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-followup-chip"'), true);
+    assert.equal(modalSource.includes('data-testid="ai-nav-action"'), true);
+    assert.equal(modalSource.includes('sessionGenerationRef'), true);
   });
 });
