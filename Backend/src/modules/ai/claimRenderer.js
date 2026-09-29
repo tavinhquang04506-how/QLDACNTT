@@ -46,6 +46,43 @@ function formatNumberVi(value, unit = '') {
   return unit ? `${str} ${unit}` : str;
 }
 
+function toFiniteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function isPublishedPayslipEvidence(ev) {
+  if (!ev || ev.tool !== 'get_my_payslip') return false;
+  if (ev.published === false) return false;
+  const status = String(ev.period?.periodStatus || '').toUpperCase();
+  if (!['DA_CHOT', 'DA_CHUYEN_KHOAN', 'DA_CHI'].includes(status)) return false;
+  const period = String(ev.period?.period || '').trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) return false;
+  return Boolean(ev.entity?.employeeId);
+}
+
+function selectComparablePayslipPair(payslipEvs = []) {
+  if (!Array.isArray(payslipEvs) || payslipEvs.length < 2) return null;
+  const validEvs = payslipEvs.filter(isPublishedPayslipEvidence);
+  if (validEvs.length < 2) return null;
+  const targetEmpId = validEvs[0].entity.employeeId;
+  const distinctByPeriod = [];
+  const seenPeriods = new Set();
+  for (const ev of validEvs) {
+    if (ev.entity.employeeId !== targetEmpId) continue;
+    const p = ev.period.period;
+    if (!seenPeriods.has(p)) {
+      seenPeriods.add(p);
+      distinctByPeriod.push(ev);
+    }
+    if (distinctByPeriod.length === 2) break;
+  }
+  return distinctByPeriod.length === 2 ? distinctByPeriod : null;
+}
+
 function translatePeriodStatusVi(status = '') {
   const code = String(status || '').toUpperCase();
   if (code === 'DA_CHOT') return 'Đã chốt bảng lương';
@@ -72,12 +109,23 @@ function translateSettingKeyVi(key = '') {
 
 /**
  * Compute deterministic server-side delta between two published payslips of the same employee.
- * Never allows the LLM to do mental math on salary numbers.
+ * Never allows the LLM to do mental math on salary numbers, and never coerces null/undefined
+ * fields to 0 (AI-V1-F03).
  */
 function computePayslipComparison(firstPayslipEv, secondPayslipEv) {
-  if (!firstPayslipEv || !secondPayslipEv) return null;
-  const pA = String(firstPayslipEv.period?.period || '');
-  const pB = String(secondPayslipEv.period?.period || '');
+  if (!isPublishedPayslipEvidence(firstPayslipEv) || !isPublishedPayslipEvidence(secondPayslipEv)) {
+    return null;
+  }
+  const empA = String(firstPayslipEv.entity?.employeeId || '').trim();
+  const empB = String(secondPayslipEv.entity?.employeeId || '').trim();
+  if (!empA || !empB || empA !== empB) {
+    return null;
+  }
+  const pA = String(firstPayslipEv.period?.period || '').trim();
+  const pB = String(secondPayslipEv.period?.period || '').trim();
+  if (!pA || !pB || pA === pB) {
+    return null;
+  }
   const [earlier, later] = pA <= pB ? [firstPayslipEv, secondPayslipEv] : [secondPayslipEv, firstPayslipEv];
 
   const fEarly = earlier.fields || {};
@@ -100,13 +148,32 @@ function computePayslipComparison(firstPayslipEv, secondPayslipEv) {
 
   const deltas = {};
   const changedComponents = [];
+  const unavailableMetrics = [];
   const calculationClaims = [];
 
   for (const def of metricDefs) {
-    const valEarly = Number(fEarly[def.key] ?? 0);
-    const valLate = Number(fLate[def.key] ?? 0);
+    const valEarly = toFiniteNumberOrNull(fEarly[def.key]);
+    const valLate = toFiniteNumberOrNull(fLate[def.key]);
+    if (valEarly === null || valLate === null) {
+      deltas[def.key] = {
+        key: def.key,
+        label: def.label,
+        unit: def.unit,
+        earlierPeriod: periodEarly,
+        laterPeriod: periodLate,
+        earlierValue: valEarly,
+        laterValue: valLate,
+        delta: null,
+        available: false,
+        unavailable: true,
+      };
+      unavailableMetrics.push(deltas[def.key]);
+      continue;
+    }
+
     const diff = Number((valLate - valEarly).toFixed(2));
     deltas[def.key] = {
+      key: def.key,
       label: def.label,
       unit: def.unit,
       earlierPeriod: periodEarly,
@@ -114,6 +181,8 @@ function computePayslipComparison(firstPayslipEv, secondPayslipEv) {
       earlierValue: valEarly,
       laterValue: valLate,
       delta: diff,
+      available: true,
+      unavailable: false,
     };
     if (diff !== 0 && def.key !== 'netSalary' && def.key !== 'grossIncome') {
       changedComponents.push(deltas[def.key]);
@@ -133,12 +202,15 @@ function computePayslipComparison(firstPayslipEv, secondPayslipEv) {
   }
 
   return {
+    employeeId: empA,
     earlierPeriod: periodEarly,
     laterPeriod: periodLate,
     earlierSourceId: earlier.sourceId,
     laterSourceId: later.sourceId,
     deltas,
     changedComponents,
+    unavailableMetrics,
+    hasUnavailableMetrics: unavailableMetrics.length > 0,
     calculationClaims,
   };
 }
@@ -276,52 +348,90 @@ function buildAnswerSectionsAndClaims({
 
   // 3. Payslip Explanation & Comparison Sections
   const payslipEvs = structuredEvidence.filter((e) => e.tool === 'get_my_payslip');
-  if (payslipEvs.length >= 2) {
-    const comp = computePayslipComparison(payslipEvs[0], payslipEvs[1]);
+  const comparablePair = selectComparablePayslipPair(payslipEvs);
+  if (comparablePair) {
+    const comp = computePayslipComparison(comparablePair[0], comparablePair[1]);
     if (comp) {
       extraVerifiedClaims.push(...comp.calculationClaims);
       const dNet = comp.deltas.netSalary;
       const dGross = comp.deltas.grossIncome;
       const sourceRefs = [comp.earlierSourceId, comp.laterSourceId].filter(Boolean);
 
+      const netSummaryPart = dNet.unavailable
+        ? `Lương thực lĩnh (Net) giữa kỳ ${comp.earlierPeriod} (${formatVnd(dNet.earlierValue)}) và kỳ ${comp.laterPeriod} (${formatVnd(dNet.laterValue)}): chưa đủ dữ liệu để tính chênh lệch.`
+        : `Lương thực lĩnh (Net) kỳ ${comp.laterPeriod} là ${formatVnd(dNet.laterValue)}, chênh lệch ${formatSignedVndDelta(dNet.delta)} so với kỳ ${comp.earlierPeriod} (${formatVnd(dNet.earlierValue)}).`;
+      const grossSummaryPart = dGross.unavailable
+        ? 'Tổng thu nhập (Gross): chưa đủ dữ liệu để tính chênh lệch.'
+        : `Tổng thu nhập (Gross) chênh lệch ${formatSignedVndDelta(dGross.delta)}.`;
+
+      const summaryClaimRefs = [];
+      if (!dNet.unavailable) summaryClaimRefs.push('payslip:comparison:netSalaryDelta');
+      if (!dGross.unavailable) summaryClaimRefs.push('payslip:comparison:grossIncomeDelta');
+
       sections.push({
         type: 'summary',
         title: `So sánh phiếu lương kỳ ${comp.earlierPeriod} và ${comp.laterPeriod}`,
-        text: `Lương thực lĩnh (Net) kỳ ${comp.laterPeriod} là ${formatVnd(dNet.laterValue)}, chênh lệch ${formatSignedVndDelta(dNet.delta)} so với kỳ ${comp.earlierPeriod} (${formatVnd(dNet.earlierValue)}). Tổng thu nhập (Gross) chênh lệch ${formatSignedVndDelta(dGross.delta)}.`,
+        text: `${netSummaryPart} ${grossSummaryPart}`,
         items: [
           { label: `Thực lĩnh kỳ ${comp.earlierPeriod}`, value: formatVnd(dNet.earlierValue) },
           { label: `Thực lĩnh kỳ ${comp.laterPeriod}`, value: formatVnd(dNet.laterValue) },
-          { label: 'Chênh lệch Thực lĩnh (Net)', value: formatSignedVndDelta(dNet.delta) },
-          { label: 'Chênh lệch Tổng thu nhập (Gross)', value: formatSignedVndDelta(dGross.delta) },
+          {
+            label: 'Chênh lệch Thực lĩnh (Net)',
+            value: dNet.unavailable ? 'Chưa đủ dữ liệu đối chiếu' : formatSignedVndDelta(dNet.delta),
+          },
+          {
+            label: 'Chênh lệch Tổng thu nhập (Gross)',
+            value: dGross.unavailable ? 'Chưa đủ dữ liệu đối chiếu' : formatSignedVndDelta(dGross.delta),
+          },
         ],
-        claimRefs: ['payslip:comparison:netSalaryDelta', 'payslip:comparison:grossIncomeDelta'],
+        claimRefs: summaryClaimRefs,
         sourceRefs,
         verified: true,
       });
 
-      const compItems = Object.values(comp.deltas).map((d) => ({
-        label: d.label,
-        value:
-          d.unit === 'VND'
-            ? `${formatVnd(d.earlierValue)} → ${formatVnd(d.laterValue)} (${formatSignedVndDelta(d.delta)})`
-            : `${formatNumberVi(d.earlierValue, d.unit)} → ${formatNumberVi(d.laterValue, d.unit)} (${d.delta > 0 ? `+${d.delta}` : d.delta} ${d.unit})`,
-      }));
+      const compItems = Object.values(comp.deltas).map((d) => {
+        if (d.unavailable) {
+          const earlyStr = d.unit === 'VND' ? formatVnd(d.earlierValue) : formatNumberVi(d.earlierValue, d.unit);
+          const lateStr = d.unit === 'VND' ? formatVnd(d.laterValue) : formatNumberVi(d.laterValue, d.unit);
+          return {
+            label: d.label,
+            value: `${earlyStr} → ${lateStr} (Chưa đủ dữ liệu đối chiếu)`,
+          };
+        }
+        return {
+          label: d.label,
+          value:
+            d.unit === 'VND'
+              ? `${formatVnd(d.earlierValue)} → ${formatVnd(d.laterValue)} (${formatSignedVndDelta(d.delta)})`
+              : `${formatNumberVi(d.earlierValue, d.unit)} → ${formatNumberVi(d.laterValue, d.unit)} (${d.delta > 0 ? `+${d.delta}` : d.delta} ${d.unit})`,
+        };
+      });
+
+      const unavailableNotice =
+        comp.unavailableMetrics.length > 0
+          ? ` Chưa đủ dữ liệu đối chiếu / tính chênh lệch cho khoản mục: ${comp.unavailableMetrics.map((m) => m.label).join(', ')} (không gán giá trị 0 cho trường thiếu).`
+          : '';
+
+      const comparisonText =
+        comp.changedComponents.length > 0
+          ? `Các khoản mục thay đổi giữa kỳ ${comp.earlierPeriod} và ${comp.laterPeriod}: ` +
+            comp.changedComponents
+              .map((c) =>
+                c.unit === 'VND'
+                  ? `${c.label}: ${formatVnd(c.earlierValue)} → ${formatVnd(c.laterValue)} (${formatSignedVndDelta(c.delta)})`
+                  : `${c.label}: ${c.earlierValue} → ${c.laterValue} ${c.unit}`
+              )
+              .join('; ') +
+            '.' +
+            unavailableNotice
+          : comp.unavailableMetrics.length > 0
+            ? `Chưa đủ dữ liệu để tính chênh lệch cho khoản mục: ${comp.unavailableMetrics.map((m) => m.label).join(', ')}; các khoản mục đủ dữ liệu còn lại giữ nguyên không đổi.`
+            : `Tất cả khoản mục thu nhập và khấu trừ giữa kỳ ${comp.earlierPeriod} và ${comp.laterPeriod} giữ nguyên không đổi.`;
 
       sections.push({
         type: 'comparison',
         title: 'Biến động từng khoản mục giữa hai kỳ',
-        text:
-          comp.changedComponents.length > 0
-            ? `Các khoản mục thay đổi giữa kỳ ${comp.earlierPeriod} và ${comp.laterPeriod}: ` +
-              comp.changedComponents
-                .map((c) =>
-                  c.unit === 'VND'
-                    ? `${c.label}: ${formatVnd(c.earlierValue)} → ${formatVnd(c.laterValue)} (${formatSignedVndDelta(c.delta)})`
-                    : `${c.label}: ${c.earlierValue} → ${c.laterValue} ${c.unit}`
-                )
-                .join('; ') +
-              '.'
-            : `Tất cả khoản mục thu nhập và khấu trừ giữa kỳ ${comp.earlierPeriod} và ${comp.laterPeriod} giữ nguyên không đổi.`,
+        text: comparisonText,
         items: compItems,
         claimRefs: comp.calculationClaims.map((c) => c.field),
         sourceRefs,
@@ -331,7 +441,9 @@ function buildAnswerSectionsAndClaims({
       sections.push({
         type: 'limitations',
         title: 'Nguyên tắc đối chiếu',
-        text: 'Số liệu chênh lệch được tính trực tiếp từ hai phiếu lương đã công bố chính thức của bạn; hệ thống không tự suy đoán nguyên nhân ngoài dữ liệu bảng lương.',
+        text:
+          'Số liệu chênh lệch được tính trực tiếp từ hai phiếu lương đã công bố chính thức của bạn; hệ thống không tự suy đoán nguyên nhân ngoài dữ liệu bảng lương.' +
+          unavailableNotice,
         items: [],
         claimRefs: [],
         sourceRefs,
@@ -532,8 +644,9 @@ function buildAnswerSectionsAndClaims({
     });
   }
 
-  const payslipComparison =
-    payslipEvs.length >= 2 ? computePayslipComparison(payslipEvs[0], payslipEvs[1]) : null;
+  const payslipComparison = comparablePair
+    ? computePayslipComparison(comparablePair[0], comparablePair[1])
+    : null;
 
   return {
     sections,
@@ -554,8 +667,9 @@ function renderNaturalVerifiedAnswer(userMessage = '', structuredEvidence = [], 
     ) && !/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(String(userMessage || ''));
 
   const payslipEvs = structuredEvidence.filter((e) => e.tool === 'get_my_payslip');
-  if (payslipEvs.length >= 2 && !isEnglish) {
-    const comp = computePayslipComparison(payslipEvs[0], payslipEvs[1]);
+  const comparablePair = selectComparablePayslipPair(payslipEvs);
+  if (comparablePair && !isEnglish) {
+    const comp = computePayslipComparison(comparablePair[0], comparablePair[1]);
     if (comp) {
       const dNet = comp.deltas.netSalary;
       const dGross = comp.deltas.grossIncome;
@@ -568,8 +682,16 @@ function renderNaturalVerifiedAnswer(userMessage = '', structuredEvidence = [], 
                   : `${c.label}: kỳ ${comp.earlierPeriod} là ${c.earlierValue} ${c.unit}, kỳ ${comp.laterPeriod} là ${c.laterValue} ${c.unit}`
               )
               .join('; ')
-          : 'các khoản thành phần giữ nguyên không đổi';
-      return `So sánh phiếu lương đã công bố kỳ ${comp.earlierPeriod} và kỳ ${comp.laterPeriod}: Lương thực lĩnh kỳ ${comp.earlierPeriod} là ${formatVnd(dNet.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dNet.laterValue)} (chênh lệch ${formatSignedVndDelta(dNet.delta)}); tổng thu nhập kỳ ${comp.earlierPeriod} là ${formatVnd(dGross.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dGross.laterValue)} (chênh lệch ${formatSignedVndDelta(dGross.delta)}). Chi tiết biến động: ${changedText}.`;
+          : comp.unavailableMetrics.length > 0
+            ? `chưa đủ dữ liệu để tính chênh lệch cho ${comp.unavailableMetrics.map((m) => m.label).join(', ')}`
+            : 'các khoản thành phần giữ nguyên không đổi';
+      const netSentence = dNet.unavailable
+        ? `Lương thực lĩnh kỳ ${comp.earlierPeriod} là ${formatVnd(dNet.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dNet.laterValue)} (chưa đủ dữ liệu để tính chênh lệch)`
+        : `Lương thực lĩnh kỳ ${comp.earlierPeriod} là ${formatVnd(dNet.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dNet.laterValue)} (chênh lệch ${formatSignedVndDelta(dNet.delta)})`;
+      const grossSentence = dGross.unavailable
+        ? `tổng thu nhập kỳ ${comp.earlierPeriod} là ${formatVnd(dGross.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dGross.laterValue)} (chưa đủ dữ liệu để tính chênh lệch)`
+        : `tổng thu nhập kỳ ${comp.earlierPeriod} là ${formatVnd(dGross.earlierValue)}, kỳ ${comp.laterPeriod} là ${formatVnd(dGross.laterValue)} (chênh lệch ${formatSignedVndDelta(dGross.delta)})`;
+      return `So sánh phiếu lương đã công bố kỳ ${comp.earlierPeriod} và kỳ ${comp.laterPeriod}: ${netSentence}; ${grossSentence}. Chi tiết biến động: ${changedText}.`;
     }
   }
 
@@ -663,6 +785,9 @@ module.exports = {
   formatVnd,
   formatSignedVndDelta,
   formatNumberVi,
+  toFiniteNumberOrNull,
+  isPublishedPayslipEvidence,
+  selectComparablePayslipPair,
   translatePeriodStatusVi,
   translateSettingKeyVi,
   computePayslipComparison,
