@@ -17,6 +17,7 @@ import AiAnalyticsPage from './pages/AiAnalyticsPage';
 import ProjectsTasksPage from './pages/ProjectsTasksPage';
 import KioskFullscreenPage from './pages/KioskFullscreenPage';
 import SettingsPage from './pages/SettingsPage';
+import PermissionsPage from './pages/PermissionsPage';
 
 export default function App() {
   const { currentRole } = useAuth();
@@ -24,7 +25,7 @@ export default function App() {
     currentRole?.key === 'EMPLOYEE'
       ? '/portal'
       : currentRole?.key === 'ADMIN'
-      ? '/directory'
+      ? '/permissions'
       : currentRole?.key === 'KIOSK'
       ? '/kiosk'
       : '/dashboard';
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/leaves" element={<LeaveManagementPage />} />
             <Route path="/payroll" element={<PayrollPage />} />
             <Route path="/ai-analytics" element={<AiAnalyticsPage />} />
+            <Route path="/permissions" element={<PermissionsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>
