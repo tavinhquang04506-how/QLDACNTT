@@ -49,6 +49,7 @@ async function queryHolidayDates(executor, startDate, endDate) {
 async function create(user, body, req) {
   const employeeId = requireEmployee(user);
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const type = await client.query('SELECT id, is_active FROM leave_types WHERE id = $1', [body.leaveTypeId]);
     if (type.rows.length === 0) throw notFound('Không tìm thấy loại phép');
     if (!type.rows[0].is_active) throw badRequest('Loại phép này hiện không được sử dụng');
@@ -228,6 +229,7 @@ async function holidays() {
 /** Approve or reject: the chain decides whether this actor may act on this request at its current stage. */
 async function decideOn(actor, id, action, note, req) {
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const found = await client.query('SELECT * FROM leave_requests WHERE id = $1 FOR UPDATE', [id]);
     const leave = found.rows[0];
     if (!leave) throw notFound('Không tìm thấy đơn phép');
@@ -270,6 +272,7 @@ async function decideOn(actor, id, action, note, req) {
 async function cancel(user, id, req) {
   const employeeId = requireEmployee(user);
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const found = await client.query('SELECT * FROM leave_requests WHERE id = $1 FOR UPDATE', [id]);
     const leave = found.rows[0];
     if (!leave) throw notFound('Không tìm thấy đơn phép');

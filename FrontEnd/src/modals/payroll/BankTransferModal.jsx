@@ -33,7 +33,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
           }
         }
         if ((!payload?.slips || payload.slips.length === 0) && (!payload?.employees || payload.employees.length === 0)) {
-          const res = await payrollService.getPayslips();
+          const res = await payrollService.getPayslips({ limit: 500 });
           const slips = res?.data || res || [];
           if (Array.isArray(slips) && isMounted) {
             setFetchedList(slips);
@@ -53,6 +53,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const displayAccounts = rawList.map((item, idx) => {
     const rawNet = Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0);
     const hasBank = Boolean(item.bank_account && String(item.bank_account).trim() && item.bank_name && String(item.bank_name).trim());
+    const isPayable = hasBank && rawNet > 0;
     return {
       stt: idx + 1,
       id: item.code || item.employee_code || item.employee_id || item.id || '',
@@ -61,13 +62,13 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
       bank: item.bank_name || 'Chưa có thông tin',
       amount: `${rawNet.toLocaleString('vi-VN')} đ`,
       rawAmount: rawNet,
-      isValid: hasBank,
-      status: hasBank ? 'Hợp lệ' : 'Thiếu STK',
+      isValid: isPayable,
+      status: !hasBank ? 'Thiếu STK' : rawNet <= 0 ? 'Thực lĩnh 0đ' : 'Hợp lệ',
     };
   });
 
   const validAccounts = displayAccounts.filter((a) => a.isValid);
-  const invalidCount = displayAccounts.length - validAccounts.length;
+  const invalidCount = displayAccounts.filter((a) => !a.account || a.account === 'Chưa cập nhật').length;
   const totalEmp = displayAccounts.length;
   const totalAmount = validAccounts.reduce((acc, curr) => acc + (curr.rawAmount || 0), 0);
   const totalAmountStr = `${totalAmount.toLocaleString('vi-VN')} đ`;
@@ -132,7 +133,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            Vietcombank iB@nk ({totalEmp} NV - {totalAmountStr})
+            Vietcombank iB@nk ({validAccounts.length} NV - {totalAmountStr})
           </button>
           <button
             onClick={() => setSelectedBank('tcb')}
@@ -195,7 +196,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
         )}
 
         {/* Account Table Preview */}
-        <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+        <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden shadow-xs max-h-64 overflow-y-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
               <tr>
@@ -224,7 +225,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
                       </span>
                     ) : (
                       <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold rounded text-[10px] border border-amber-200">
-                        Thiếu STK ⚠️
+                        {acc.status} ⚠️
                       </span>
                     )}
                   </td>

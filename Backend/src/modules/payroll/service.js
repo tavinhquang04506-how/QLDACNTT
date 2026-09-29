@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const db = require('../../config/db');
 const { AppError, forbidden, notFound } = require('../../utils/AppError');
 const { parsePagination, paginationMeta } = require('../../utils/pagination');
@@ -18,7 +19,7 @@ const LOCKED = ['DA_CHOT', 'DA_CHUYEN_KHOAN'];
 
 const SEVERITY_ORDER = { Cao: 0, 'Trung bình': 1, Thấp: 2 };
 
-function buildPolicySnapshot(settings = {}) {
+function extractCorePolicy(settings = {}) {
   return {
     policy_version_id: settings.policy_version_id ?? null,
     standard_work_days: Number(settings.standard_work_days) > 0 ? Number(settings.standard_work_days) : STANDARD_WORK_DAYS,
@@ -38,6 +39,20 @@ function buildPolicySnapshot(settings = {}) {
     max_ot_per_month: Number(settings.max_ot_per_month) > 0 ? Number(settings.max_ot_per_month) : OT_MONTHLY_LIMIT,
     policy_effective_from: String(settings.policy_effective_from || '2020-01'),
   };
+}
+
+function buildPolicySnapshot(settings = {}) {
+  const core = extractCorePolicy(settings);
+  if (settings.source_fingerprint) {
+    core.source_fingerprint = settings.source_fingerprint;
+  }
+  if (settings.calculated_at) {
+    core.calculated_at = settings.calculated_at;
+  }
+  if (settings.manual_adjustments && typeof settings.manual_adjustments === 'object') {
+    core.manual_adjustments = settings.manual_adjustments;
+  }
+  return core;
 }
 
 async function resolvePeriodPolicy(executor, periodRow) {
@@ -75,6 +90,153 @@ function computeApprovedPaidLeaveDays(leavesForEmp = [], paidDatesSet = new Set(
   return Math.round(totalPaidLeaveDays * 10) / 10;
 }
 
+/**
+ * R18: Collect live payroll calculation sources (policy, eligible employees, attendance logs,
+ * public holidays, approved paid leaves) and compute a deterministic SHA-256 source fingerprint.
+ */
+async function collectPayrollSources(executor, period, { lockEmployees = false } = {}) {
+  const settings = await settingsService.getSettingsForPeriod(executor, period);
+  const corePolicy = extractCorePolicy(settings);
+  const start = `${period}-01`;
+
+  const empRes = await executor.query(
+    `SELECT id, base_salary, bank_account, bank_name, status,
+            joined_date::text AS joined_date,
+            termination_date::text AS termination_date
+       FROM employees
+      WHERE joined_date < ($1::date + INTERVAL '1 month')
+        AND (status IN ('DANG_LAM_VIEC', 'THU_VIEC') OR (status = 'DA_NGHI_VIEC' AND termination_date >= $1::date))
+      ORDER BY id${lockEmployees ? ' FOR SHARE' : ''}`,
+    [start]
+  );
+  const employees = empRes?.rows || [];
+
+  const attRes = await executor.query(
+    `SELECT employee_id,
+            COUNT(*)::int AS total_logs,
+            COUNT(*) FILTER (WHERE status <> 'VANG_KHONG_PHEP')::int AS work_days,
+            COALESCE(ARRAY_AGG(work_date::text ORDER BY work_date::text) FILTER (WHERE status <> 'VANG_KHONG_PHEP'), ARRAY[]::text[]) AS paid_dates,
+            COALESCE(SUM(ot_hours), 0) AS ot
+       FROM attendance_logs
+      WHERE work_date >= $1::date AND work_date < ($1::date + INTERVAL '1 month')
+      GROUP BY employee_id`,
+    [start]
+  );
+  const attendance = attRes?.rows || [];
+  const byEmployee = new Map(attendance.map((a) => [a.employee_id, a]));
+
+  const holRes = await executor.query(
+    `SELECT holiday_date::text AS d
+       FROM public_holidays
+      WHERE is_paid = TRUE
+        AND holiday_date >= $1::date
+        AND holiday_date < ($1::date + INTERVAL '1 month')
+      ORDER BY holiday_date`,
+    [start]
+  );
+  const holidayRows = holRes?.rows || [];
+  const holidaySet = new Set(holidayRows.map((r) => String(r.d).slice(0, 10)));
+
+  const leaveRes = await executor.query(
+    `SELECT lr.id,
+            lr.employee_id,
+            GREATEST(lr.start_date, $1::date)::text AS clip_start,
+            LEAST(lr.end_date, ($1::date + INTERVAL '1 month' - INTERVAL '1 day')::date)::text AS clip_end,
+            lr.start_date::text AS raw_start,
+            lr.end_date::text AS raw_end,
+            lr.total_days
+       FROM leave_requests lr
+       JOIN leave_types lt ON lt.id = lr.leave_type_id
+      WHERE lr.stage = 'DA_PHE_DUYET'
+        AND lt.is_paid = TRUE
+        AND lr.start_date < ($1::date + INTERVAL '1 month')
+        AND lr.end_date >= $1::date
+      ORDER BY lr.start_date, lr.id`,
+    [start]
+  );
+  const paidLeaveRows = leaveRes?.rows || [];
+  const paidLeavesByEmployee = new Map();
+  for (const lr of paidLeaveRows) {
+    if (!paidLeavesByEmployee.has(lr.employee_id)) {
+      paidLeavesByEmployee.set(lr.employee_id, []);
+    }
+    paidLeavesByEmployee.get(lr.employee_id).push({
+      ...lr,
+      clip_start: String(lr.clip_start).slice(0, 10),
+      clip_end: String(lr.clip_end).slice(0, 10),
+      raw_start: String(lr.raw_start).slice(0, 10),
+      raw_end: String(lr.raw_end).slice(0, 10),
+    });
+  }
+
+  const employeeSources = [];
+  const employeeSourceMap = new Map();
+  for (const emp of employees) {
+    const base = Number(emp.base_salary) || 0;
+    const att = byEmployee.get(emp.id);
+    const totalLogs = att ? Number(att.total_logs) : 0;
+    const loggedWorkDays = att ? Number(att.work_days) : 0;
+    const paidDatesSet = new Set((att?.paid_dates || []).map((d) => String(d).slice(0, 10)));
+    const empLeaves = paidLeavesByEmployee.get(emp.id) || [];
+    const approvedPaidLeaveDays = computeApprovedPaidLeaveDays(empLeaves, paidDatesSet, holidaySet);
+    const otHours = att ? Number(att.ot) : 0;
+    const rawWorkDays = Math.round((loggedWorkDays + approvedPaidLeaveDays) * 10) / 10;
+    const effectiveWorkDays = Math.min(rawWorkDays, corePolicy.standard_work_days);
+
+    const item = {
+      id: emp.id,
+      base,
+      bank_account: emp.bank_account || null,
+      bank_name: emp.bank_name || null,
+      status: emp.status || null,
+      joined_date: emp.joined_date ? String(emp.joined_date).slice(0, 10) : null,
+      termination_date: emp.termination_date ? String(emp.termination_date).slice(0, 10) : null,
+      totalLogs,
+      loggedWorkDays,
+      approvedPaidLeaveDays,
+      rawWorkDays,
+      effectiveWorkDays,
+      otHours,
+      paidLeaveSignature: empLeaves.map((l) => `${l.id || ''}:${l.clip_start}:${l.clip_end}:${Number(l.total_days)}`),
+    };
+    employeeSources.push(item);
+    employeeSourceMap.set(emp.id, item);
+  }
+
+  const canonicalPayload = {
+    period,
+    policy: corePolicy,
+    holidays: Array.from(holidaySet).sort(),
+    employees: employeeSources.map((e) => ({
+      id: e.id,
+      base: e.base,
+      status: e.status,
+      joined_date: e.joined_date,
+      termination_date: e.termination_date,
+      totalLogs: e.totalLogs,
+      loggedWorkDays: e.loggedWorkDays,
+      approvedPaidLeaveDays: e.approvedPaidLeaveDays,
+      effectiveWorkDays: e.effectiveWorkDays,
+      otHours: e.otHours,
+      paidLeaveSignature: e.paidLeaveSignature,
+    })),
+  };
+
+  const sourceFingerprint = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex');
+
+  return {
+    corePolicy,
+    employees,
+    employeeSources,
+    employeeSourceMap,
+    holidaySet,
+    sourceFingerprint,
+  };
+}
+
 async function findPeriod(executor, id, { lock = false } = {}) {
   const { rows } = await executor.query(`SELECT * FROM payroll_periods WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [id]);
   if (!rows[0]) throw notFound('Không tìm thấy kỳ lương');
@@ -90,116 +252,89 @@ const getPeriod = (id) => findPeriod(db, id);
 /** Draft payroll for every employee paid in `period` ('YYYY-MM'). A locked or transferred period is never touched. */
 async function calculate(actor, period, req) {
   return db.withTransaction(async (client) => {
-    const settings = await settingsService.getSettingsForPeriod(client, period);
-    const policySnapshot = buildPolicySnapshot(settings);
-
     await client.query('INSERT INTO payroll_periods (period) VALUES ($1) ON CONFLICT (period) DO NOTHING', [period]);
     const periodRow = (await client.query('SELECT * FROM payroll_periods WHERE period = $1 FOR UPDATE', [period])).rows[0];
     if (periodRow.status !== 'DU_THAO') {
       throw new AppError(409, 'PERIOD_LOCKED', `Kỳ lương ${period} đã được chốt, không thể tính lại`);
     }
-    await client.query('DELETE FROM payslips WHERE period_id = $1', [periodRow.id]);
 
-    const start = `${period}-01`;
-    const { rows: employees } = await client.query(
-      `SELECT id, base_salary, bank_account, bank_name, joined_date, termination_date FROM employees
-        WHERE joined_date < ($1::date + INTERVAL '1 month')
-          AND (status IN ('DANG_LAM_VIEC', 'THU_VIEC') OR (status = 'DA_NGHI_VIEC' AND termination_date >= $1::date))
-        ORDER BY id`,
-      [start]
+    // R18: Preserve HR manual adjustments (bonus, note, custom allowances) from existing draft payslips before recalculation
+    const existingSlipsRes = await client.query(
+      'SELECT employee_id, bonus, allowances, note FROM payslips WHERE period_id = $1',
+      [periodRow.id]
     );
-    const { rows: attendance } = await client.query(
-      `SELECT employee_id,
-              COUNT(*)::int AS total_logs,
-              COUNT(*) FILTER (WHERE status <> 'VANG_KHONG_PHEP')::int AS work_days,
-              COALESCE(ARRAY_AGG(work_date::text) FILTER (WHERE status <> 'VANG_KHONG_PHEP'), ARRAY[]::text[]) AS paid_dates,
-              COALESCE(SUM(ot_hours), 0) AS ot
-         FROM attendance_logs
-        WHERE work_date >= $1::date AND work_date < ($1::date + INTERVAL '1 month')
-        GROUP BY employee_id`,
-      [start]
-    );
-    const byEmployee = new Map(attendance.map((a) => [a.employee_id, a]));
+    const existingSlipsByEmp = new Map((existingSlipsRes?.rows || []).map((r) => [r.employee_id, r]));
+    const prevManualAdjustments =
+      periodRow?.policy_snapshot && typeof periodRow.policy_snapshot.manual_adjustments === 'object'
+        ? periodRow.policy_snapshot.manual_adjustments
+        : {};
 
-    const { rows: holidayRows } = await client.query(
-      `SELECT holiday_date::text AS d
-         FROM public_holidays
-        WHERE is_paid = TRUE
-          AND holiday_date >= $1::date
-          AND holiday_date < ($1::date + INTERVAL '1 month')`,
-      [start]
-    );
-    const holidaySet = new Set(holidayRows.map((r) => String(r.d).slice(0, 10)));
-
-    const { rows: paidLeaveRows } = await client.query(
-      `SELECT lr.employee_id,
-              GREATEST(lr.start_date, $1::date)::text AS clip_start,
-              LEAST(lr.end_date, ($1::date + INTERVAL '1 month' - INTERVAL '1 day')::date)::text AS clip_end,
-              lr.start_date::text AS raw_start,
-              lr.end_date::text AS raw_end,
-              lr.total_days
-         FROM leave_requests lr
-         JOIN leave_types lt ON lt.id = lr.leave_type_id
-        WHERE lr.stage = 'DA_PHE_DUYET'
-          AND lt.is_paid = TRUE
-          AND lr.start_date < ($1::date + INTERVAL '1 month')
-          AND lr.end_date >= $1::date
-        ORDER BY lr.start_date, lr.id`,
-      [start]
-    );
-    const paidLeavesByEmployee = new Map();
-    for (const lr of paidLeaveRows) {
-      if (!paidLeavesByEmployee.has(lr.employee_id)) {
-        paidLeavesByEmployee.set(lr.employee_id, []);
+    const preservedAdjustments = {};
+    for (const [empId, slip] of existingSlipsByEmp.entries()) {
+      const prevAdj = prevManualAdjustments[empId] || {};
+      const bonusNum = prevAdj.bonus !== undefined ? Number(prevAdj.bonus) : Number(slip.bonus || 0);
+      const noteVal = prevAdj.note !== undefined ? prevAdj.note : (slip.note || null);
+      const hasCustomAllowances = prevAdj.allowances !== undefined;
+      if (bonusNum !== 0 || noteVal || hasCustomAllowances) {
+        preservedAdjustments[empId] = {
+          bonus: bonusNum,
+          note: noteVal,
+          ...(hasCustomAllowances ? { allowances: Number(prevAdj.allowances) } : {}),
+          updated_by: prevAdj.updated_by || null,
+          updated_at: prevAdj.updated_at || null,
+        };
       }
-      paidLeavesByEmployee.get(lr.employee_id).push({
-        ...lr,
-        clip_start: String(lr.clip_start).slice(0, 10),
-        clip_end: String(lr.clip_end).slice(0, 10),
-        raw_start: String(lr.raw_start).slice(0, 10),
-        raw_end: String(lr.raw_end).slice(0, 10),
-      });
     }
 
+    await client.query('DELETE FROM payslips WHERE period_id = $1', [periodRow.id]);
+
+    const sourceData = await collectPayrollSources(client, period, { lockEmployees: true });
+    const policySnapshot = {
+      ...sourceData.corePolicy,
+      source_fingerprint: sourceData.sourceFingerprint,
+      calculated_at: new Date().toISOString(),
+      manual_adjustments: preservedAdjustments,
+    };
+
     const totals = { net: 0, bhxh: 0, tax: 0, ot: 0 };
-    for (const emp of employees) {
-      const base = Number(emp.base_salary) || 0;
-      const att = byEmployee.get(emp.id);
-      const loggedWorkDays = att ? Number(att.work_days) : 0;
-      const paidDatesSet = new Set((att?.paid_dates || []).map((d) => String(d).slice(0, 10)));
-      const approvedPaidLeaveDays = computeApprovedPaidLeaveDays(
-        paidLeavesByEmployee.get(emp.id) || [],
-        paidDatesSet,
-        holidaySet
-      );
-      const otHours = att ? Number(att.ot) : 0;
+    for (const empSrc of sourceData.employeeSources) {
+      const base = empSrc.base;
+      const workDays = empSrc.rawWorkDays;
+      const otHours = empSrc.otHours;
+      const empAdj = preservedAdjustments[empSrc.id] || {};
+      const bonus = Number(empAdj.bonus || 0);
+      const note = empAdj.note ?? null;
       // R02 / F09 + R14: Never fabricate 22 workdays when attendance logs are missing.
-      // Combine actual attendance workdays with non-overlapping approved paid leave days (`DA_PHE_DUYET` & `is_paid = TRUE`).
-      const workDays = loggedWorkDays + approvedPaidLeaveDays;
-      const rawAllowances = workDays === 0 && otHours === 0 ? 0 : policySnapshot.default_allowances;
+      const defaultAllowancesForWork = workDays === 0 && otHours === 0 ? 0 : policySnapshot.default_allowances;
+      const rawAllowances =
+        empAdj.allowances !== undefined && (workDays > 0 || otHours > 0)
+          ? Number(empAdj.allowances)
+          : defaultAllowancesForWork;
+
       const p = computePayslip({
         base,
         workDays,
         otHours,
         allowances: rawAllowances,
-        bonus: 0,
+        bonus,
         policy: policySnapshot,
       });
 
       await client.query(
         `INSERT INTO payslips (period_id, employee_id, base_salary, actual_work_days, standard_work_days, ot_hours, ot_pay,
-            allowances, gross_income, bhxh_amount, bhyt_amount, bhtn_amount, pit_deduction, pit_taxable, pit_amount,
-            total_deductions, net_salary, status, bank_account, bank_name)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'DU_THAO',$18,$19)`,
+            allowances, bonus, gross_income, bhxh_amount, bhyt_amount, bhtn_amount, pit_deduction, pit_taxable, pit_amount,
+            total_deductions, net_salary, status, bank_account, bank_name, note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'DU_THAO',$19,$20,$21)`,
         [
           periodRow.id,
-          emp.id,
+          empSrc.id,
           base,
           p.workDays,
           p.standardWorkDays,
           otHours,
           p.otPay,
           p.allowances,
+          bonus,
           p.grossIncome,
           p.bhxh,
           p.bhyt,
@@ -209,8 +344,9 @@ async function calculate(actor, period, req) {
           p.pitAmount,
           p.totalDeductions,
           p.netSalary,
-          emp.bank_account,
-          emp.bank_name,
+          empSrc.bank_account,
+          empSrc.bank_name,
+          note,
         ]
       );
       totals.net += p.netSalary;
@@ -218,6 +354,7 @@ async function calculate(actor, period, req) {
       totals.tax += p.pitAmount;
       totals.ot += otHours;
     }
+
     await client.query(
       `UPDATE payroll_periods
           SET total_headcount = $2,
@@ -227,15 +364,29 @@ async function calculate(actor, period, req) {
               total_ot_hours = $6,
               policy_snapshot = $7::jsonb
         WHERE id = $1`,
-      [periodRow.id, employees.length, totals.net, totals.bhxh, totals.tax, totals.ot, JSON.stringify(policySnapshot)]
+      [periodRow.id, sourceData.employeeSources.length, totals.net, totals.bhxh, totals.tax, totals.ot, JSON.stringify(policySnapshot)]
     );
+
     await writeAudit(client, {
-      user: actor, action: 'CALCULATE_PAYROLL', table: 'payroll_periods', recordId: periodRow.id, req,
-      newValues: { period, headcount: employees.length, total_net: totals.net, policy_snapshot: policySnapshot },
+      user: actor,
+      action: 'CALCULATE_PAYROLL',
+      table: 'payroll_periods',
+      recordId: periodRow.id,
+      req,
+      newValues: {
+        period,
+        headcount: sourceData.employeeSources.length,
+        total_net: totals.net,
+        source_fingerprint: sourceData.sourceFingerprint,
+        preserved_adjustments_count: Object.keys(preservedAdjustments).length,
+        preserved_adjustments: preservedAdjustments,
+        policy_snapshot: policySnapshot,
+      },
     });
+
     return {
       period,
-      headcount: employees.length,
+      headcount: sourceData.employeeSources.length,
       totalNet: totals.net,
       totalBhxh: totals.bhxh,
       totalTax: totals.tax,
@@ -271,14 +422,11 @@ function evaluateAnomalyRows(rows, otMonthlyLimit = OT_MONTHLY_LIMIT) {
   return out.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.employee_id.localeCompare(b.employee_id));
 }
 
-/** Problems worth a human look before money moves. Computed from the period's payslips and current data. */
-async function computeAnomalies(executor, periodRow) {
+async function queryPeriodAnomalyRows(executor, periodRow) {
   const start = `${periodRow.period}-01`;
-  const policy = await resolvePeriodPolicy(executor, periodRow);
-  const otMonthlyLimit = Number(policy.max_ot_per_month) || OT_MONTHLY_LIMIT;
-
   const { rows } = await executor.query(
-    `SELECT ps.employee_id, e.full_name, ps.actual_work_days, ps.ot_hours, ps.bank_account, ps.bank_name,
+    `SELECT ps.employee_id, e.full_name, ps.actual_work_days, ps.ot_hours, ps.base_salary, ps.bank_account, ps.bank_name,
+            e.base_salary AS live_base_salary,
             (
               (SELECT COUNT(*) FROM attendance_logs a
                 WHERE a.employee_id = ps.employee_id AND a.work_date >= $2::date AND a.work_date < ($2::date + INTERVAL '1 month'))
@@ -287,6 +435,12 @@ async function computeAnomalies(executor, periodRow) {
                 WHERE lr.employee_id = ps.employee_id AND lr.stage = 'DA_PHE_DUYET' AND lt.is_paid = TRUE
                   AND lr.start_date < ($2::date + INTERVAL '1 month') AND lr.end_date >= $2::date)
             ) AS att_days,
+            (SELECT COUNT(*) FROM attendance_logs a
+              WHERE a.employee_id = ps.employee_id AND a.status = 'VANG_KHONG_PHEP'
+                AND a.work_date >= $2::date AND a.work_date < ($2::date + INTERVAL '1 month')) AS absent_days,
+            (SELECT COALESCE(SUM(a.ot_hours), 0) FROM attendance_logs a
+              WHERE a.employee_id = ps.employee_id
+                AND a.work_date >= $2::date AND a.work_date < ($2::date + INTERVAL '1 month')) AS live_ot_hours,
             (SELECT COALESCE(SUM(o.hours), 0) FROM ot_requests o
               WHERE o.employee_id = ps.employee_id AND o.stage = 'DA_PHE_DUYET'
                 AND o.work_date >= $2::date AND o.work_date < ($2::date + INTERVAL '1 month')) AS approved_ot
@@ -294,7 +448,185 @@ async function computeAnomalies(executor, periodRow) {
       WHERE ps.period_id = $1`,
     [periodRow.id, start]
   );
-  return evaluateAnomalyRows(rows, otMonthlyLimit);
+  return rows || [];
+}
+
+/**
+ * R18: Detect whether any payroll source (attendance, approved paid leave, salary-affecting employee data,
+ * or effective payroll policy) has changed since `calculate()` ran for `periodRow`.
+ */
+async function detectStalePayroll(executor, periodRow, anomalyRows = null, { lockEmployees = false } = {}) {
+  if (!periodRow || periodRow.status !== 'DU_THAO') return [];
+  const rows = anomalyRows || (await queryPeriodAnomalyRows(executor, periodRow));
+  const staleItems = [];
+  const manualAdjustments =
+    periodRow?.policy_snapshot && typeof periodRow.policy_snapshot.manual_adjustments === 'object'
+      ? periodRow.policy_snapshot.manual_adjustments
+      : {};
+
+  // 1. Direct row-level comparison on anomalyRows (also catches service-level mock executors)
+  for (const r of rows) {
+    const empAdj = manualAdjustments[r.employee_id] || {};
+    const paidSignals = Number(r.att_days || 0) - Number(r.absent_days || 0);
+    if (paidSignals > 0 && Number(r.actual_work_days || 0) === 0 && empAdj.actualWorkDays === undefined) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'WORKDAYS_CHANGED',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: r.employee_id,
+        full_name: r.full_name || r.employee_id,
+        message: 'Dữ liệu chấm công hoặc nghỉ phép hưởng lương đã phát sinh sau khi tính lương (phiếu lương đang là 0 công). Cần tính lại bảng lương.',
+        metric_value: paidSignals,
+        limit: Number(r.actual_work_days || 0),
+      });
+    }
+    if (
+      r.live_base_salary !== undefined &&
+      r.base_salary !== undefined &&
+      Number(r.live_base_salary) !== Number(r.base_salary) &&
+      empAdj.baseSalary === undefined
+    ) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'BASE_SALARY_CHANGED',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: r.employee_id,
+        full_name: r.full_name || r.employee_id,
+        message: `Lương cơ bản hiện tại (${Number(r.live_base_salary).toLocaleString('vi-VN')}đ) đã thay đổi so với phiếu lương dự thảo (${Number(r.base_salary).toLocaleString('vi-VN')}đ). Cần tính lại bảng lương.`,
+        metric_value: Number(r.live_base_salary),
+        limit: Number(r.base_salary),
+      });
+    }
+    if (
+      r.live_ot_hours !== undefined &&
+      r.ot_hours !== undefined &&
+      Number(r.live_ot_hours) !== Number(r.ot_hours) &&
+      empAdj.otHours === undefined
+    ) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'OT_HOURS_CHANGED',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: r.employee_id,
+        full_name: r.full_name || r.employee_id,
+        message: `Số giờ OT chấm công thực tế (${Number(r.live_ot_hours)}h) đã thay đổi so với phiếu lương dự thảo (${Number(r.ot_hours)}h). Cần tính lại bảng lương.`,
+        metric_value: Number(r.live_ot_hours),
+        limit: Number(r.ot_hours),
+      });
+    }
+  }
+
+  // 2. Full source collection & fingerprint verification when period was calculated with source_fingerprint or policy_snapshot
+  const hasSnapshotObject =
+    periodRow.policy_snapshot &&
+    typeof periodRow.policy_snapshot === 'object' &&
+    Object.keys(periodRow.policy_snapshot).length > 0;
+
+  if (hasSnapshotObject) {
+    const liveSources = await collectPayrollSources(executor, periodRow.period, { lockEmployees });
+    const snapCore = extractCorePolicy(periodRow.policy_snapshot);
+    const liveCore = liveSources.corePolicy;
+
+    const policyChanged = Object.keys(liveCore).some((k) => String(liveCore[k]) !== String(snapCore[k]));
+    if (policyChanged) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'POLICY_CHANGED',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: 'SYSTEM',
+        full_name: 'Chính sách lương & thuế',
+        message: `Chính sách lương/thuế có hiệu lực cho kỳ ${periodRow.period} đã thay đổi sau lần tính cuối. Cần tính lại bảng lương.`,
+        metric_value: null,
+        limit: null,
+      });
+    }
+
+    if (liveSources.employeeSources.length !== rows.length) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'HEADCOUNT_CHANGED',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: 'SYSTEM',
+        full_name: 'Danh sách nhân sự đủ điều kiện',
+        message: `Số lượng nhân sự thuộc diện tính lương kỳ ${periodRow.period} đã thay đổi (${rows.length} -> ${liveSources.employeeSources.length}). Cần tính lại bảng lương.`,
+        metric_value: liveSources.employeeSources.length,
+        limit: rows.length,
+      });
+    }
+
+    for (const r of rows) {
+      const empAdj = manualAdjustments[r.employee_id] || {};
+      const liveEmp = liveSources.employeeSourceMap.get(r.employee_id);
+      if (!liveEmp) {
+        staleItems.push({
+          type: 'PAYROLL_STALE',
+          reason: 'EMPLOYEE_ELIGIBILITY_CHANGED',
+          severity: 'Cao',
+          category: 'stale',
+          employee_id: r.employee_id,
+          full_name: r.full_name || r.employee_id,
+          message: 'Trạng thái làm việc hoặc ngày vào/nghỉ việc của nhân sự đã thay đổi sau lần tính lương cuối.',
+          metric_value: null,
+          limit: null,
+        });
+        continue;
+      }
+
+      if (
+        empAdj.actualWorkDays === undefined &&
+        Math.abs(Number(liveEmp.effectiveWorkDays) - Number(r.actual_work_days || 0)) > 0.001 &&
+        !staleItems.some((s) => s.employee_id === r.employee_id && s.reason === 'WORKDAYS_CHANGED')
+      ) {
+        staleItems.push({
+          type: 'PAYROLL_STALE',
+          reason: 'WORKDAYS_CHANGED',
+          severity: 'Cao',
+          category: 'stale',
+          employee_id: r.employee_id,
+          full_name: r.full_name || r.employee_id,
+          message: `Ngày công hưởng lương thực tế (${liveEmp.effectiveWorkDays} ngày) đã thay đổi so với phiếu lương dự thảo (${Number(r.actual_work_days)} ngày). Cần tính lại bảng lương.`,
+          metric_value: liveEmp.effectiveWorkDays,
+          limit: Number(r.actual_work_days || 0),
+        });
+      }
+    }
+
+    if (
+      periodRow.policy_snapshot.source_fingerprint &&
+      periodRow.policy_snapshot.source_fingerprint !== liveSources.sourceFingerprint &&
+      staleItems.length === 0
+    ) {
+      staleItems.push({
+        type: 'PAYROLL_STALE',
+        reason: 'SOURCE_FINGERPRINT_MISMATCH',
+        severity: 'Cao',
+        category: 'stale',
+        employee_id: 'SYSTEM',
+        full_name: 'Dữ liệu nguồn tính lương',
+        message: `Dữ liệu nguồn tính lương kỳ ${periodRow.period} đã thay đổi sau lần tính cuối. Vui lòng tính lại bảng lương trước khi chốt.`,
+        metric_value: null,
+        limit: null,
+      });
+    }
+  }
+
+  return staleItems;
+}
+
+/** Problems worth a human look before money moves. Computed from the period's payslips and current data. */
+async function computeAnomalies(executor, periodRow) {
+  const policy = await resolvePeriodPolicy(executor, periodRow);
+  const otMonthlyLimit = Number(policy.max_ot_per_month) || OT_MONTHLY_LIMIT;
+  const rows = await queryPeriodAnomalyRows(executor, periodRow);
+  const evaluated = evaluateAnomalyRows(rows, otMonthlyLimit);
+  const staleItems = await detectStalePayroll(executor, periodRow, rows, { lockEmployees: false });
+  if (staleItems.length === 0) return evaluated;
+  return [...staleItems, ...evaluated];
 }
 
 async function anomalies(id) {
@@ -309,12 +641,25 @@ async function lock(actor, id, body = {}, req) {
     const count = await client.query('SELECT COUNT(*)::int AS n FROM payslips WHERE period_id = $1', [id]);
     if (count.rows[0].n === 0) throw new AppError(409, 'NO_PAYSLIPS', 'Chưa có phiếu lương, hãy tính lương trước khi chốt');
 
+    const anomalyRows = await queryPeriodAnomalyRows(client, period);
+    const staleItems = await detectStalePayroll(client, period, anomalyRows, { lockEmployees: true });
+    if (staleItems.length > 0) {
+      throw new AppError(
+        409,
+        'PAYROLL_STALE',
+        'Dữ liệu nguồn tính lương đã thay đổi sau lần tính cuối. Vui lòng tính lại bảng lương trước khi khóa sổ.',
+        staleItems
+      );
+    }
+
     const acknowledge = body?.acknowledgeAnomalies === true;
-    const violations = (await computeAnomalies(client, period)).filter((a) => a.category === 'violation');
+    const policySnapshot = await resolvePeriodPolicy(client, period);
+    const otMonthlyLimit = Number(policySnapshot.max_ot_per_month) || OT_MONTHLY_LIMIT;
+    const violations = evaluateAnomalyRows(anomalyRows, otMonthlyLimit).filter((a) => a.category === 'violation');
     if (violations.length > 0 && !acknowledge) {
       throw new AppError(409, 'ANOMALIES_PENDING', `Còn ${violations.length} vi phạm cần xử lý hoặc xác nhận trước khi chốt lương`, violations);
     }
-    const policySnapshot = await resolvePeriodPolicy(client, period);
+
     const lockNote = typeof body?.note === 'string' && body.note.trim() ? body.note.trim() : null;
     await client.query(
       `UPDATE payroll_periods
@@ -519,6 +864,29 @@ async function updatePayslip(actor, id, body, req) {
       ]
     )).rows[0];
 
+    // Record manual adjustment metadata inside policy_snapshot so recalculation preserves HR adjustments
+    const prevSnapshot =
+      period.policy_snapshot && typeof period.policy_snapshot === 'object'
+        ? period.policy_snapshot
+        : policy;
+    const manualAdjustments = { ...(prevSnapshot.manual_adjustments || {}) };
+    const prevEmpAdj = manualAdjustments[existing.employee_id] || {};
+    manualAdjustments[existing.employee_id] = {
+      ...prevEmpAdj,
+      ...(body.bonus !== undefined ? { bonus: Number(body.bonus) } : {}),
+      ...(body.note !== undefined ? { note: body.note } : {}),
+      ...(body.allowances !== undefined ? { allowances: Number(body.allowances) } : {}),
+      ...(body.actualWorkDays !== undefined ? { actualWorkDays: Number(p.workDays) } : {}),
+      ...(body.baseSalary !== undefined ? { baseSalary: Number(base) } : {}),
+      ...(body.otHours !== undefined ? { otHours: Number(otHours) } : {}),
+      updated_by: actor?.employeeId || actor?.userId || null,
+      updated_at: new Date().toISOString(),
+    };
+    const nextSnapshot = {
+      ...prevSnapshot,
+      manual_adjustments: manualAdjustments,
+    };
+
     // Recalculate totals on period
     const sumResult = await client.query(
       `SELECT COUNT(*)::int AS total_headcount,
@@ -531,8 +899,15 @@ async function updatePayslip(actor, id, body, req) {
     );
     const sums = sumResult.rows[0];
     await client.query(
-      `UPDATE payroll_periods SET total_headcount = $2, total_net = $3, total_bhxh = $4, total_tax = $5, total_ot_hours = $6 WHERE id = $1`,
-      [existing.period_id, sums.total_headcount, sums.total_net, sums.total_bhxh, sums.total_tax, sums.total_ot]
+      `UPDATE payroll_periods
+          SET total_headcount = $2,
+              total_net = $3,
+              total_bhxh = $4,
+              total_tax = $5,
+              total_ot_hours = $6,
+              policy_snapshot = $7::jsonb
+        WHERE id = $1`,
+      [existing.period_id, sums.total_headcount, sums.total_net, sums.total_bhxh, sums.total_tax, sums.total_ot, JSON.stringify(nextSnapshot)]
     );
 
     await writeAudit(client, {
@@ -552,6 +927,8 @@ module.exports = {
   anomalies,
   evaluateAnomalyRows,
   computeApprovedPaidLeaveDays,
+  collectPayrollSources,
+  detectStalePayroll,
   lock,
   transfer,
   bankTransfer,

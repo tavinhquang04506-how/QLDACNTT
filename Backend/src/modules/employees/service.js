@@ -175,6 +175,7 @@ async function insertEmployee(client, body, { dry = false } = {}) {
 
 async function create(actor, body) {
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     await setAuditActor(client, actor);
     const id = await insertEmployee(client, body);
     return shapeEmployee(await findEmployee(client, id), actor);
@@ -195,6 +196,7 @@ async function update(actor, id, body) {
   if (body.managerId && body.managerId === id) throw badRequest('Nhân viên không thể là quản lý của chính mình');
 
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     await setAuditActor(client, actor);
     const before = await findEmployee(client, id);
     if (!before) throw notFound('Không tìm thấy nhân viên');
