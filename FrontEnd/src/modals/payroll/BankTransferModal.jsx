@@ -1,76 +1,93 @@
 import React, { useState, useEffect } from 'react';
 import AppleModal from '../../components/motion/AppleModal';
-import { Building2, Download, FileSpreadsheet, CheckCircle2, ShieldCheck, X, FileText, ArrowUpRight } from 'lucide-react';
+import { Building2, FileSpreadsheet, X, FileText, AlertTriangle } from 'lucide-react';
 import payrollService from '../../services/payrollService';
-import employeeService from '../../services/employeeService';
 import { generateCSVContent, downloadFile } from '../../utils/fileExportUtils';
 
 export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const [selectedBank, setSelectedBank] = useState('vcb'); // 'vcb', 'tcb', 'napas'
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [fetchedList, setFetchedList] = useState([]);
+  const [missingList, setMissingList] = useState([]);
+  const [batchError, setBatchError] = useState('');
 
   useEffect(() => {
     if (!isOpen) return;
-    if ((!payload?.slips || payload.slips.length === 0) && (!payload?.employees || payload.employees.length === 0)) {
-      let isMounted = true;
-      (async () => {
-        try {
-          const res = await payrollService.getPayslips();
-          const slips = res?.data || res || [];
-          if (slips.length > 0 && isMounted) {
-            setFetchedList(slips);
+    setBatchError('');
+    setMissingList([]);
+    const periodId = payload?.periodId || payload?.period?.id;
+    let isMounted = true;
+    (async () => {
+      try {
+        if (periodId) {
+          const btRes = await payrollService.getBankTransfer(periodId).catch(() => null);
+          const btData = btRes?.data || btRes;
+          if (btData && Array.isArray(btData.items) && isMounted) {
+            const combined = [
+              ...btData.items.map((it) => ({ ...it, net_salary: it.amount })),
+              ...(btData.missingBank || []).map((m) => ({ ...m, bank_account: '', bank_name: '', net_salary: 0 })),
+            ];
+            setFetchedList(combined);
+            setMissingList(btData.missingBank || []);
             return;
           }
-          const empRes = await employeeService.getAll();
-          const emps = empRes?.data || empRes || [];
-          if (emps.length > 0 && isMounted) {
-            setFetchedList(emps);
-          }
-        } catch (err) {
-          console.warn("Failed to load bank transfer dynamic accounts", err);
         }
-      })();
-      return () => { isMounted = false; };
-    }
+        if ((!payload?.slips || payload.slips.length === 0) && (!payload?.employees || payload.employees.length === 0)) {
+          const res = await payrollService.getPayslips();
+          const slips = res?.data || res || [];
+          if (Array.isArray(slips) && isMounted) {
+            setFetchedList(slips);
+          }
+        }
+      } catch (err) {
+        if (isMounted) setBatchError(err?.message || 'Không thể tải danh sách chi lương từ máy chủ.');
+      }
+    })();
+    return () => { isMounted = false; };
   }, [isOpen, payload]);
 
   const rawList = (payload?.slips && payload.slips.length > 0)
     ? payload.slips
-    : (payload?.employees && payload.employees.length > 0)
-    ? payload.employees
     : fetchedList;
 
-  const displayAccounts = rawList.map((item, idx) => ({
-    stt: idx + 1,
-    id: item.code || item.employee_code || item.id || item.employee_id || '',
-    name: item.name || item.employee_name || item.full_name || 'Nhân sự',
-    account: item.bank_account || 'Chưa cập nhật',
-    bank: item.bank_name || 'Chưa có thông tin',
-    amount: `${Number(item.net_salary || item.netSalary || item.contractSalary || item.base_salary || 0).toLocaleString('vi-VN')} đ`,
-    rawAmount: Number(item.net_salary || item.netSalary || item.contractSalary || item.base_salary || 0),
-    status: item.bank_account ? 'Hợp lệ' : 'Thiếu STK',
-  }));
+  const displayAccounts = rawList.map((item, idx) => {
+    const rawNet = Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0);
+    const hasBank = Boolean(item.bank_account && String(item.bank_account).trim() && item.bank_name && String(item.bank_name).trim());
+    return {
+      stt: idx + 1,
+      id: item.code || item.employee_code || item.employee_id || item.id || '',
+      name: item.name || item.employee_name || item.full_name || 'Nhân sự',
+      account: item.bank_account || 'Chưa cập nhật',
+      bank: item.bank_name || 'Chưa có thông tin',
+      amount: `${rawNet.toLocaleString('vi-VN')} đ`,
+      rawAmount: rawNet,
+      isValid: hasBank,
+      status: hasBank ? 'Hợp lệ' : 'Thiếu STK',
+    };
+  });
 
+  const validAccounts = displayAccounts.filter((a) => a.isValid);
+  const invalidCount = displayAccounts.length - validAccounts.length;
   const totalEmp = displayAccounts.length;
-  const totalAmount = displayAccounts.reduce((acc, curr) => acc + (curr.rawAmount || 0), 0);
+  const totalAmount = validAccounts.reduce((acc, curr) => acc + (curr.rawAmount || 0), 0);
   const totalAmountStr = `${totalAmount.toLocaleString('vi-VN')} đ`;
-  const periodName = payload?.period?.name || payload?.period || 'Kỳ lương hiện tại';
+  const periodName = payload?.period?.period || payload?.period?.name || payload?.period || 'Kỳ lương hiện tại';
 
   const handleExport = () => {
     const headers = ['STT', 'Mã Nhân Viên', 'Họ Và Tên', 'Số Tài Khoản', 'Ngân Hàng Thụ Hưởng', 'Số Tiền Thực Nhận (VNĐ)', 'Trạng Thái'];
-    const rows = displayAccounts.map((a) => [
-      a.stt,
+    const rows = validAccounts.map((a, idx) => [
+      idx + 1,
       a.id,
       a.name,
       a.account,
       a.bank,
-      a.rawAmount || a.amount,
+      a.rawAmount,
       a.status,
     ]);
     const csv = generateCSVContent(headers, rows);
     const bankLabel = selectedBank === 'vcb' ? 'Vietcombank' : selectedBank === 'tcb' ? 'Techcombank' : 'NAPAS247';
-    downloadFile(`Lenh_Chi_Luong_${bankLabel}_T09_2026.csv`, csv);
+    const safePeriod = String(periodName).replace(/[^a-zA-Z0-9_-]/g, '_');
+    downloadFile(`Lenh_Chi_Luong_${bankLabel}_${safePeriod}.csv`, csv);
     setDownloadSuccess(true);
     setTimeout(() => setDownloadSuccess(false), 3000);
   };
@@ -145,24 +162,37 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
         <div className="mt-4 p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs">
           <div className="flex items-center gap-4">
             <div>
-              <span className="text-slate-400 block text-[11px]">Tài khoản nguồn trích nợ:</span>
-              <span className="font-mono font-bold text-slate-800">0071 000 888 999 (VND)</span>
+              <span className="text-slate-400 block text-[11px]">Số hồ sơ đủ điều kiện chi:</span>
+              <span className="font-mono font-bold text-slate-800">{validAccounts.length} / {totalEmp} nhân sự</span>
             </div>
             <div className="h-7 w-px bg-slate-200" />
             <div>
-              <span className="text-slate-400 block text-[11px]">Tổng số tiền đợt chi:</span>
+              <span className="text-slate-400 block text-[11px]">Tổng số tiền đợt chi hợp lệ:</span>
               <span className="font-bold text-emerald-700 text-sm">{totalAmountStr}</span>
             </div>
             <div className="h-7 w-px bg-slate-200" />
             <div>
-              <span className="text-slate-400 block text-[11px]">Mã định danh lô chi lương:</span>
-              <span className="font-mono font-semibold text-slate-700">SAL-202609-VCB01</span>
+              <span className="text-slate-400 block text-[11px]">Kỳ chi lương:</span>
+              <span className="font-mono font-semibold text-slate-700">{periodName}</span>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-            Tài khoản trích nợ đủ số dư
-          </span>
+          {invalidCount > 0 ? (
+            <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              {invalidCount} nhân sự thiếu STK
+            </span>
+          ) : (
+            <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+              {totalEmp > 0 ? 'Đủ thông tin tài khoản thụ hưởng' : 'Chưa có dữ liệu phiếu lương'}
+            </span>
+          )}
         </div>
+
+        {batchError && (
+          <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold">
+            {batchError}
+          </div>
+        )}
 
         {/* Account Table Preview */}
         <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden shadow-xs">
@@ -188,9 +218,15 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
                   <td className="py-2 px-3 text-slate-500">{acc.bank}</td>
                   <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">{acc.amount}</td>
                   <td className="py-2 px-3 text-center">
-                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded text-[10px] border border-emerald-200">
-                      {acc.status} ✓
-                    </span>
+                    {acc.isValid ? (
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded text-[10px] border border-emerald-200">
+                        Hợp lệ ✓
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold rounded text-[10px] border border-amber-200">
+                        Thiếu STK ⚠️
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -200,7 +236,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
 
         {downloadSuccess && (
           <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-center font-bold text-xs">
-            ✓ Đã tải xuống file lệnh chi mã hóa CSV (Chuẩn Vietcombank iB@nk B2B) và file PDF Ủy nhiệm chi!
+            ✓ Đã tải xuống file CSV danh sách chuyển khoản lương ({validAccounts.length} bản ghi hợp lệ).
           </div>
         )}
 

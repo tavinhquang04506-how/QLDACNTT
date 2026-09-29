@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import api from '../services/api';
 import { 
   Shield, 
   Clock, 
@@ -10,34 +10,130 @@ import {
   Lock,
   Percent,
   MapPin,
-  ShieldCheck
+  ShieldCheck,
+  AlertCircle,
+  Loader2,
+  RefreshCw
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function SettingsPage() {
   const { currentRole } = useAuth();
-  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('attendance');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Settings values
+  // Settings values (backed by /api/settings -> system_settings table)
   const [autoApproveOT, setAutoApproveOT] = useState(false);
   const [lateGraceMinutes, setLateGraceMinutes] = useState(15);
   const [maxOtPerMonth, setMaxOtPerMonth] = useState(40);
   const [faceConfidenceThreshold, setFaceConfidenceThreshold] = useState(98);
   const [gpsRadiusMeters, setGpsRadiusMeters] = useState(250);
+  const [officeLat, setOfficeLat] = useState(10.762622);
+  const [officeLng, setOfficeLng] = useState(106.660172);
+  const [officeName, setOfficeName] = useState('Tòa nhà NEXUS Tower');
   const [personalIncomeTaxDeduction, setPersonalIncomeTaxDeduction] = useState(11000000);
   const [dependentDeduction, setDependentDeduction] = useState(4400000);
 
-  const canEditSettings = currentRole.key === 'CEO' || currentRole.key === 'HR_DIRECTOR';
+  const canEditSettings = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
 
-  const handleSave = () => {
-    if (!canEditSettings) return;
-    setSaved(true);
+  const applyServerSettings = (d) => {
+    if (!d || typeof d !== 'object') return;
+    if (d.autoApproveOT !== undefined || d.auto_approve_ot !== undefined) {
+      setAutoApproveOT(Boolean(d.autoApproveOT ?? d.auto_approve_ot));
+    }
+    if (d.lateGraceMinutes !== undefined || d.late_grace_minutes !== undefined) {
+      setLateGraceMinutes(Number(d.lateGraceMinutes ?? d.late_grace_minutes));
+    }
+    if (d.maxOtPerMonth !== undefined || d.max_ot_per_month !== undefined) {
+      setMaxOtPerMonth(Number(d.maxOtPerMonth ?? d.max_ot_per_month));
+    }
+    if (d.faceConfidenceThreshold !== undefined || d.face_confidence_threshold !== undefined) {
+      setFaceConfidenceThreshold(Number(d.faceConfidenceThreshold ?? d.face_confidence_threshold));
+    }
+    if (d.gpsRadiusMeters !== undefined || d.gps_radius_meters !== undefined) {
+      setGpsRadiusMeters(Number(d.gpsRadiusMeters ?? d.gps_radius_meters));
+    }
+    if (d.officeLat !== undefined || d.office_lat !== undefined) {
+      setOfficeLat(Number(d.officeLat ?? d.office_lat));
+    }
+    if (d.officeLng !== undefined || d.office_lng !== undefined) {
+      setOfficeLng(Number(d.officeLng ?? d.office_lng));
+    }
+    if (d.officeName !== undefined || d.office_name !== undefined) {
+      setOfficeName(String(d.officeName ?? d.office_name));
+    }
+    if (d.personalIncomeTaxDeduction !== undefined || d.personal_income_tax_deduction !== undefined) {
+      setPersonalIncomeTaxDeduction(Number(d.personalIncomeTaxDeduction ?? d.personal_income_tax_deduction));
+    }
+    if (d.dependentDeduction !== undefined || d.dependent_deduction !== undefined) {
+      setDependentDeduction(Number(d.dependentDeduction ?? d.dependent_deduction));
+    }
+    if (d.updated_at) {
+      setLastUpdated(d.updated_at);
+    }
+  };
+
+  const loadSettings = async () => {
+    setLoading(true);
+    setErrorMsg('');
     try {
-      confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
-    } catch (e) {}
-    setTimeout(() => setSaved(false), 2500);
+      const res = await api.get('/settings');
+      if (!res?.success || !res?.data) {
+        throw new Error(res?.message || 'Không thể tải cấu hình hệ thống');
+      }
+      applyServerSettings(res.data);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Không thể tải cấu hình hệ thống từ máy chủ.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const handleSave = async () => {
+    if (!canEditSettings || saving) return;
+    setSaving(true);
+    setSaved(false);
+    setErrorMsg('');
+
+    try {
+      const res = await api.put('/settings', {
+        autoApproveOT,
+        lateGraceMinutes: Number(lateGraceMinutes),
+        maxOtPerMonth: Number(maxOtPerMonth),
+        faceConfidenceThreshold: Number(faceConfidenceThreshold),
+        gpsRadiusMeters: Number(gpsRadiusMeters),
+        officeLat: Number(officeLat),
+        officeLng: Number(officeLng),
+        officeName: String(officeName).trim() || 'Tòa nhà NEXUS Tower',
+        personalIncomeTaxDeduction: Number(personalIncomeTaxDeduction),
+        dependentDeduction: Number(dependentDeduction),
+      });
+
+      if (!res?.success) {
+        throw new Error(res?.message || 'Lưu cấu hình thất bại');
+      }
+
+      if (res.data) {
+        applyServerSettings(res.data);
+      }
+      setSaved(true);
+      try {
+        confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
+      } catch {}
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Không thể lưu cấu hình hệ thống. Vui lòng thử lại.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -55,25 +151,59 @@ export default function SettingsPage() {
           </div>
           <p className="text-xs text-slate-500 mt-1">
             Quản trị quy tắc chấm công ca làm, chính sách thuế & BHXH, và định vị văn phòng check-in
+            {lastUpdated ? ` • Cập nhật lần cuối: ${new Date(lastUpdated).toLocaleString('vi-VN')}` : ''}
           </p>
         </div>
 
-        {canEditSettings ? (
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={handleSave}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
+            onClick={loadSettings}
+            disabled={loading || saving}
+            className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+            title="Làm mới cấu hình từ CSDL"
           >
-            {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-            <span>{saved ? 'Đã lưu cấu hình thành công!' : 'Lưu Thay Đổi Cấu Hình'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-600' : 'text-slate-500'}`} />
+            <span>Tải lại</span>
           </button>
-        ) : (
-          <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-200">
-            <Lock className="w-3.5 h-3.5 text-slate-400" />
-            <span>Chế độ chỉ đọc ({currentRole?.title || 'Nhân sự'})</span>
-          </div>
-        )}
+
+          {canEditSettings ? (
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || loading}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
+            >
+              {saving ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : saved ? (
+                <Check className="w-4 h-4" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              <span>
+                {saving
+                  ? 'Đang lưu cấu hình...'
+                  : saved
+                  ? 'Đã lưu cấu hình thành công!'
+                  : 'Lưu Thay Đổi Cấu Hình'}
+              </span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-200">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              <span>Chế độ chỉ đọc ({currentRole?.title || 'Nhân sự'})</span>
+            </div>
+          )}
+        </div>
       </div>
+
+      {errorMsg && (
+        <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto no-scrollbar">
@@ -141,12 +271,14 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <input
                     type="number"
+                    min="0"
+                    max="180"
                     value={lateGraceMinutes}
                     onChange={(e) => setLateGraceMinutes(Number(e.target.value))}
                     disabled={!canEditSettings}
                     className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs outline-none focus:bg-white focus:border-blue-500 disabled:opacity-75 disabled:cursor-not-allowed"
                   />
-                  <span className="text-slate-500">phút (Sau 08:15 sẽ tính là đi muộn vào ca)</span>
+                  <span className="text-slate-500">phút (Sau 08:{String(lateGraceMinutes).padStart(2, '0')} sẽ tính là đi muộn vào ca)</span>
                 </div>
               </div>
 
@@ -189,12 +321,14 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <input
                     type="number"
+                    min="1"
+                    max="300"
                     value={maxOtPerMonth}
                     onChange={(e) => setMaxOtPerMonth(Number(e.target.value))}
                     disabled={!canEditSettings}
                     className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs outline-none focus:bg-white focus:border-blue-500 disabled:opacity-75 disabled:cursor-not-allowed"
                   />
-                  <span className="text-slate-500">giờ / tháng (Cảnh báo khi vượt ngưỡng 40h)</span>
+                  <span className="text-slate-500">giờ / tháng (Cảnh báo khi vượt ngưỡng {maxOtPerMonth}h)</span>
                 </div>
               </div>
 
@@ -209,7 +343,7 @@ export default function SettingsPage() {
                   />
                   <div>
                     <span className="font-bold text-slate-800 block">Tự động duyệt OT dưới 2 giờ vào ngày thường</span>
-                    <span className="text-slate-400 block mt-0.5">Hệ thống ghi nhận hệ số 150% theo dữ liệu quẹt thẻ ra về</span>
+                    <span className="text-slate-400 block mt-0.5">Hệ thống ghi nhận hệ số 150% theo dữ liệu chấm công ra về</span>
                   </div>
                 </label>
               </div>
@@ -237,28 +371,34 @@ export default function SettingsPage() {
             <div className="space-y-4 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
-                  Mức giảm trừ bản thân người nộp thuế
+                  Mức giảm trừ bản thân người nộp thuế (VNĐ / tháng)
                 </label>
                 <div className="flex items-center gap-2">
                   <input
-                    type="text"
-                    value={personalIncomeTaxDeduction.toLocaleString('vi-VN') + ' đ / tháng'}
-                    disabled
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs"
+                    type="number"
+                    min="0"
+                    step="100000"
+                    value={personalIncomeTaxDeduction}
+                    onChange={(e) => setPersonalIncomeTaxDeduction(Number(e.target.value))}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
               </div>
 
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
-                  Mức giảm trừ cho mỗi người phụ thuộc
+                  Mức giảm trừ cho mỗi người phụ thuộc (VNĐ / người / tháng)
                 </label>
                 <div className="flex items-center gap-2">
                   <input
-                    type="text"
-                    value={dependentDeduction.toLocaleString('vi-VN') + ' đ / người / tháng'}
-                    disabled
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs"
+                    type="number"
+                    min="0"
+                    step="100000"
+                    value={dependentDeduction}
+                    onChange={(e) => setDependentDeduction(Number(e.target.value))}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
               </div>
@@ -320,6 +460,8 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <input
                     type="number"
+                    min="10"
+                    max="10000"
                     value={gpsRadiusMeters}
                     onChange={(e) => setGpsRadiusMeters(Number(e.target.value))}
                     disabled={!canEditSettings}
@@ -330,9 +472,9 @@ export default function SettingsPage() {
               </div>
 
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-                <span className="font-bold text-slate-800 block">Tọa độ trụ sở chính:</span>
+                <span className="font-bold text-slate-800 block">Tọa độ trụ sở chính ({officeName}):</span>
                 <p className="text-[11px] text-slate-600 font-mono">
-                  10.7769° N, 106.7009° E (Tòa nhà NEXUS Tower, Quận 1, TP. Hồ Chí Minh)
+                  {officeLat}° N, {officeLng}° E
                 </p>
               </div>
             </div>
@@ -343,11 +485,11 @@ export default function SettingsPage() {
               <div className="flex items-center gap-2.5">
                 <Shield className="w-5 h-5 text-blue-600" />
                 <h3 className="font-bold text-slate-900 text-sm font-display">
-                  Ngưỡng Nhận Diện Khuôn Mặt Kiosk Cổng
+                  Ngưỡng Xác Thực Kiosk Chấm Công Cổng
                 </h3>
               </div>
               <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                AI Liveness
+                Kiosk Gate
               </span>
             </div>
 
@@ -355,7 +497,7 @@ export default function SettingsPage() {
               <div>
                 <div className="flex justify-between items-center mb-1">
                   <label className="font-bold text-slate-700">
-                    Ngưỡng độ tin cậy nhận diện khuôn mặt (Face Match)
+                    Ngưỡng độ tin cậy thiết bị Kiosk (Confidence Threshold)
                   </label>
                   <span className="font-bold text-blue-600">{faceConfidenceThreshold}%</span>
                 </div>
@@ -369,7 +511,7 @@ export default function SettingsPage() {
                   className="w-full accent-blue-600 disabled:opacity-75 disabled:cursor-not-allowed"
                 />
                 <span className="text-slate-400 text-[11px] block mt-1">
-                  Khuyến nghị: 98% để đảm bảo chính xác tuyệt đối và chống giả mạo ảnh chụp.
+                  Áp dụng cho log ghi nhận chấm công tại Kiosk cổng và kiểm tra đối soát.
                 </span>
               </div>
             </div>

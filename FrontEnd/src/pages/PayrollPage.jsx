@@ -163,35 +163,62 @@ export default function PayrollPage() {
   }, [currentPeriodObj?.id, selectedPeriod]);
 
   const handleCeoApprove = async () => {
-    setIsCeoApproved(true);
     try {
       const periodCode = getPeriodCode(selectedPeriod);
-      await payrollService.calculate(periodCode);
-      const updated = await payrollService.getPayslips();
+      const calcRes = await payrollService.calculate(periodCode);
+      if (!calcRes?.success) {
+        throw new Error(calcRes?.message || 'Không thể tính và phê duyệt bảng lương');
+      }
+      setIsCeoApproved(true);
+      const [periodsRes, updated] = await Promise.all([
+        payrollService.getPeriods().catch(() => null),
+        payrollService.getPayslips().catch(() => null),
+      ]);
+      if (periodsRes?.success && Array.isArray(periodsRes.data)) {
+        setApiPeriods(periodsRes.data);
+      }
       if (updated?.success && Array.isArray(updated.data)) {
         setApiPayslips(updated.data);
       }
+      try {
+        confetti({
+          particleCount: 70,
+          spread: 70,
+          origin: { y: 0.6 }
+        });
+      } catch (e) { }
     } catch (e) {
-      console.warn('Backend calculate notice:', e);
+      setIsCeoApproved(false);
+      alert(e?.message || 'Lỗi khi tính toán / phê duyệt bảng lương.');
     }
-    try {
-      confetti({
-        particleCount: 70,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-    } catch (e) { }
   };
 
-  const totalNet = apiPayslips.reduce((sum, p) => sum + (parseFloat(p.net_salary) || 0), 0) ||
-    employees.reduce((sum, e) => sum + (e.contractSalary || 0), 0);
-  const netGrowth = 4.2;
-  const totalOtHours = apiPayslips.reduce((sum, p) => sum + (parseFloat(p.ot_hours) || 0), 0);
-  const totalOtEmployees = apiPayslips.filter(p => (parseFloat(p.ot_hours) || 0) > 0).length;
+  const periodPayslips = React.useMemo(() => {
+    if (!Array.isArray(apiPayslips)) return [];
+    const filteredByPeriod = apiPayslips.filter(
+      (p) => !p.period || p.period === currentPeriodCode || String(p.period_id) === String(currentPeriodObj?.id)
+    );
+    return filteredByPeriod.length > 0 ? filteredByPeriod : apiPayslips;
+  }, [apiPayslips, currentPeriodCode, currentPeriodObj?.id]);
+
+  const totalNet = periodPayslips.length > 0
+    ? periodPayslips.reduce((sum, p) => sum + (parseFloat(p.net_salary) || 0), 0)
+    : Number(currentPeriodObj?.total_net ?? 0);
+  const totalOtHours = periodPayslips.length > 0
+    ? periodPayslips.reduce((sum, p) => sum + (parseFloat(p.ot_hours) || 0), 0)
+    : Number(currentPeriodObj?.total_ot_hours ?? 0);
+  const totalOtEmployees = periodPayslips.filter(p => (parseFloat(p.ot_hours) || 0) > 0).length;
   const avgOtHours = totalOtEmployees > 0 ? (totalOtHours / totalOtEmployees).toFixed(1) : 0;
-  const totalBhxh = apiPayslips.reduce((sum, p) => sum + (parseFloat(p.bhxh_amount) || 0), 0) || Math.round(totalNet * 0.105);
-  const totalTax = apiPayslips.reduce((sum, p) => sum + (parseFloat(p.pit_amount || p.tax_amount) || 0), 0) || Math.round(totalNet * 0.05);
-  const payrollStatus = isCeoApproved ? 'CEO Đã Phê Duyệt Chi Trả' : (apiPeriods[0]?.status || 'Chờ CEO duyệt chi trả');
+  const totalBhxh = periodPayslips.length > 0
+    ? periodPayslips.reduce(
+        (sum, p) => sum + (parseFloat(p.bhxh_amount) || 0) + (parseFloat(p.bhyt_amount) || 0) + (parseFloat(p.bhtn_amount) || 0),
+        0
+      )
+    : Number(currentPeriodObj?.total_bhxh ?? 0);
+  const totalTax = periodPayslips.length > 0
+    ? periodPayslips.reduce((sum, p) => sum + (parseFloat(p.pit_amount || p.tax_amount) || 0), 0)
+    : Number(currentPeriodObj?.total_tax ?? 0);
+  const payrollStatus = isCeoApproved ? 'CEO Đã Phê Duyệt Chi Trả' : (currentPeriodObj?.status || apiPeriods[0]?.status || 'Chờ xử lý kỳ lương');
 
   const filteredEmployees = employees.filter((emp) => {
     const matchesSearch =
@@ -202,142 +229,122 @@ export default function PayrollPage() {
   });
 
   const handleExportPayrollReport = () => {
-    const headers = ['Mã NV', 'Họ Và Tên', 'Chức Vụ', 'Lương Cơ Bản', 'Ngày Công', 'Làm Thêm (OT)', 'Thưởng KPI', 'BHXH', 'Thuế TNCN', 'Thực Lĩnh (Net)'];
-    const rows = (apiPayslips.length > 0 ? apiPayslips : employees).map((p) => [
+    const headers = ['Mã NV', 'Họ Và Tên', 'Chức Vụ', 'Lương Cơ Bản', 'Ngày Công', 'Làm Thêm (OT)', 'Thưởng KPI & Phụ Cấp', 'BHXH', 'Thuế TNCN', 'Thực Lĩnh (Net)'];
+    const rows = (periodPayslips.length > 0 ? periodPayslips : []).map((p) => [
       p.employee_id || p.id,
       p.full_name || p.name,
       p.job_title || p.role,
-      p.base_salary || p.contractSalary || 20000000,
-      p.actual_work_days ? `${p.actual_work_days}/22` : '22/22',
-      p.ot_pay || 0,
-      p.allowances || p.bonus || 0,
-      p.bhxh_amount || Math.round((p.base_salary || p.contractSalary || 20000000) * 0.105),
-      p.pit_amount || Math.round((p.base_salary || p.contractSalary || 20000000) * 0.05),
-      p.net_salary || (p.contractSalary ? Math.round(p.contractSalary * 0.845) : 20000000),
+      Number(p.base_salary ?? 0),
+      `${p.actual_work_days ?? 0}/22`,
+      Number(p.ot_pay ?? 0),
+      Number(p.allowances ?? 0) + Number(p.bonus ?? 0),
+      Number(p.bhxh_amount ?? 0) + Number(p.bhyt_amount ?? 0) + Number(p.bhtn_amount ?? 0),
+      Number(p.pit_amount ?? 0),
+      Number(p.net_salary ?? 0),
     ]);
     const csv = generateCSVContent(headers, rows);
     downloadFile(`Bao_Cao_Tong_Hop_Quy_Luong_${selectedPeriod.replace(/[\/\s]/g, '_')}.csv`, csv);
   };
 
-  // Derive / construct personalized payslip object
-  const activeSlip = myPayslip || apiPayslips.find(s => s.employee_id === currentRole?.id || s.employee_id === currentRole?.employee_id) || {
-    employee_id: currentRole?.id || 'NV-0001',
-    full_name: currentRole?.name || 'Nhân sự NEXUS',
-    job_title: currentRole?.title || 'Chức vụ',
-    department_name: currentRole?.department || 'Khối Doanh Nghiệp',
-    base_salary: currentRole?.baseSalary || (roleKey === 'CEO' ? 68000000 : roleKey === 'HR_DIRECTOR' ? 45000000 : roleKey === 'LINE_MANAGER' ? 42000000 : 28000000),
-    allowances: roleKey === 'CEO' ? 12000000 : roleKey === 'HR_DIRECTOR' ? 6000000 : roleKey === 'LINE_MANAGER' ? 5000000 : 2500000,
-    bonus: roleKey === 'CEO' ? 20000000 : roleKey === 'HR_DIRECTOR' ? 8000000 : roleKey === 'LINE_MANAGER' ? 7000000 : 3500000,
-    ot_pay: 0,
-    ot_hours: 0,
-    actual_work_days: 22,
-    bhxh_amount: Math.round(((currentRole?.baseSalary || (roleKey === 'CEO' ? 68000000 : 28000000)) * 0.105)),
-    pit_amount: Math.round(((currentRole?.baseSalary || (roleKey === 'CEO' ? 68000000 : 28000000)) * 0.08)),
-    status: 'DA_CHUYEN_KHOAN'
-  };
+  // Derive personalized payslip object strictly from API payslips (no fabricated salary numbers)
+  const actorEmpId = currentRole?.id || currentRole?.employee_id || '';
+  const activeSlip =
+    myPayslip ||
+    periodPayslips.find((s) => s.employee_id === actorEmpId) ||
+    apiPayslips.find((s) => s.employee_id === actorEmpId) ||
+    null;
 
-  if (!activeSlip.net_salary || isNaN(Number(activeSlip.net_salary))) {
-    const gross = Number(activeSlip.base_salary || 0) + Number(activeSlip.allowances || 0) + Number(activeSlip.bonus || 0) + Number(activeSlip.ot_pay || 0);
-    const deductions = Number(activeSlip.bhxh_amount || 0) + Number(activeSlip.pit_amount || 0);
-    activeSlip.net_salary = gross - deductions;
-  }
-
-  // Danh sách các kỳ lương cá nhân hỗ trợ tra cứu lịch sử
-  const personalPeriods = [
-    { code: '2026-09', label: 'Tháng 09/2026 (Kỳ hiện tại)' },
-    { code: '2026-08', label: 'Tháng 08/2026 (Đã quyết toán)' },
-    { code: '2026-07', label: 'Tháng 07/2026 (Đã quyết toán)' },
-    { code: '2026-06', label: 'Tháng 06/2026 (Đã quyết toán)' },
-  ];
+  // Danh sách các kỳ lương cá nhân từ dữ liệu thực
+  const personalPeriods = React.useMemo(() => {
+    if (Array.isArray(myPayslipsList) && myPayslipsList.length > 0) {
+      return myPayslipsList.map((s) => {
+        const pCode = s.period || String(s.period_id || '');
+        const parts = pCode.split('-');
+        const label = parts.length === 2
+          ? `Tháng ${parts[1]}/${parts[0]} (${s.status === 'DA_CHOT' || s.status === 'DA_CHUYEN_KHOAN' ? 'Đã quyết toán' : 'Dự thảo'})`
+          : pCode;
+        return { code: pCode, label };
+      });
+    }
+    if (Array.isArray(apiPeriods) && apiPeriods.length > 0) {
+      return apiPeriods.map((p) => {
+        const parts = (p.period || '').split('-');
+        const label = parts.length === 2
+          ? `Tháng ${parts[1]}/${parts[0]} (${p.status === 'DA_CHOT' ? 'Đã quyết toán' : 'Dự thảo'})`
+          : p.period;
+        return { code: p.period, label };
+      });
+    }
+    const curCode = getPeriodCode(selectedPeriod);
+    return [{ code: curCode, label: `${selectedPeriod} (Chưa phát hành)` }];
+  }, [myPayslipsList, apiPeriods, selectedPeriod]);
 
   const getPersonalSlipForPeriod = (periodStr) => {
     const pCode = getPeriodCode(periodStr);
-    const matched = (myPayslipsList || []).find(s => s.period_id === pCode || s.period === pCode || s.period_name === periodStr);
+    const matched =
+      (myPayslipsList || []).find((s) => s.period === pCode || String(s.period_id) === pCode || s.period_name === periodStr) ||
+      (apiPayslips || []).find((s) => s.employee_id === actorEmpId && (s.period === pCode || !s.period)) ||
+      myPayslip ||
+      null;
+
     if (matched) {
-      const b = Number(matched.base_salary || 0);
-      const a = Number(matched.allowances || 0);
-      const bo = Number(matched.bonus || 0);
-      const ot = Number(matched.ot_pay || 0);
-      const oth = Number(matched.ot_hours || 0);
-      const ins = Number(matched.bhxh_amount || 0) + Number(matched.bhyt_amount || 0) + Number(matched.bhtn_amount || 0) || Math.round(b * 0.105);
-      const tax = Number(matched.pit_amount || 0) || Math.round(b * 0.08);
-      const totalDed = Number(matched.total_deductions || 0) || (ins + tax);
-      const rawNet = Number(matched.net_salary || 0);
-      const calcNet = (b + a + bo + ot) - totalDed;
+      const b = Number(matched.base_salary ?? 0);
+      const a = Number(matched.allowances ?? 0);
+      const bo = Number(matched.bonus ?? 0);
+      const ot = Number(matched.ot_pay ?? 0);
+      const oth = Number(matched.ot_hours ?? 0);
+      const ins = Number(matched.bhxh_amount ?? 0) + Number(matched.bhyt_amount ?? 0) + Number(matched.bhtn_amount ?? 0);
+      const tax = Number(matched.pit_amount ?? 0);
+      const totalDed = matched.total_deductions != null ? Number(matched.total_deductions) : (ins + tax);
+      const rawNet = matched.net_salary != null ? Number(matched.net_salary) : ((b + a + bo + ot) - totalDed);
       return {
         ...matched,
+        hasData: true,
         base_salary: b,
         allowances: a,
         bonus: bo,
         ot_pay: ot,
         ot_hours: oth,
-        actual_work_days: Number(matched.actual_work_days || 22),
+        actual_work_days: Number(matched.actual_work_days ?? 0),
         bhxh_amount: ins,
         pit_amount: tax,
         total_deductions: totalDed,
-        net_salary: !isNaN(rawNet) && rawNet > 0 ? rawNet : calcNet,
+        net_salary: !Number.isNaN(rawNet) ? rawNet : 0,
       };
     }
 
-    const base = Number(activeSlip.base_salary || currentRole?.baseSalary || 28000000);
-    let ot = Number(activeSlip.ot_pay || 0);
-    let otHours = Number(activeSlip.ot_hours || 0);
-    let bonus = Number(activeSlip.bonus || 0);
-    let workDays = Number(activeSlip.actual_work_days || 22);
-
-    if (pCode === '2026-08') {
-      ot = Math.round(base * 0.08);
-      otHours = 12;
-      bonus = Math.round(base * 0.12);
-      workDays = 22;
-    } else if (pCode === '2026-07') {
-      ot = Math.round(base * 0.05);
-      otHours = 8;
-      bonus = Math.round(base * 0.1);
-      workDays = 21;
-    } else if (pCode === '2026-06') {
-      ot = 0;
-      otHours = 0;
-      bonus = Math.round(base * 0.15);
-      workDays = 22;
-    }
-
-    const allowances = Number(activeSlip.allowances ?? 3000000);
-    const bhxh = Number(activeSlip.bhxh_amount ?? Math.round(base * 0.105));
-    const pit = Number(activeSlip.pit_amount ?? Math.round(base * 0.08));
-    const gross = base + allowances + bonus + ot;
-    const totalDeductions = bhxh + pit;
-    const net = gross - totalDeductions;
-
     return {
-      ...activeSlip,
-      period_id: pCode,
+      hasData: false,
+      employee_id: actorEmpId,
+      full_name: currentRole?.name || 'Nhân sự',
+      job_title: currentRole?.title || 'Nhân viên',
+      department_name: currentRole?.department || 'Chưa phân bổ',
+      period: pCode,
       period_name: periodStr,
-      base_salary: base,
-      allowances,
-      bonus,
-      ot_pay: ot,
-      ot_hours: otHours,
-      actual_work_days: workDays,
-      bhxh_amount: bhxh,
-      pit_amount: pit,
-      total_deductions: totalDeductions,
-      net_salary: net,
+      base_salary: Number(currentRole?.baseSalary ?? 0),
+      allowances: 0,
+      bonus: 0,
+      ot_pay: 0,
+      ot_hours: 0,
+      actual_work_days: 0,
+      bhxh_amount: 0,
+      pit_amount: 0,
+      total_deductions: 0,
+      net_salary: 0,
+      status: 'CHUA_PHAT_HANH',
     };
   };
 
   // ==========================================
   // RENDER PERSONAL PAYSLIP COMPONENT (Shared across ESS, Line Manager, HRD & CEO)
   // ==========================================
-  const renderPersonalPayslip = (slip) => {
+  const renderPersonalPayslip = () => {
     const currentSlip = getPersonalSlipForPeriod(selectedPeriod);
-    const baseSalaryNum = Number(currentSlip?.base_salary || currentRole?.baseSalary || 28000000);
-    const otAndBonus = Number(currentSlip?.ot_pay || 0) + Number(currentSlip?.bonus || 0) + Number(currentSlip?.allowances || 0);
-    const totalDeductions = Number(currentSlip?.total_deductions || 0) || (Number(currentSlip?.bhxh_amount || 0) + Number(currentSlip?.pit_amount || 0));
-    const workDays = currentSlip?.actual_work_days ?? 22;
-    const calculatedNet = (baseSalaryNum + otAndBonus) - totalDeductions;
-    const rawNet = Number(currentSlip?.net_salary);
-    const netSalaryNum = !isNaN(rawNet) && rawNet > 0 ? rawNet : calculatedNet;
+    const baseSalaryNum = Number(currentSlip?.base_salary ?? 0);
+    const otAndBonus = Number(currentSlip?.ot_pay ?? 0) + Number(currentSlip?.bonus ?? 0) + Number(currentSlip?.allowances ?? 0);
+    const totalDeductions = Number(currentSlip?.total_deductions ?? 0);
+    const workDays = currentSlip?.actual_work_days ?? 0;
+    const netSalaryNum = Number(currentSlip?.net_salary ?? 0);
 
     return (
       <div className="space-y-6">
@@ -709,7 +716,7 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
-                    onClick={() => openModal('modal7B', { slips: apiPayslips, employees, totalNet, period: selectedPeriod })}
+                    onClick={() => openModal('modal7B', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod })}
                     className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
                   >
                     <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
@@ -740,7 +747,7 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
-                    onClick={() => openModal('modal7B', { slips: apiPayslips, employees, totalNet, period: selectedPeriod })}
+                    onClick={() => openModal('modal7B', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod })}
                     className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
                   >
                     <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
@@ -749,7 +756,7 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
-                    onClick={() => openModal('modal7C', { slips: apiPayslips, employees, totalNet, period: selectedPeriod, employeesCount: employees.length })}
+                    onClick={() => openModal('modal7C', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod, employeesCount: periodPayslips.length || employees.length })}
                     className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shrink-0"
                   >
                     <Lock className="w-4 h-4" />
@@ -787,9 +794,9 @@ export default function PayrollPage() {
                 </div>
               </div>
               <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <span>{employees.length} nhân sự toàn công ty</span>
+                <span>{periodPayslips.length || employees.length} nhân sự</span>
                 <span className="text-slate-600 font-semibold bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
-                  {apiPayslips.length > 0 ? `+${netGrowth}%` : 'Chuẩn ngân sách'}
+                  {currentPeriodObj?.status === 'DA_CHOT' ? 'Đã chốt' : 'Dự thảo'}
                 </span>
               </div>
             </div>
@@ -860,50 +867,26 @@ export default function PayrollPage() {
               </div>
             </div>
 
-            {/* Card 4: CEO Budget vs HRD Compliance */}
-            {isCeo ? (
-              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs flex flex-col justify-between gap-3">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Hiệu suất Quỹ Lương / Doanh Thu
-                    </span>
-                    <div className="text-[24px] font-bold font-display text-emerald-600 mt-1">
-                      18.4%
-                    </div>
-                  </div>
-                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                    <TrendingUp className="w-5 h-5" />
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                  <span>Mục tiêu HĐQT: &le; 20%</span>
-                  <span className="text-emerald-600 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                    Tối ưu chi phí
+            {/* Card 4: CEO / HRD Compliance */}
+            <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs flex flex-col justify-between gap-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Tỷ lệ hoàn thành đối soát
                   </span>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-2xs flex flex-col justify-between gap-3">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Tỷ lệ hoàn thành đối soát
-                    </span>
-                    <div className="text-[24px] font-bold font-display text-blue-600 mt-1">
-                      {anomalies.length === 0 ? '100%' : `${Math.round(((employees.length - anomalies.length) / (employees.length || 1)) * 100)}%`}
-                    </div>
-                  </div>
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                    <Sparkles className="w-5 h-5" />
+                  <div className="text-[24px] font-bold font-display text-blue-600 mt-1">
+                    {anomalies.length === 0 ? '100%' : `${Math.round(((Math.max(1, periodPayslips.length || employees.length) - anomalies.length) / Math.max(1, periodPayslips.length || employees.length)) * 100)}%`}
                   </div>
                 </div>
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                  <span>{anomalies.length > 0 ? `${anomalies.length} cảnh báo cần xử lý` : 'Đã đối soát hợp lệ'}</span>
-                  <span className="text-blue-600 font-semibold">Tự động hoá CSDL</span>
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <Sparkles className="w-5 h-5" />
                 </div>
               </div>
-            )}
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                <span>{anomalies.length > 0 ? `${anomalies.length} cảnh báo cần xử lý` : 'Đã đối soát hợp lệ'}</span>
+                <span className="text-blue-600 font-semibold">Đồng bộ CSDL</span>
+              </div>
+            </div>
           </div>
 
           {/* Anomaly Banner */}
@@ -1016,7 +999,7 @@ export default function PayrollPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
                   {(() => {
-                    const items = apiPayslips.length > 0 ? apiPayslips.filter(ps => {
+                    const items = periodPayslips.length > 0 ? periodPayslips.filter(ps => {
                       const matchesSearch =
                         (ps.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
                         (ps.employee_id || '').toLowerCase().includes(searchTerm.toLowerCase());
@@ -1028,20 +1011,15 @@ export default function PayrollPage() {
                       avatar: ps.avatar_url,
                       role: ps.job_title,
                       base: parseFloat(ps.base_salary) || 0,
-                      days: `${ps.actual_work_days} / 22 ngày`,
+                      days: `${ps.actual_work_days ?? 0} / 22 ngày`,
                       ot: parseFloat(ps.ot_pay) || 0,
-                      kpi: parseFloat(ps.allowances || ps.bonus) || 0,
-                      bhxh: parseFloat(ps.bhxh_amount) || 0,
+                      kpi: (parseFloat(ps.allowances) || 0) + (parseFloat(ps.bonus) || 0),
+                      bhxh: (parseFloat(ps.bhxh_amount) || 0) + (parseFloat(ps.bhyt_amount) || 0) + (parseFloat(ps.bhtn_amount) || 0),
                       tax: parseFloat(ps.pit_amount) || 0,
                       net: parseFloat(ps.net_salary) || 0,
                       raw: ps
                     })) : filteredEmployees.map(emp => {
-                      const base = Number(emp.contractSalary || emp.base_salary || 0);
-                      const ot = 0;
-                      const kpi = 0;
-                      const bhxh = Math.round(base * 0.105);
-                      const tax = 0;
-                      const net = base > bhxh ? base - bhxh : 0;
+                      const base = Number(emp.contractSalary ?? emp.base_salary ?? 0);
                       return {
                         id: emp.id,
                         name: emp.name || emp.full_name,
@@ -1049,11 +1027,11 @@ export default function PayrollPage() {
                         role: emp.role || emp.job_title,
                         base,
                         days: 'Chưa tính lương',
-                        ot,
-                        kpi,
-                        bhxh,
-                        tax,
-                        net,
+                        ot: 0,
+                        kpi: 0,
+                        bhxh: 0,
+                        tax: 0,
+                        net: 0,
                         raw: emp
                       };
                     });

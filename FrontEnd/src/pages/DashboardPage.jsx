@@ -106,43 +106,15 @@ export default function DashboardPage() {
     fetchDashboardData(true);
   }, [currentRole?.key]);
 
-  // Generate dynamic 6-month historical series counting backwards from current date
-  const dynamicMonths = React.useMemo(() => {
-    const list = [];
-    const now = new Date();
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const mStr = String(d.getMonth() + 1).padStart(2, '0');
-      const yStr = d.getFullYear();
-      const isCurrent = i === 0;
-      const baseRev = 14.2 + (5 - i) * 0.52;
-      const basePay = Number((baseRev * 0.258).toFixed(2));
-      list.push({
-        month: `Tháng ${mStr}/${yStr}${isCurrent ? ' (Hiện tại)' : ''}`,
-        shortMonth: `T${mStr}`,
-        rev: Number(baseRev.toFixed(1)),
-        pay: basePay,
-        ratio: `${((basePay / baseRev) * 100).toFixed(1)}%`,
-      });
-    }
-    return list;
-  }, []);
-
   const deptStats = React.useMemo(() => {
-    if (stats?.departmentStats && stats.departmentStats.length > 0) {
+    if (Array.isArray(stats?.departmentStats)) {
       return stats.departmentStats;
     }
-    return [
-      { id: 'DEPT-IT', name: 'Phòng Kỹ thuật Phần mềm', headcount: 18, male_count: 10, female_count: 8, official_count: 18, probation_count: 0, avg_salary: 24777778 },
-      { id: 'DEPT-MKT', name: 'Phòng Kinh doanh & Tiếp thị', headcount: 12, male_count: 6, female_count: 6, official_count: 12, probation_count: 0, avg_salary: 21875000 },
-      { id: 'DEPT-HR', name: 'Phòng Quản trị Nhân sự', headcount: 11, male_count: 5, female_count: 6, official_count: 11, probation_count: 0, avg_salary: 22954545 },
-      { id: 'DEPT-FIN', name: 'Phòng Tài chính & Kế toán', headcount: 8, male_count: 4, female_count: 4, official_count: 8, probation_count: 0, avg_salary: 22125000 },
-      { id: 'DEPT-CEO', name: 'Ban Điều Hành & Lãnh Đạo', headcount: 1, male_count: 1, female_count: 0, official_count: 1, probation_count: 0, avg_salary: 80000000 },
-    ];
+    return [];
   }, [stats?.departmentStats]);
 
   const totalHeadcount = React.useMemo(() => {
-    return deptStats.reduce((sum, d) => sum + (d.headcount || 0), 0) || totalActive || 50;
+    return deptStats.reduce((sum, d) => sum + (Number(d.headcount) || 0), 0) || totalActive || 0;
   }, [deptStats, totalActive]);
 
   const largestDept = React.useMemo(() => {
@@ -150,50 +122,22 @@ export default function DashboardPage() {
     return [...deptStats].sort((a, b) => (b.headcount || 0) - (a.headcount || 0))[0];
   }, [deptStats]);
 
-  const largestDeptRatio = totalHeadcount > 0 && largestDept ? Math.round(((largestDept.headcount || 0) / totalHeadcount) * 100) : 36;
-  const totalMale = stats?.overview?.total_male ?? deptStats.reduce((sum, d) => sum + (d.male_count || 0), 0) ?? 26;
-  const totalFemale = stats?.overview?.total_female ?? deptStats.reduce((sum, d) => sum + (d.female_count || 0), 0) ?? 24;
-  const totalOfficial = stats?.overview?.total_official ?? deptStats.reduce((sum, d) => sum + (d.official_count || d.headcount || 0), 0) ?? totalHeadcount;
-  const officialRate = totalHeadcount > 0 ? Math.round((totalOfficial / totalHeadcount) * 100) : 100;
-  const malePercent = totalHeadcount > 0 ? Math.round((totalMale / totalHeadcount) * 100) : 52;
-  const femalePercent = totalHeadcount > 0 ? 100 - malePercent : 48;
-  const avgTenure = stats?.overview?.avg_tenure_years ?? 3.5;
-
-  const chartMonths = React.useMemo(() => {
-    const maxCount = chartTab === '1y' ? 12 : 6;
-    if (periods && periods.length > 0) {
-      return periods.slice(0, maxCount).map((p, idx) => {
-        const parts = p.period ? p.period.split('-') : [];
-        const label = parts.length === 2 ? `T${parts[1]}` : (p.period || `T${idx + 1}`);
-        const fullLabel = parts.length === 2 ? `Tháng ${parts[1]}/${parts[0]}` : p.period;
-        const rate = p.attendance_rate || (96.5 + (idx % 2) * 1.8);
-        const newHires = p.new_hires || (idx === 0 ? 3 : 1);
-        return {
-          id: p.id || p.period,
-          label,
-          fullLabel,
-          rate: Number(Number(rate).toFixed(1)),
-          newHires: Number(newHires),
-          isCurrent: idx === 0,
-        };
-      }).reverse();
-    }
-    const now = new Date();
-    const curMonth = `T${String(now.getMonth() + 1).padStart(2, '0')}`;
-    return [{
-      id: 'cur',
-      label: curMonth,
-      fullLabel: `Tháng ${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} (Hiện tại)`,
-      rate: Number(attendanceRate) || 98.2,
-      newHires: 4,
-      isCurrent: true
-    }];
-  }, [periods, chartTab, attendanceRate]);
+  const largestDeptRatio = totalHeadcount > 0 && largestDept ? Math.round(((largestDept.headcount || 0) / totalHeadcount) * 100) : 0;
+  const totalMale = stats?.overview?.total_male ?? deptStats.reduce((sum, d) => sum + (Number(d.male_count) || 0), 0);
+  const totalFemale = stats?.overview?.total_female ?? deptStats.reduce((sum, d) => sum + (Number(d.female_count) || 0), 0);
+  const genderRecordedTotal = totalMale + totalFemale;
+  const totalOfficial = stats?.overview?.total_official ?? deptStats.reduce((sum, d) => sum + (Number(d.official_count) || 0), 0);
+  const officialRate = totalHeadcount > 0 ? Math.round((totalOfficial / totalHeadcount) * 100) : 0;
+  const malePercent = genderRecordedTotal > 0 ? Math.round((totalMale / genderRecordedTotal) * 100) : 0;
+  const femalePercent = genderRecordedTotal > 0 ? 100 - malePercent : 0;
+  const avgTenure = stats?.overview?.avg_tenure_years ?? 0;
 
   const handleApproveLeave = async (id, name) => {
     try {
-      if (id) {
-        await leaveService.approve(id, 'Phê duyệt nhanh từ bảng điều hành');
+      if (!id) return;
+      const res = await leaveService.approve(id, 'Phê duyệt nhanh từ bảng điều hành');
+      if (!res?.success) {
+        throw new Error(res?.message || 'Không thể phê duyệt đơn nghỉ phép');
       }
       setApprovedLeaves((prev) => [...prev, id || name]);
       if (stats?.pendingLeaves) {
@@ -202,15 +146,18 @@ export default function DashboardPage() {
           pendingLeaves: prev.pendingLeaves.filter((l) => l.id !== id),
           overview: {
             ...prev.overview,
-            pending_leaves: Math.max(0, (prev.overview?.pending_leaves ?? 1) - 1)
+            pending_leaves: Math.max(0, (prev.overview?.pending_leaves ?? 1) - 1),
+            actionable_pending_leaves: Math.max(0, (prev.overview?.actionable_pending_leaves ?? 1) - 1),
           }
         }));
       }
-      confetti({
-        particleCount: 40,
-        spread: 50,
-        origin: { y: 0.7 }
-      });
+      try {
+        confetti({
+          particleCount: 40,
+          spread: 50,
+          origin: { y: 0.7 }
+        });
+      } catch {}
     } catch (e) {
       console.error('Lỗi duyệt đơn:', e);
     }
@@ -220,7 +167,9 @@ export default function DashboardPage() {
   const managerPendingLeaves = (stats?.pendingLeaves || []).filter(
     (item) => (item.employee_id || item.id) !== currentRole?.id && item.stage === 'CHO_TRUONG_PHONG_DUYET'
   );
-  const managerPendingCount = isManager ? managerPendingLeaves.length : pendingLeavesCount;
+  const managerPendingCount = isManager
+    ? (stats?.overview?.actionable_pending_leaves ?? managerPendingLeaves.length)
+    : pendingLeavesCount;
 
   const latestPeriod = periods.find(p => p.status === 'DA_CHOT') || periods[0] || null;
   const latestPayrollAmount = latestPeriod ? Number(latestPeriod.total_net) : 0;
@@ -444,7 +393,7 @@ export default function DashboardPage() {
                   const pCode = item.period;
                   const parts = pCode ? pCode.split('-') : [];
                   const label = parts.length === 2 ? `Tháng ${parts[1]}/${parts[0]}` : (pCode || 'Kỳ lương');
-                  const totalNet = Number(item.total_net_salary || 0);
+                  const totalNet = Number(item.total_net ?? item.total_net_salary ?? 0);
                   const isLocked = item.status === 'DA_CHOT' || item.status === 'DA_CHUYEN_KHOAN';
                   return (
                     <div key={idx} className="space-y-1.5 text-xs">
@@ -1073,11 +1022,11 @@ export default function DashboardPage() {
                         <div className="flex items-center gap-2">
                           {deptTab === 'demographics' ? (
                             <span className="text-[11px] text-slate-500 font-medium">
-                              {dept.male_count || 0} Nam • {dept.female_count || 0} Nữ • Lương TB: ~{Math.round((dept.avg_salary || 22000000) / 1000000)}tr
+                              {dept.male_count || 0} Nam • {dept.female_count || 0} Nữ • Lương TB: {dept.avg_salary ? `~${Math.round(Number(dept.avg_salary) / 1000000)}tr` : 'N/A'}
                             </span>
                           ) : (
                             <span className="text-[11px] text-slate-500 font-medium">
-                              {dept.official_count || dept.headcount} chính thức
+                              {dept.official_count ?? dept.headcount ?? 0} chính thức
                             </span>
                           )}
                           <span className={`font-mono font-bold text-xs px-2 py-0.5 rounded-md border ${c.badge}`}>
@@ -1105,10 +1054,10 @@ export default function DashboardPage() {
                 <div className="bg-slate-50/90 backdrop-blur-sm p-3.5 rounded-xl border border-slate-200/80 shadow-2xs">
                   <span className="text-[11px] text-slate-500 font-medium">Phòng ban lớn nhất</span>
                   <div className="text-base font-bold font-display text-slate-900 mt-1 truncate" title={largestDept?.name}>
-                    {largestDept?.name?.replace('Phòng ', '') || 'Kỹ thuật'}
+                    {largestDept?.name?.replace('Phòng ', '') || 'Chưa có dữ liệu'}
                   </div>
                   <span className="text-[10px] text-blue-600 font-semibold mt-1 inline-block">
-                    ● {largestDept?.headcount || 18} nhân sự ({largestDeptRatio}%)
+                    ● {largestDept?.headcount ?? 0} nhân sự ({largestDeptRatio}%)
                   </span>
                 </div>
 
