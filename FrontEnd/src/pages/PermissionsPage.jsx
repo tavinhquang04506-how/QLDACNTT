@@ -399,9 +399,9 @@ export default function PermissionsPage() {
   );
 
   const actorRole = currentUser?.role || currentUser?.role_code || 'CEO';
-  const canManageUsers = ['CEO', 'HR_DIRECTOR', 'ADMIN'].includes(actorRole);
-  const canEditMatrix = ['CEO', 'HR_DIRECTOR', 'ADMIN'].includes(actorRole);
-  const canViewAudit = ['CEO', 'ADMIN', 'HR_DIRECTOR'].includes(actorRole);
+  const canManageUsers = ['CEO', 'ADMIN'].includes(actorRole);
+  const canEditMatrix = ['CEO', 'ADMIN'].includes(actorRole);
+  const canViewAudit = ['CEO', 'ADMIN'].includes(actorRole);
 
   // Toast state
   const [toast, setToast] = useState(null);
