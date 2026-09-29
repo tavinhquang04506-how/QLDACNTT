@@ -5,39 +5,36 @@ export const userService = {
    * Lấy danh mục vai trò và ma trận cấu hình phân quyền RBAC theo vai trò
    */
   getRbacRoles: () => api.get('/settings/rbac-roles'),
+  getRbacMatrix: () => api.get('/settings/rbac-roles'),
 
   /**
    * Tạo mới một Vai trò RBAC tùy chỉnh
-   * @param {Object} payload - { code?, name, shortName?, level?, colorTheme?, defaultScope?, summary?, templateRoleCode? }
    */
   createRbacRole: (payload) => api.post('/settings/rbac-roles', payload),
 
   /**
    * Cập nhật thông tin nhận diện của một Vai trò RBAC (Tên, Cấp bậc, Màu sắc, Phạm vi, Mô tả)
-   * @param {string} roleCode
-   * @param {Object} payload
    */
   updateRbacRoleInfo: (roleCode, payload) =>
     api.patch(`/settings/rbac-roles/${encodeURIComponent(roleCode)}`, payload),
 
   /**
    * Xóa một Vai trò RBAC khỏi hệ thống
-   * @param {string} roleCode
    */
   deleteRbacRole: (roleCode) =>
     api.delete(`/settings/rbac-roles/${encodeURIComponent(roleCode)}`),
 
   /**
    * Lưu cấu hình phân quyền của 1 vai trò (hoặc toàn bộ ma trận) vào CSDL
-   * @param {Object} payload - { roleCode, permissions } hoặc { matrix }
    */
   updateRbacRoles: (payload) => api.put('/settings/rbac-roles', payload),
+  updateRbacMatrix: (payload) => api.put('/settings/rbac-roles', payload),
 
   /**
    * Khôi phục cấu hình phân quyền của 1 vai trò (hoặc toàn bộ danh mục gốc) về mặc định chuẩn
-   * @param {Object} payload - { roleCode? }
    */
   resetRbacRoles: (payload = {}) => api.post('/settings/rbac-roles/reset', payload),
+  resetRbacMatrix: (payload = {}) => api.post('/settings/rbac-roles/reset', payload),
 
   /**
    * Lấy danh sách tài khoản hệ thống kèm thông tin nhân sự & phòng ban
@@ -47,11 +44,14 @@ export const userService = {
     const query = new URLSearchParams();
     if (params.search) query.append('search', params.search);
     if (params.role) query.append('role', params.role);
-    if (params.active !== undefined && params.active !== '') query.append('active', String(params.active));
+    if (params.active !== undefined && params.active !== '') {
+      query.append('active', String(params.active));
+    }
     if (params.page) query.append('page', String(params.page));
-    query.append('limit', String(params.limit || 100));
+    query.append('limit', String(params.limit || 200));
     return api.get(`/users?${query.toString()}`);
   },
+  list: (params = {}) => userService.getAll(params),
 
   /**
    * Lấy thông tin chi tiết 1 tài khoản
@@ -82,7 +82,7 @@ export const userService = {
   unlock: (id) => api.post(`/users/${id}/unlock`, {}),
 
   /**
-   * Truy vấn nhật ký kiểm toán bảo mật & phân quyền (dành cho CEO và ADMIN)
+   * Truy vấn nhật ký kiểm toán bảo mật & phân quyền
    * @param {Object} params - { table, action, userId, from, to, page, limit }
    */
   getAuditLogs: (params = {}) => {
@@ -93,9 +93,10 @@ export const userService = {
     if (params.from) query.append('from', params.from);
     if (params.to) query.append('to', params.to);
     if (params.page) query.append('page', String(params.page));
-    query.append('limit', String(params.limit || 50));
+    query.append('limit', String(params.limit || 100));
     return api.get(`/audit-logs?${query.toString()}`);
   },
+  listAuditLogs: (params = {}) => userService.getAuditLogs(params),
 };
 
 export default userService;
