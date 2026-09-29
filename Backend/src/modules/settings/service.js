@@ -1,5 +1,5 @@
 const db = require('../../config/db');
-const { badRequest } = require('../../utils/AppError');
+const { AppError, badRequest } = require('../../utils/AppError');
 const { writeAudit } = require('../../utils/audit');
 
 const DEFAULT_SETTINGS = {
@@ -60,6 +60,7 @@ const CAMEL_TO_SNAKE = {
   defaultAllowances: 'default_allowances',
   policyEffectiveFrom: 'policy_effective_from',
   gpsRadiusMeters: 'gps_radius_meters',
+  gps_radius: 'gps_radius_meters',
   officeLat: 'office_lat',
   officeLng: 'office_lng',
   officeName: 'office_name',
@@ -90,11 +91,24 @@ function toCamelMap(snakeObj) {
   };
 }
 
+function extractSnakePolicy(obj = {}) {
+  const out = {};
+  for (const key of Object.keys(KEY_META)) {
+    if (obj[key] !== undefined) {
+      out[key] = obj[key];
+    }
+  }
+  return out;
+}
+
 async function getSettings(executor = db) {
   const { rows } = await executor.query(
     'SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key'
   );
-  const merged = { ...DEFAULT_SETTINGS };
+  if (!rows || rows.length === 0) {
+    throw new AppError(500, 'SETTINGS_NOT_INITIALIZED', 'Bảng cấu hình hệ thống system_settings chưa được khởi tạo');
+  }
+  const merged = {};
   let updatedAt = null;
   let updatedBy = null;
   for (const r of rows) {
@@ -111,28 +125,68 @@ async function getSettings(executor = db) {
   };
 }
 
+/**
+ * R09: Resolve the exact policy version effective for `period` ('YYYY-MM') from `system_policy_versions`.
+ * Never substitutes hardcoded DEFAULT_SETTINGS or guesses missing historical policy when `period` predates all stored versions.
+ */
 async function getSettingsForPeriod(executor = db, period = null) {
-  const current = await getSettings(executor);
-  const effectiveFrom = String(current.policy_effective_from || '2020-01');
-  if (period && String(period) < effectiveFrom) {
-    const baseline = {
-      ...current,
-      max_ot_per_month: DEFAULT_SETTINGS.max_ot_per_month,
-      personal_income_tax_deduction: DEFAULT_SETTINGS.personal_income_tax_deduction,
-      dependent_deduction: DEFAULT_SETTINGS.dependent_deduction,
-      employee_bhxh_rate: DEFAULT_SETTINGS.employee_bhxh_rate,
-      employer_bhxh_rate: DEFAULT_SETTINGS.employer_bhxh_rate,
-      standard_work_days: DEFAULT_SETTINGS.standard_work_days,
-      ot_multiplier: DEFAULT_SETTINGS.ot_multiplier,
-      default_allowances: DEFAULT_SETTINGS.default_allowances,
-    };
-    return {
-      ...toCamelMap(baseline),
-      updated_at: current.updated_at,
-      updated_by: current.updated_by,
-    };
+  if (!period) {
+    return getSettings(executor);
   }
-  return current;
+  const normalizedPeriod = String(period).trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(normalizedPeriod)) {
+    throw badRequest(`Kỳ truy xuất chính sách không hợp lệ: ${period}`);
+  }
+
+  const { rows } = await executor.query(
+    `SELECT id, effective_from, policy, created_by, updated_at
+       FROM system_policy_versions
+      WHERE effective_from <= $1
+      ORDER BY effective_from DESC, id DESC
+      LIMIT 1`,
+    [normalizedPeriod]
+  );
+
+  if (rows.length === 0) {
+    const earliest = await executor.query(
+      'SELECT MIN(effective_from) AS min_period FROM system_policy_versions'
+    );
+    const minPeriod = earliest.rows[0]?.min_period || 'chưa có';
+    throw new AppError(
+      422,
+      'POLICY_VERSION_NOT_FOUND',
+      `Chưa có dữ liệu phiên bản chính sách lương/thuế cho kỳ ${normalizedPeriod} (phiên bản lịch sử sớm nhất trong hệ thống có hiệu lực từ kỳ ${minPeriod})`
+    );
+  }
+
+  const row = rows[0];
+  const policyObj = {
+    ...(row.policy || {}),
+    policy_effective_from: row.effective_from,
+  };
+
+  return {
+    ...toCamelMap(policyObj),
+    policy_version_id: row.id,
+    updated_at: row.updated_at,
+    updated_by: row.created_by || null,
+  };
+}
+
+async function listPolicyVersions(executor = db) {
+  const { rows } = await executor.query(
+    `SELECT id, effective_from, policy, created_by, created_at, updated_at
+       FROM system_policy_versions
+      ORDER BY effective_from DESC, id DESC`
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    effective_from: r.effective_from,
+    policy: toCamelMap({ ...(r.policy || {}), policy_effective_from: r.effective_from }),
+    created_by: r.created_by,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
 }
 
 function normalizeAndValidatePatch(body = {}) {
@@ -190,6 +244,17 @@ async function updateSettings(actor, body, req = null) {
 
   return db.withTransaction(async (client) => {
     const before = await getSettings(client);
+    const beforeEffectiveFrom = String(before.policy_effective_from || '2020-01');
+    const beforePolicy = extractSnakePolicy(before);
+
+    // Ensure the prior active policy version is preserved in system_policy_versions before applying new updates
+    await client.query(
+      `INSERT INTO system_policy_versions (effective_from, policy, created_by)
+       VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (effective_from) DO NOTHING`,
+      [beforeEffectiveFrom, JSON.stringify(beforePolicy), before.updated_by || null]
+    );
+
     const oldValues = {};
     for (const key of Object.keys(updates)) {
       oldValues[key] = before[key];
@@ -205,17 +270,34 @@ async function updateSettings(actor, body, req = null) {
       );
     }
 
+    const after = await getSettings(client);
+    const targetEffectiveFrom = String(after.policy_effective_from || beforeEffectiveFrom);
+    const nextPolicy = {
+      ...extractSnakePolicy(after),
+      policy_effective_from: targetEffectiveFrom,
+    };
+
+    await client.query(
+      `INSERT INTO system_policy_versions (effective_from, policy, created_by, updated_at)
+       VALUES ($1, $2::jsonb, $3, NOW())
+       ON CONFLICT (effective_from) DO UPDATE
+         SET policy = EXCLUDED.policy,
+             created_by = EXCLUDED.created_by,
+             updated_at = NOW()`,
+      [targetEffectiveFrom, JSON.stringify(nextPolicy), actorEmpId]
+    );
+
     await writeAudit(client, {
       user: actor,
       action: 'UPDATE_SYSTEM_SETTINGS',
       table: 'system_settings',
-      recordId: 'GLOBAL',
+      recordId: targetEffectiveFrom,
       oldValues,
-      newValues: updates,
+      newValues: { ...updates, policy_effective_from: targetEffectiveFrom },
       req,
     });
 
-    return getSettings(client);
+    return after;
   });
 }
 
@@ -223,5 +305,6 @@ module.exports = {
   DEFAULT_SETTINGS,
   getSettings,
   getSettingsForPeriod,
+  listPolicyVersions,
   updateSettings,
 };
