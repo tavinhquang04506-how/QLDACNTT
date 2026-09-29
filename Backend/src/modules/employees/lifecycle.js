@@ -2,6 +2,7 @@ const db = require('../../config/db');
 const { AppError, badRequest, notFound, conflict } = require('../../utils/AppError');
 const { writeAudit, setAuditActor } = require('../../utils/audit');
 const tokens = require('../auth/tokens');
+const { disconnectUserSockets } = require('../../socket');
 const { shapeEmployee } = require('./access');
 const { createBody } = require('./schema');
 const { findEmployee, insertEmployee } = require('./service');
@@ -29,7 +30,10 @@ async function offboard(actor, id, body, req) {
     );
 
     const users = await client.query('UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE employee_id = $1 RETURNING id', [id]);
-    for (const u of users.rows) await tokens.revokeAllForUser(client, u.id);
+    for (const u of users.rows) {
+      await tokens.revokeAllForUser(client, u.id);
+      disconnectUserSockets(u.id);
+    }
 
     await client.query(
       `UPDATE contracts SET status = 'DA_CHAM_DUT', end_date = GREATEST(start_date, $2::date)

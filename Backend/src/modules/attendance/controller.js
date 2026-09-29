@@ -1,13 +1,17 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const service = require('./service');
+const appealService = require('./appealService');
+const { invalidateDashboardCache } = require('../../middleware/dashboardCache');
 
 const checkIn = asyncHandler(async (req, res) => {
   const { row, message } = await service.checkIn(req.user, req.body);
+  invalidateDashboardCache();
   res.status(201).json({ success: true, message, data: row });
 });
 
 const checkOut = asyncHandler(async (req, res) => {
   const { row, message } = await service.checkOut(req.user, req.body);
+  invalidateDashboardCache();
   res.json({ success: true, message, data: row });
 });
 
@@ -22,6 +26,7 @@ const myQr = asyncHandler(async (req, res) => {
 
 const kioskPunch = asyncHandler(async (req, res) => {
   const { action, created, row, message } = await service.kioskPunch(req.body);
+  invalidateDashboardCache();
   res.status(created ? 201 : 200).json({ success: true, action, message, data: row });
 });
 
@@ -32,6 +37,7 @@ const list = asyncHandler(async (req, res) => {
 
 const adjust = asyncHandler(async (req, res) => {
   const { row, created } = await service.adjust(req.user, req.body, req);
+  invalidateDashboardCache();
   res.status(created ? 201 : 200).json({ success: true, message: 'Đã cập nhật chấm công', data: row });
 });
 
@@ -51,35 +57,19 @@ const getKioskCode = asyncHandler(async (req, res) => {
   res.json({ success: true, data: service.getKioskCode() });
 });
 
-const appealService = require('./appealService');
-
 const createAppeal = asyncHandler(async (req, res) => {
-  const data = {
-    ...req.body,
-    employee_id: req.user?.id || req.user?.employee_id || req.body.employee_id,
-    employee_name: req.user?.full_name || req.user?.name || req.body.employee_name,
-    department_name: req.user?.department || req.body.department_name,
-  };
-  const result = await appealService.createAppeal(data);
+  const result = await appealService.createAppeal(req.body, req.user, req.scope, req);
   res.status(201).json({ success: true, message: 'Đã gửi đơn giải trình chấm công', data: result });
 });
 
 const getAppeals = asyncHandler(async (req, res) => {
-  const filter = {};
-  if (req.user?.role !== 'ADMIN' && req.user?.role !== 'HR_MANAGER') {
-    filter.employee_id = req.user?.id || req.user?.employee_id;
-  }
-  const data = await appealService.getAppeals(filter);
+  const data = await appealService.getAppeals(req.query, req.user, req.scope);
   res.json({ success: true, data });
 });
 
 const reviewAppeal = asyncHandler(async (req, res) => {
-  const result = await appealService.reviewAppeal(req.params.id, {
-    status: req.body.status,
-    review_note: req.body.review_note,
-    reviewer_id: req.user?.id || req.user?.employee_id,
-    reviewer_name: req.user?.full_name || req.user?.name,
-  });
+  const result = await appealService.reviewAppeal(req.params.id, req.body, req.user, req.scope, req);
+  invalidateDashboardCache();
   res.json({ success: true, message: 'Đã cập nhật trạng thái đơn giải trình', data: result });
 });
 

@@ -30,6 +30,8 @@ export default function LeaveDetailViewModal({ isOpen, onClose, payload, onAppro
   const [isRejecting, setIsRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [actionDone, setActionDone] = useState(null); // 'approved' | 'rejected'
+  const [actionError, setActionError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [showDocPreview, setShowDocPreview] = useState(false);
 
   // Safe defaults if payload is empty
@@ -58,27 +60,46 @@ export default function LeaveDetailViewModal({ isOpen, onClose, payload, onAppro
     timeline: []
   };
 
-  const handleApproveAction = () => {
-    setActionDone('approved');
+  const handleApproveAction = async () => {
+    setActionError('');
+    setSubmitting(true);
     try {
-      confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-    } catch (e) {}
-    onApprove?.(item.id, managerNote);
-    setTimeout(() => {
-      onClose();
-      setActionDone(null);
-    }, 1200);
+      await onApprove?.(item.id, managerNote);
+      setActionDone('approved');
+      try {
+        confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
+      } catch {}
+      setTimeout(() => {
+        onClose();
+        setActionDone(null);
+      }, 1200);
+    } catch (err) {
+      setActionError(err?.message || 'Không thể phê duyệt đơn nghỉ phép này');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const handleRejectAction = () => {
-    if (!rejectReason.trim()) return;
-    setActionDone('rejected');
-    onReject?.(item.id, rejectReason);
-    setTimeout(() => {
-      onClose();
-      setActionDone(null);
-      setIsRejecting(false);
-    }, 1200);
+  const handleRejectAction = async () => {
+    if (!rejectReason.trim()) {
+      setActionError('Vui lòng nhập lý do từ chối');
+      return;
+    }
+    setActionError('');
+    setSubmitting(true);
+    try {
+      await onReject?.(item.id, rejectReason.trim());
+      setActionDone('rejected');
+      setTimeout(() => {
+        onClose();
+        setActionDone(null);
+        setIsRejecting(false);
+      }, 1200);
+    } catch (err) {
+      setActionError(err?.message || 'Không thể từ chối đơn nghỉ phép này');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -105,6 +126,12 @@ export default function LeaveDetailViewModal({ isOpen, onClose, payload, onAppro
       maxWidth="max-w-4xl"
     >
       <div className="p-6 space-y-5 text-xs text-slate-800">
+        {actionError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{actionError}</span>
+          </div>
+        )}
         {/* Banner người làm đơn */}
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">

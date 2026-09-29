@@ -61,21 +61,24 @@ export default function LeaveManagementPage() {
   }, [currentRole.key]);
 
 
-  const handleApprove = async (id, name) => {
-    setApprovedList((prev) => [...prev, id]);
+  const [actionError, setActionError] = useState('');
+
+  const handleApprove = async (id) => {
+    setActionError('');
     try {
       await leaveService.approve(id, 'Đồng ý phê duyệt đơn phép');
-      loadLeaves();
+      setApprovedList((prev) => [...prev, id]);
+      await loadLeaves();
+      try {
+        confetti({
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.6 }
+        });
+      } catch {}
     } catch (e) {
-      console.warn('Backend approve notice:', e);
+      setActionError(e?.message || 'Không thể phê duyệt đơn nghỉ phép này');
     }
-    try {
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.6 }
-      });
-    } catch (e) {}
   };
 
   // ==========================================

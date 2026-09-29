@@ -1,0 +1,92 @@
+
+> nexus-hrms-frontend@1.0.0 test
+> node --test "tests/**/*.test.js"
+
+✔ F21: concurrent 401 requests share a single refresh call and both retry with new token (130.2532ms)
+✔ F21: when refresh fails, all concurrent 401 callers reject (never resolve false-401 object) and session is cleared (27.0933ms)
+▶ Attendance Calculation and Verification Tests
+  ✔ validates supported punch methods (1.2581ms)
+  ✔ determines late status based on standard morning shift 08:15 threshold (0.4719ms)
+  ✔ formats attendance time and date safely without NaN (0.3253ms)
+✔ Attendance Calculation and Verification Tests (5.4699ms)
+▶ Dashboard Data Extraction Tests
+  ✔ correctly maps overview KPI figures and attendance rate (1.4874ms)
+  ✔ handles null stats gracefully without runtime exception (0.4259ms)
+✔ Dashboard Data Extraction Tests (4.2899ms)
+▶ Data Adapters Unit Tests
+  ✔ normalizeEmployee should return safe defaults for null or empty input (4.946ms)
+  ✔ normalizeEmployee should correctly map PostgreSQL snake_case fields (0.4334ms)
+  ✔ normalizeLeaveRequest should handle missing fields safely (0.4488ms)
+  ✔ normalizePayslip should handle missing fields safely and compute netSalary (0.3607ms)
+  ✔ normalizeTask should handle missing fields safely (0.418ms)
+  ✔ normalizeDepartment should handle missing fields safely (0.2983ms)
+  ✔ formatVND formats currency correctly (34.3205ms)
+  ✔ formatDateVN formats YYYY-MM-DD correctly (4.0562ms)
+✔ Data Adapters Unit Tests (48.9005ms)
+▶ Directory Filtering and Search Tests
+  ✔ filters employees by text query without case sensitivity or crashing on nulls (1.7835ms)
+  ✔ filters employees by department correctly (4.3233ms)
+  ✔ handles empty or malformed employee safely with safe defaults (7.3166ms)
+✔ Directory Filtering and Search Tests (22.0425ms)
+▶ File Export & Excel Import Unit Test Suite
+  ✔ generateCSVContent should produce UTF-8 BOM and correct rows (1.3474ms)
+  ✔ getEmployeeTemplateCSV returns valid 10-column onboarding template (2.9491ms)
+  ✔ parseCSVToEmployeeRows correctly parses uploaded CSV text (1.2685ms)
+✔ File Export & Excel Import Unit Test Suite (9.9232ms)
+▶ Leave and Payroll Logic Tests
+  ✔ correctly counts pending requests without double subtraction (1.6796ms)
+  ✔ scopes payroll visibility: filters employee payslips by role (0.7551ms)
+  ✔ formats payroll currency accurately with formatVND (38.5792ms)
+✔ Leave and Payroll Logic Tests (45.1566ms)
+▶ 9-Box Logic & Calculation Unit Tests
+  ✔ correctly calculates score levels with strict boundary conditions (1.5003ms)
+  ✔ correctly maps all 9 cells in the 9-box matrix (1.7973ms)
+  ✔ verifies tier groupings and grid order structure (1.7552ms)
+  ✔ computes arithmetic average safely with edge cases (0.4652ms)
+  ✔ handles period formatting and rollover calculations accurately (2.2263ms)
+✔ 9-Box Logic & Calculation Unit Tests (10.2781ms)
+▶ PIP – ngày tháng
+  ✔ cộng ngày và tính khoảng cách không lệch múi giờ (3.3283ms)
+✔ PIP – ngày tháng (5.4316ms)
+▶ PIP – trạng thái và tiến độ thời gian
+  ✔ mọi trạng thái backend đều có nhãn hiển thị (1.9673ms)
+  ✔ tính phần trăm thời gian, ngày còn lại, sắp hết hạn và quá hạn nghiệm thu (0.6018ms)
+✔ PIP – trạng thái và tiến độ thời gian (2.9604ms)
+▶ PIP – mục tiêu và gợi ý nghiệm thu
+  ✔ đếm mục tiêu theo trạng thái (thiếu status = chưa đánh giá) (0.7022ms)
+  ✔ chỉ gợi ý kết quả khi mọi mục tiêu đã được đánh giá; ngưỡng đạt 80% (0.6436ms)
+  ✔ tổng hợp danh sách: chờ duyệt, đang chạy, quá hạn, tỷ lệ đạt (0.7357ms)
+✔ PIP – mục tiêu và gợi ý nghiệm thu (2.5158ms)
+▶ PIP – căn cứ từ đánh giá 9-Box
+  ✔ xếp hạng kỳ và lấy đánh giá gần nhất của từng nhân sự (0.8291ms)
+  ✔ soạn căn cứ lập PIP từ điểm và nhận xét thật (0.4981ms)
+✔ PIP – căn cứ từ đánh giá 9-Box (1.7156ms)
+▶ PIP – bản nháp
+  ✔ chia hạn mục tiêu theo các mốc đều nhau (2.3932ms)
+  ✔ báo lỗi các trường bắt buộc và hạn mục tiêu ngoài kỳ (0.7292ms)
+  ✔ làm sạch mục tiêu và escape HTML khi in (0.8419ms)
+✔ PIP – bản nháp (4.3684ms)
+▶ Profile 360 Review State & Fallback Tests
+  ✔ correctly maps 9-box cell metadata and period label for evaluated employee (2.014ms)
+  ✔ correctly handles unreviewed or new employee state (0.3379ms)
+  ✔ correctly maps core and improvement cells for edge cases (3.2309ms)
+✔ Profile 360 Review State & Fallback Tests (8.009ms)
+▶ Project Tasks and AI Analytics Logic Tests
+  ✔ correctly formats task review payload conforming to backend schema (2.4355ms)
+  ✔ correctly maps 9-box matrix coordinates based on performance and potential (0.4226ms)
+  ✔ normalizes task safely even with missing optional attributes (1.5752ms)
+✔ Project Tasks and AI Analytics Logic Tests (6.5614ms)
+✔ computeRiskStats correctly calculates distribution and talents at risk (0.9921ms)
+✔ isTopTalentAtRisk checks if employee is both high/mid risk and in talentIds (0.2302ms)
+✔ filterRiskList filters by search, level, department and talent (0.3382ms)
+✔ SIGNAL_DEFINITIONS covers all 8 retention risk factors (0.8343ms)
+ℹ tests 51
+ℹ suites 13
+ℹ pass 51
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 342.0613
+
+EXIT_CODE=0

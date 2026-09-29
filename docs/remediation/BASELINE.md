@@ -50,7 +50,7 @@ Toàn bộ raw stdout/stderr và mã thoát (`[EXIT_CODE=...]`) được lưu ng
 | 4 | Frontend Production Build | `npm run build --prefix FrontEnd` | `docs/remediation/evidence/04-frontend-build.log` | `0` | **PASS** — Vite v5.4.21: `2008 modules transformed` |
 | 5 | Backend Full Test Suite | `npm test --prefix Backend` | `docs/remediation/evidence/05-backend-test-full.log` | `1` | **FAIL (Baseline)** — `tests 450, suites 0, pass 435, fail 15` trên `nexus_hrms_test` |
 | 6 | API Smoke Test (Isolated) | `npm run test:smoke` (`DB_NAME=nexus_hrms_test`, `PORT=8099`) | `docs/remediation/evidence/06-smoke-test-isolated.log` | `0` | **PASS** — `5/5 bước vượt qua thành công` trên `nexus_hrms_test` |
-| 7 | Isolated Backup Diff | `node scratch/verify_backup_diff.js` | `docs/remediation/evidence/07-backup-restore-diff.log` | `0` | **PASS** — 30/31 bảng & 21/21 sequences khớp 100%; 1 dòng `users` lệch `last_login_at`, `updated_at` |
+| 7 | Isolated Backup Diff | `node scratch/verify_backup_diff.js` | `docs/remediation/evidence/07-backup-restore-diff.log` | `0` (script) | **DIFF DETECTED (1 row / 2 cols)** — 30/31 bảng & 21/21 sequences khớp checksum; bảng `users` có 1 dòng lệch `last_login_at`, `updated_at` |
 
 ---
 
@@ -126,7 +126,7 @@ Toàn bộ raw stdout/stderr và mã thoát (`[EXIT_CODE=...]`) được lưu ng
 ### 3.3. Trích dẫn nguyên văn phần tổng kết `03-frontend-test.log` (`npm test --prefix FrontEnd`)
 > **Đính chính:** `FrontEnd/package.json:10` sử dụng Node built-in test runner (`node --test "tests/**/*.test.js"`), **không phải Vitest**.
 ```text
-> nexus-hrms-frontend@2.0.0 test
+> nexus-hrms-frontend@1.0.0 test
 > node --test "tests/**/*.test.js"
 ...
 ℹ tests 49
@@ -136,14 +136,14 @@ Toàn bộ raw stdout/stderr và mã thoát (`[EXIT_CODE=...]`) được lưu ng
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 366.8548
+ℹ duration_ms 315.8323
 
 [EXIT_CODE=0]
 ```
 
 ### 3.4. Trích dẫn nguyên văn `04-frontend-build.log` (`npm run build --prefix FrontEnd`)
 ```text
-> nexus-hrms-frontend@2.0.0 build
+> nexus-hrms-frontend@1.0.0 build
 > vite build
 
 vite v5.4.21 building for production...
@@ -151,15 +151,15 @@ transforming...
 ✓ 2008 modules transformed.
 rendering chunks...
 computing gzip size...
-dist/index.html                   0.72 kB │ gzip:   0.45 kB
-dist/assets/index-L2i9bKY3.css   91.99 kB │ gzip:  14.70 kB
-dist/assets/index-BqIW6ZEb.js  1,141.05 kB │ gzip: 300.62 kB
+dist/index.html                      1.38 kB │ gzip:   0.80 kB
+dist/assets/index-L2i9bKY3.css      91.99 kB │ gzip:  14.05 kB
+dist/assets/index-BqIW6ZEb.js    1,141.05 kB │ gzip: 285.56 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 3.74s
+✓ built in 7.15s
 
 [EXIT_CODE=0]
 ```
@@ -180,16 +180,16 @@ Lệnh `npm test --prefix Backend` thực thi `node scripts/test-setup.js && nod
 **Danh sách 15 test cases đang FAIL trong baseline (`05-backend-test-full.log:661-883`):**
 1. **Nhóm Notice Schema Mismatch (`F28` — 9 tests FAIL):**
    - `tests/api/notices.test.js` (8 tests: dòng 22, 37, 46, 64, 79, 98, 107, 125) và `tests/api/notices_upgrade.test.js` (1 test: dòng 7).
-   - Nguyên nhân: `Backend/src/modules/notices/service.js:11,63` truy vấn cột `n.attachments` và bảng `notice_reads`, nhưng `database/schema.sql:332-343` và `Backend/database/migrations/001..007` chưa có migration tạo cột `attachments` trong `company_notices` (`error: column "attachments" of relation "company_notices" does not exist`, mã lỗi PostgreSQL `42703`).
+   - Nguyên nhân: `Backend/src/modules/notices/service.js:11,63` truy vấn cột `n.attachments` và bảng `notice_reads`, nhưng `database/schema.sql:332-343` và `Backend/migrations/001..007` chưa có migration tạo cột `attachments` trong `company_notices` (`error: column "attachments" of relation "company_notices" does not exist`, mã lỗi PostgreSQL `42703`).
 2. **Nhóm Dashboard Pending Leaves (`F30` — 1 test FAIL):**
    - `tests/api/dashboard.test.js:17` (`company view (CEO/HR): live counts that match the database`: `AssertionError: 1 !== 2` tại dòng 29).
    - Nguyên nhân: Trong `Backend/src/modules/dashboard/service.js:34-37,65,89-93`, khi `user.roleCode === 'HR_DIRECTOR'`, biến `leaveWhere` chỉ lọc `WHERE lr.stage = 'CHO_HR_PHE_CHUAN' AND lr.employee_id <> $1 AND NOT (e.job_title LIKE '%Trưởng%' OR e.job_title LIKE '%Giám Đốc%')` và dùng chung `leaveWhere` cho cả chỉ số tổng quan `overview.pending_leaves` (dòng 65) lẫn danh sách hàng đợi `pendingLeaves` (dòng 92). Trong khi đó `tests/api/dashboard.test.js:29` kiểm tra `o.pending_leaves` phải bằng tổng số đơn đang chờ duyệt toàn công ty (`stage IN ('CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN')` = 2).
 3. **Nhóm Squad Chat Non-Member Posting (`F31` — 1 test FAIL):**
    - `tests/api/squads.test.js:129` (`chat: only members post; members, HR and CEO read; outsiders neither`: `AssertionError: 201 !== 403` tại dòng 143).
-   - Nguyên nhân: `Backend/src/modules/projects/squads.js:158` gọi `await assertMemberOrHr(id, user)` cho `postMessage`, mà `Backend/src/modules/projects/access.js:1,24-27` định nghĩa `HR_ROLES = ['CEO', 'HR_DIRECTOR']` và cho phép `HR_ROLES` đi qua `assertMemberOrHr` ngay cả khi không phải thành viên squad.
+   - Nguyên nhân: `Backend/src/modules/squads/service.js:31,202` tại `Backend/src/modules/squads/service.js:31`, biểu thức `isMember` nối thêm `|| (user.roleCode && HR_ROLES.includes(user.roleCode))` (với `HR_ROLES = ['CEO', 'HR_DIRECTOR']` từ `Backend/src/modules/projects/access.js:1`), khiến `postMessage` (dòng 202) cho phép `HR_ROLES` gửi tin nhắn ngay cả khi không phải thành viên squad.
 4. **Nhóm Employee Lifecycle Offboard Date & Fixture (`F32` — 4 tests FAIL):**
    - `tests/api/employees-lifecycle.test.js` (3 tests: dòng 38, 59, 70) và `tests/api/review-fixes.test.js` (1 test: dòng 27 `offboarding cuts access immediately, not when the token expires`).
-   - Nguyên nhân: `Backend/tests/helpers/employees.js:15` mặc định `joinedDate = new Date().toISOString().slice(0, 10)` (`2026-10-20`), nhưng `employees-lifecycle.test.js:41,61,72` và `review-fixes.test.js:31` gọi `POST /api/employees/:id/offboard` với `terminationDate: '2026-09-30'`. Do `Backend/src/modules/employees/lifecycle.js:23` kiểm tra `if (terminationDate < joined) throw badRequest('Termination date cannot precede joined_date')`, lệnh offboard trả về HTTP `400` (trong `review-fixes.test.js:31` không assert status của lệnh offboard nên nhân viên chưa bị offboard và `GET /api/auth/me` ở dòng 32 vẫn trả `200` thay vì `401`).
+   - Nguyên nhân: `Backend/tests/helpers/employees.js:9-10` dùng `CURRENT_DATE` trực tiếp trong câu lệnh `INSERT INTO employees (... joined_date ...) VALUES (..., CURRENT_DATE, ...)` (ngày chạy test `2026-10-20`), nhưng `employees-lifecycle.test.js:41,61,72` và `review-fixes.test.js:31` gọi `POST /api/employees/:id/offboard` với `terminationDate: '2026-09-30'`. Do `Backend/src/modules/employees/lifecycle.js:23` kiểm tra `if (terminationDate < joined) throw badRequest('Termination date cannot precede joined_date')`, lệnh offboard trả về HTTP `400` (trong `review-fixes.test.js:31` không assert status của lệnh offboard nên nhân viên chưa bị offboard và `GET /api/auth/me` ở dòng 32 vẫn trả `200` thay vì `401`).
 
 ### 3.6. Trích dẫn nguyên văn `06-smoke-test-isolated.log` (`npm run test:smoke` trên `nexus_hrms_test`, `PORT=8099`)
 ```text

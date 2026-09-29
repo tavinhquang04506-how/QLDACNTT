@@ -2,7 +2,11 @@ const { z } = require('zod');
 
 const CATEGORIES = ['general', 'policy', 'event', 'urgent', 'benefit'];
 const ROLES = ['CEO', 'HR_DIRECTOR', 'LINE_MANAGER', 'EMPLOYEE', 'KIOSK', 'ADMIN'];
-const dateTime = z.string().datetime({ offset: true, message: 'Thời điểm không hợp lệ (ISO 8601)' });
+const dateTime = z
+  .string()
+  .refine((s) => /^\d{4}-\d{2}-\d{2}(T.*)?$/.test(s) && !Number.isNaN(Date.parse(s)), {
+    message: 'Thời điểm không hợp lệ (ISO 8601)',
+  });
 
 const idParam = z.object({ id: z.string().trim().min(1).max(30) });
 
@@ -30,8 +34,8 @@ const createBody = z
     targetRole: z.enum(ROLES).nullish(),
     targetDepartmentId: z.string().trim().min(1).max(20).nullish(),
     isPinned: z.boolean().default(false),
-    publishedAt: z.string().nullish(),
-    expiresAt: z.string().nullish(),
+    publishedAt: dateTime.nullish(),
+    expiresAt: dateTime.nullish(),
     attachments: z.array(z.any()).nullish(),
   })
   .refine(windowOk, windowIssue);
@@ -46,8 +50,8 @@ const updateBody = z
     targetDepartmentId: z.string().trim().min(1).max(20).nullable().optional(),
     isPinned: z.boolean().optional(),
     isActive: z.boolean().optional(),
-    publishedAt: z.string().nullish(),
-    expiresAt: z.string().nullish(),
+    publishedAt: dateTime.nullish(),
+    expiresAt: dateTime.nullish(),
     attachments: z.array(z.any()).nullish(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'Không có thay đổi nào' })

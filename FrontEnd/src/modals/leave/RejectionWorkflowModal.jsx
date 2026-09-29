@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import AppleModal from '../../components/motion/AppleModal';
-import { FileText, AlertTriangle, CheckCircle2, XCircle, Sparkles, Send, Copy, Check, X, Calendar } from 'lucide-react';
+import { FileText, AlertTriangle, CheckCircle2, Sparkles, Send, Copy, Check, X, AlertCircle } from 'lucide-react';
+import leaveService from '../../services/leaveService';
 
 export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) {
   const [selectedReason, setSelectedReason] = useState('sprint_conflict');
   const [copied, setCopied] = useState(false);
-  const [status, setStatus] = useState('idle'); // 'approved', 'rejected'
+  const [status, setStatus] = useState('idle'); // 'idle' | 'approved' | 'rejected'
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const leaveId = payload?.id || payload?.leave_id || '';
   const employeeName = payload?.name || payload?.employeeName || payload?.full_name || 'Nhân sự';
@@ -17,15 +20,59 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
   const [emailText, setEmailText] = useState('');
 
   useEffect(() => {
+    setErrorMsg('');
+    setStatus('idle');
     setEmailText(
       `Chào ${employeeName}, bộ phận Quản lý đã xem xét đơn ${leaveTypeStr.toLowerCase()} của bạn (${timeRange}). Tuy nhiên, thời điểm này đang có khối lượng công việc cao điểm tại ${deptName}. Quản lý đề xuất bạn có thể dời lịch sang tuần kế tiếp hoặc sắp xếp bàn giao kỹ các nhiệm vụ trước khi nghỉ nhé!`
     );
-  }, [payload, employeeName, leaveTypeStr, timeRange, deptName]);
+  }, [payload, employeeName, leaveTypeStr, timeRange, deptName, isOpen]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(emailText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSpecialApprove = async () => {
+    if (!leaveId) {
+      setErrorMsg('Không tìm thấy mã đơn nghỉ phép để phê duyệt');
+      return;
+    }
+    setErrorMsg('');
+    setSubmitting(true);
+    try {
+      await leaveService.approve(leaveId, emailText || 'Phê duyệt đặc cách');
+      setStatus('approved');
+      window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id: leaveId, status: 'approved' } }));
+      setTimeout(() => onClose(), 1200);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Không thể phê duyệt đơn nghỉ phép này');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleConfirmReject = async () => {
+    if (!leaveId) {
+      setErrorMsg('Không tìm thấy mã đơn nghỉ phép để từ chối');
+      return;
+    }
+    if (!emailText.trim()) {
+      setErrorMsg('Vui lòng nhập nội dung lý do từ chối');
+      return;
+    }
+    setErrorMsg('');
+    setSubmitting(true);
+    try {
+      await leaveService.reject(leaveId, emailText.trim());
+      setStatus('rejected');
+      window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id: leaveId, status: 'rejected' } }));
+      setTimeout(() => onClose(), 1200);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Không thể từ chối đơn nghỉ phép này');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -57,6 +104,13 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
           </button>
         </div>
 
+        {errorMsg && (
+          <div className="mt-3 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
         {/* 1. Request Details */}
         <div className="mt-4 p-3.5 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-3 gap-3 text-xs">
           <div>
@@ -78,7 +132,7 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
           <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-amber-900">Cảnh báo Phân bổ Nguồn lực (AI Workload Impact)</span>
+              <span className="text-xs font-bold text-amber-900">Cảnh báo Phân bổ Nguồn lực (Workload Impact)</span>
               <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 text-[10px] font-bold rounded">CẦN LƯU Ý</span>
             </div>
             <p className="text-[11px] text-amber-800 mt-1 leading-relaxed">
@@ -116,12 +170,12 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
           </div>
         </div>
 
-        {/* 4. AI-Drafted Response Email Preview */}
+        {/* 4. Response Note */}
         <div className="mt-3.5 space-y-1.5 text-xs">
           <div className="flex items-center justify-between">
             <label className="font-bold text-slate-800 flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              Nội dung phản hồi tự động đề xuất từ AI:
+              Nội dung ghi chú phê duyệt / từ chối lưu trên hệ thống:
             </label>
             <button
               onClick={handleCopy}
@@ -142,8 +196,9 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
         {/* Action buttons */}
         <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between">
           <button
-            onClick={() => setStatus('approved')}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
+            disabled={submitting}
+            onClick={handleSpecialApprove}
+            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
           >
             <CheckCircle2 className="w-4 h-4" />
             Vẫn phê duyệt đặc cách
@@ -157,26 +212,24 @@ export default function Modal6C_RejectionWorkflow({ isOpen, onClose, payload }) 
               Hủy bỏ
             </button>
             <button
-              onClick={() => {
-                setStatus('rejected');
-                setTimeout(() => onClose(), 1200);
-              }}
-              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
+              disabled={submitting}
+              onClick={handleConfirmReject}
+              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
             >
               <Send className="w-3.5 h-3.5" />
-              Gửi từ chối và Đề xuất dời lịch
+              Xác nhận Từ chối đơn
             </button>
           </div>
         </div>
 
         {status === 'approved' && (
           <div className="mt-3 p-2 bg-emerald-50 text-emerald-800 text-center font-bold text-xs rounded-lg">
-            ✓ Đơn nghỉ phép đã được phê duyệt thành công!
+            ✓ Đơn nghỉ phép đã được phê duyệt trên hệ thống!
           </div>
         )}
         {status === 'rejected' && (
           <div className="mt-3 p-2 bg-rose-50 text-rose-800 text-center font-bold text-xs rounded-lg">
-            ✓ Đã gửi email phản hồi từ chối và đề xuất dời lịch cho nhân viên!
+            ✓ Đã lưu quyết định từ chối đơn nghỉ phép trên hệ thống!
           </div>
         )}
       </div>
