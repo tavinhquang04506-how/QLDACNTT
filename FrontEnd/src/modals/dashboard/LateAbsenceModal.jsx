@@ -29,7 +29,7 @@ export default function LateAbsenceModal({ isOpen, onClose }) {
             time: item.check_in_time ? new Date(item.check_in_time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : (item.time || '08:15 AM'),
             lateMinutes: Number(item.late_minutes ?? item.lateMinutes ?? 0),
             reason: item.reason || (item.late_minutes ? `Đi muộn ${item.late_minutes} phút` : 'Ghi nhận tự động'),
-            avatar: item.avatar_url || item.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+            avatar: item.avatar_url || item.avatar || '/default-avatar.jpg',
           }));
           setLateEmployees(normalized);
         }
