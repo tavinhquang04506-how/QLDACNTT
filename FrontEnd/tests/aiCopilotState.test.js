@@ -11,7 +11,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-describe('R35 & R36 — AI Copilot UI State & Contract Verification', () => {
+describe('R35, R36, R39 & Phase B — AI Copilot UI State, Notice Attachment & Login Routing Verification', () => {
   it('R35: buildBotMessageFromCopilotPayload maps VERIFIED, REFUSED, and UNVERIFIED responses according to real backend contract (verified, refused, refusalCodes)', () => {
     // 1. Verified response with structuredEvidence and sources
     const verifiedMsg = buildBotMessageFromCopilotPayload(
@@ -143,5 +143,39 @@ describe('R35 & R36 — AI Copilot UI State & Contract Verification', () => {
     assert.equal(modalSource.includes('data-testid="ai-msg-unverified-badge"'), true);
     assert.equal(modalSource.includes('buildBotMessageFromCopilotPayload'), true);
     assert.equal(modalSource.includes('buildUserScopeWatchKey'), true);
+  });
+
+  it('R39 & Phase B: CreateCompanyNoticeModal, NotificationDetailModal, and LoginPage remove fake docs/CA claims and align role landing paths', () => {
+    const createNoticeSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/portal/CreateCompanyNoticeModal.jsx'),
+      'utf8'
+    );
+    assert.equal(createNoticeSource.includes('handleAddPresetDoc'), false);
+    assert.equal(createNoticeSource.includes('example.com'), false);
+    assert.equal(createNoticeSource.includes('URL.createObjectURL'), false);
+    assert.equal(createNoticeSource.includes('noticeService.uploadAttachment'), true);
+
+    const detailNoticeSource = fs.readFileSync(
+      path.join(__dirname, '../src/modals/common/NotificationDetailModal.jsx'),
+      'utf8'
+    );
+    assert.equal(
+      detailNoticeSource.includes('Đã ký số xác thực CA bởi Hệ thống Quản trị NEXUS'),
+      false
+    );
+    assert.equal(detailNoticeSource.includes('Không khả dụng — cần tải lên lại'), true);
+    assert.equal(detailNoticeSource.includes('noticeService.downloadAttachment'), true);
+    assert.ok(
+      detailNoticeSource.indexOf('React.useEffect') <
+        detailNoticeSource.indexOf('if (!isOpen || !payload) return null;'),
+      'React.useEffect must be called before early return in NotificationDetailModal'
+    );
+
+    const loginPageSource = fs.readFileSync(
+      path.join(__dirname, '../src/pages/LoginPage.jsx'),
+      'utf8'
+    );
+    assert.equal(loginPageSource.includes("if (normalized === 'ADMIN') return '/directory';"), true);
+    assert.equal(loginPageSource.includes("if (normalized === 'KIOSK') return '/kiosk';"), true);
   });
 });

@@ -27,14 +27,18 @@ export default function Page1_Login() {
   const [errorMessage, setErrorMessage] = useState('');
   const [infoNotice, setInfoNotice] = useState('');
 
+  const resolveLandingPath = (roleKey) => {
+    const normalized = String(roleKey || '').toUpperCase();
+    if (normalized === 'EMPLOYEE') return '/portal';
+    if (normalized === 'ADMIN') return '/directory';
+    if (normalized === 'KIOSK') return '/kiosk';
+    return '/dashboard';
+  };
+
   // Tự động chuyển trang nếu đã đăng nhập hợp lệ
   React.useEffect(() => {
     if (isAuthenticated) {
-      if (currentRole?.key === 'EMPLOYEE') {
-        navigate('/portal', { replace: true });
-      } else {
-        navigate('/dashboard', { replace: true });
-      }
+      navigate(resolveLandingPath(currentRole?.key), { replace: true });
     }
   }, [isAuthenticated, currentRole, navigate]);
 
@@ -67,13 +71,9 @@ export default function Page1_Login() {
       setIsLoading(false);
       if (res?.success) {
         const user = res.user;
-        const role = user?.roleCode;
+        const role = user?.roleCode || user?.role;
         login(res.accessToken || res.token, user);
-        if (role === 'EMPLOYEE') {
-          navigate('/portal');
-        } else {
-          navigate('/dashboard');
-        }
+        navigate(resolveLandingPath(role));
       } else {
         setErrorMessage(res?.message || 'Email hoặc mật khẩu không chính xác');
       }

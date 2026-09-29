@@ -48,13 +48,64 @@ test('AI Copilot Grounded Unit Test Suite (F22-F26)', async (t) => {
     assert.equal(res.text.toLowerCase().includes('đọc lương toàn công ty'), false);
   });
 
+  const unitMockExecutor = {
+    async query(sql) {
+      const norm = String(sql).replace(/\s+/g, ' ').trim();
+      if (/FROM users u/i.test(norm)) {
+        return {
+          rows: [
+            {
+              user_id: 'USR-008',
+              employee_id: 'NV-0008',
+              is_active: true,
+              role_code: 'EMPLOYEE',
+              department_id: 'DEPT-IT',
+              employee_status: 'DANG_LAM_VIEC',
+            },
+          ],
+        };
+      }
+      if (/FROM leave_balances lb/i.test(norm)) {
+        return {
+          rows: [
+            {
+              year: 2026,
+              total_days: 12,
+              used_days: 7,
+              remaining_days: 5,
+              leave_type_id: 'LT-AL',
+              leave_type_code: 'ANNUAL',
+              leave_type_name: 'Nghỉ phép năm',
+              paid: true,
+            },
+            {
+              year: 2026,
+              total_days: 30,
+              used_days: 2,
+              remaining_days: 28,
+              leave_type_id: 'LT-SL',
+              leave_type_code: 'SICK',
+              leave_type_name: 'Nghỉ ốm',
+              paid: true,
+            },
+          ],
+        };
+      }
+      if (/FROM leave_requests/i.test(norm)) {
+        return { rows: [{ pending_days: 0 }] };
+      }
+      return { rows: [] };
+    },
+  };
+
   await t.test('runCopilot throws 503 AI_NOT_CONFIGURED when GEMINI_API_KEY is missing (never fabricates 12 days)', async () => {
     await assert.rejects(
       () =>
         runCopilot({
           actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
           message: 'Tôi còn bao nhiêu ngày phép năm 2026?',
-          options: { apiKey: '' },
+          executor: unitMockExecutor,
+          options: { apiKey: '', verifyScopeFromDb: true },
         }),
       (err) => {
         assert.equal(err.status, 503);
@@ -70,7 +121,8 @@ test('AI Copilot Grounded Unit Test Suite (F22-F26)', async (t) => {
         runCopilot({
           actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
           message: 'Tra cứu ngày phép',
-          options: { apiKey: 'test-key-unit', model: 'gemini-1.5-flash' },
+          executor: unitMockExecutor,
+          options: { apiKey: 'test-key-unit', model: 'gemini-1.5-flash', verifyScopeFromDb: true },
         }),
       (err) => {
         assert.equal(err.status, 503);
@@ -78,5 +130,114 @@ test('AI Copilot Grounded Unit Test Suite (F22-F26)', async (t) => {
         return true;
       }
     );
+  });
+
+  await t.test('R37: rejects tool-less ungrounded HR status claims even when followed by "?" or triggered by "Hello"', async () => {
+    // Case 1: "Is my leave request rejected?" -> "Your request was rejected. Would you like help?"
+    const res1 = await runCopilot({
+      actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
+      message: 'Is my leave request rejected?',
+      executor: unitMockExecutor,
+      options: {
+        apiKey: 'test-key-unit',
+        model: 'gemini-2.5-flash',
+        verifyScopeFromDb: true,
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: 'Your request was rejected. Would you like help?' }],
+                },
+              },
+            ],
+          }),
+        }),
+      },
+    });
+    assert.equal(res1.verified, false);
+    assert.equal(res1.refused, true);
+    assert.ok(res1.refusalCodes.includes('UNGROUNDED_ANSWER_REJECTED'));
+    assert.equal(res1.answer.includes('Your request was rejected'), false);
+
+    // Case 2: "Hello" -> "Your employment contract is terminated."
+    const res2 = await runCopilot({
+      actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
+      message: 'Hello',
+      executor: unitMockExecutor,
+      options: {
+        apiKey: 'test-key-unit',
+        model: 'gemini-2.5-flash',
+        verifyScopeFromDb: true,
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: 'Your employment contract is terminated.' }],
+                },
+              },
+            ],
+          }),
+        }),
+      },
+    });
+    assert.equal(res2.verified, false);
+    assert.equal(res2.refused, true);
+    assert.ok(res2.refusalCodes.includes('UNGROUNDED_ANSWER_REJECTED'));
+    assert.equal(res2.answer.includes('terminated'), false);
+  });
+
+  await t.test('R38: rejects misattributed entitlement/leave-type claims ("You can take 12 days off; 5 is your balance.") and never marks them VERIFIED', async () => {
+    let round = 0;
+    const resMisattr = await runCopilot({
+      actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
+      message: 'How many vacation days do I have?',
+      executor: unitMockExecutor,
+      options: {
+        apiKey: 'test-key-unit',
+        model: 'gemini-2.5-flash',
+        verifyScopeFromDb: true,
+        fetchImpl: async () => {
+          round += 1;
+          if (round === 1) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                candidates: [
+                  {
+                    content: {
+                      parts: [{ functionCall: { name: 'get_my_leave_balance', args: { year: 2026 } } }],
+                    },
+                  },
+                ],
+              }),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: 'You can take 12 days off; 5 is your balance.' }],
+                  },
+                },
+              ],
+            }),
+          };
+        },
+      },
+    });
+    assert.equal(resMisattr.verified, false);
+    assert.equal(resMisattr.refused, true);
+    assert.ok(resMisattr.refusalCodes.includes('ANSWER_SOURCE_MISMATCH'));
+    assert.equal(resMisattr.verifiedClaims.length, 0);
   });
 });

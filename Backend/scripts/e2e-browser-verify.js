@@ -180,11 +180,101 @@ class CdpSession {
     if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
   }
 
+  async setFileInputFiles(selector, files, waitMs = 900) {
+    await this.waitForSelector(selector);
+    const doc = await this.send('DOM.getDocument', { depth: -1 });
+    const q = await this.send('DOM.querySelector', {
+      nodeId: doc.root.nodeId,
+      selector,
+    });
+    assert.ok(q && q.nodeId, `Failed to resolve DOM nodeId for file input ${selector}`);
+    await this.send('DOM.setFileInputFiles', {
+      nodeId: q.nodeId,
+      files: Array.isArray(files) ? files : [files],
+    });
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  }
+
+  async captureScreenshot(outPath) {
+    const res = await this.send('Page.captureScreenshot', { format: 'png' });
+    if (res && res.data) {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, Buffer.from(res.data, 'base64'));
+      return true;
+    }
+    return false;
+  }
+
   close() {
     if (this.ws) {
       try { this.ws.close(); } catch {}
     }
   }
+}
+
+async function createIsolatedBrowserContextSession(cdpPort, downloadDir, initialUrl) {
+  const versionInfo = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`)).json();
+  assert.ok(versionInfo && versionInfo.webSocketDebuggerUrl, 'No browser webSocketDebuggerUrl from /json/version');
+
+  const browserWs = new WebSocket(versionInfo.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    browserWs.once('open', resolve);
+    browserWs.once('error', reject);
+  });
+
+  let nextMsgId = 1;
+  const pendingBrowserCalls = new Map();
+  browserWs.on('message', (raw) => {
+    const msg = JSON.parse(String(raw));
+    if (msg.id && pendingBrowserCalls.has(msg.id)) {
+      const { resolve, reject } = pendingBrowserCalls.get(msg.id);
+      pendingBrowserCalls.delete(msg.id);
+      if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+      else resolve(msg.result);
+    }
+  });
+  const sendBrowserCmd = (method, params = {}) => {
+    const id = nextMsgId++;
+    return new Promise((resolve, reject) => {
+      pendingBrowserCalls.set(id, { resolve, reject });
+      browserWs.send(JSON.stringify({ id, method, params }));
+    });
+  };
+
+  const { browserContextId } = await sendBrowserCmd('Target.createBrowserContext', {
+    disposeOnDetach: true,
+  });
+  await sendBrowserCmd('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    browserContextId,
+    downloadPath: downloadDir,
+  });
+  const { targetId } = await sendBrowserCmd('Target.createTarget', {
+    url: initialUrl,
+    browserContextId,
+  });
+
+  const pageWsUrl = `ws://127.0.0.1:${cdpPort}/devtools/page/${targetId}`;
+  const session = new CdpSession(pageWsUrl);
+  await session.connect();
+
+  return {
+    browserContextId,
+    targetId,
+    session,
+    close: async () => {
+      session.close();
+      try {
+        await sendBrowserCmd('Target.closeTarget', { targetId });
+      } catch {}
+      try {
+        await sendBrowserCmd('Target.disposeBrowserContext', { browserContextId });
+      } catch {}
+      try {
+        browserWs.close();
+      } catch {}
+    },
+  };
 }
 
 async function createRoleAccount({
@@ -221,7 +311,7 @@ async function loginViaUi(cdp, email, password) {
   const start = Date.now();
   while (Date.now() - start < 8000) {
     const pathname = await cdp.eval('window.location.pathname');
-    if (pathname === '/dashboard' || pathname === '/portal') {
+    if (pathname === '/dashboard' || pathname === '/portal' || pathname === '/directory' || pathname === '/kiosk') {
       return pathname;
     }
     await new Promise((r) => setTimeout(r, 200));
@@ -243,6 +333,23 @@ async function waitForDownloadedCsv(downloadDir, prefix, timeoutMs = 8000) {
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`Timed out waiting for downloaded CSV with prefix "${prefix}" in ${downloadDir}`);
+}
+
+async function waitForDownloadedFile(downloadDir, expectedName, timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const files = fs.existsSync(downloadDir) ? fs.readdirSync(downloadDir) : [];
+    const match = files.find(
+      (f) => (f === expectedName || f.startsWith(expectedName.replace(/\.[^.]+$/, ''))) && !f.endsWith('.crdownload')
+    );
+    if (match) {
+      const fullPath = path.join(downloadDir, match);
+      const stat = fs.statSync(fullPath);
+      if (stat.size > 0) return { filename: match, fullPath, buffer: fs.readFileSync(fullPath) };
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`Timed out waiting for downloaded file "${expectedName}" in ${downloadDir}`);
 }
 
 async function main() {
@@ -1587,10 +1694,13 @@ async function main() {
     );
 
     // =========================================================================
-    // SCENARIO 10 (R35 & R36): AI Copilot Drawer UI E2E (REFUSED / UNVERIFIED / VERIFIED DOM states)
+    // SCENARIO 10 (R35, R36, R37 & R38): AI Copilot Drawer UI E2E (REFUSED / UNVERIFIED / VERIFIED DOM states)
     // =========================================================================
-    console.log('--- Running Scenario 10: R35 & R36 AI Copilot Drawer UI E2E ---');
+    console.log('--- Running Scenario 10: R35, R36, R37 & R38 AI Copilot Drawer UI E2E ---');
     const aiServiceBackend = require('../src/modules/ai/service');
+    const screenshotDir = path.resolve(__dirname, '../../docs/remediation/evidence/screenshots');
+    fs.mkdirSync(screenshotDir, { recursive: true });
+
     await db.query(
       `INSERT INTO leave_balances (employee_id, leave_type_id, year, total_days, used_days)
        VALUES ($1, 'LT-AL', 2026, 12, 4)
@@ -1600,7 +1710,7 @@ async function main() {
     );
 
     app.locals.aiTestOptions = {
-      apiKey: 'test-key-e2e-r35-r36',
+      apiKey: 'test-key-e2e-r35-r38',
       model: 'gemini-2.5-flash',
       requestsPerMinute: 100,
       fetchImpl: async (_url, init) => {
@@ -1630,6 +1740,42 @@ async function main() {
           };
         }
 
+        // R37 Case 1: Mixed ungrounded status assertion + trailing question without calling any tool
+        if (userText.includes('Is my leave request rejected?')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ text: 'Your request was rejected. Would you like help?' }],
+                  },
+                },
+              ],
+            }),
+          };
+        }
+
+        // R37 Case 2: Greeting user message but model replies with fabricated HR contract termination claim
+        if (userText.includes('Hello R37')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ text: 'Your employment contract is terminated.' }],
+                  },
+                },
+              ],
+            }),
+          };
+        }
+
         if (!fnRespPart) {
           return {
             ok: true,
@@ -1649,9 +1795,15 @@ async function main() {
 
         const toolResult = fnRespPart.functionResponse.response.result;
         const b = toolResult.balances[0];
-        const replyText = userText.includes('thử phản hồi sai nguồn')
-          ? 'Năm 2026 tổng phép của bạn là 12 ngày, đã nghỉ 8 ngày và còn lại 4 ngày phép.'
-          : `Năm ${b.year}, tổng phép được cấp của bạn là ${b.entitlement} ngày, đã sử dụng ${b.used} ngày và số phép còn lại là ${b.remaining} ngày.`;
+        let replyText;
+        if (userText.includes('thử phản hồi sai nguồn')) {
+          replyText = 'Năm 2026 tổng phép của bạn là 12 ngày, đã nghỉ 8 ngày và còn lại 4 ngày phép.';
+        } else if (userText.includes('How many vacation days do I have? (R38)')) {
+          // R38: Both 12 (entitlement) and 8 (remaining) exist in tool output, but "can take 12 days off" misattributes total_days to remaining_days
+          replyText = `You can take ${b.entitlement} days off; ${b.remaining} is your balance.`;
+        } else {
+          replyText = `Năm ${b.year}, tổng phép được cấp của bạn là ${b.entitlement} ngày, đã sử dụng ${b.used} ngày và số phép còn lại là ${b.remaining} ngày.`;
+        }
 
         return {
           ok: true,
@@ -1709,7 +1861,72 @@ async function main() {
         'R35 UI: Swapped/unverified numbers must never be shown to the user'
       );
 
-      // 10b. Send pure greeting -> UNVERIFIED guidance state in UI
+      // 10b. R37 Case 1 in UI: "Is my leave request rejected?" -> "Your request was rejected. Would you like help?" -> REFUSED
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Is my leave request rejected?');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1100);
+
+      const r37Case1UiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          refusedBadge: lastBot?.querySelector('[data-testid="ai-msg-refused-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+        };
+      })()`);
+      assert.equal(r37Case1UiState.verificationState, 'REFUSED', 'R37 Case 1 UI: Mixed claim + question without tool must render REFUSED');
+      assert.match(r37Case1UiState.refusedBadge, /UNGROUNDED_ANSWER_REJECTED/, 'R37 Case 1 UI: Badge must show UNGROUNDED_ANSWER_REJECTED');
+      assert.equal(
+        r37Case1UiState.msgText.toLowerCase().includes('your request was rejected'),
+        false,
+        'R37 Case 1 UI: Fabricated rejection status must never render in DOM'
+      );
+
+      // 10c. R37 Case 2 in UI: "Hello R37" -> "Your employment contract is terminated." -> REFUSED
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Hello R37');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1100);
+
+      const r37Case2UiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          refusedBadge: lastBot?.querySelector('[data-testid="ai-msg-refused-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+        };
+      })()`);
+      assert.equal(r37Case2UiState.verificationState, 'REFUSED', 'R37 Case 2 UI: Greeting with fabricated termination claim must render REFUSED');
+      assert.match(r37Case2UiState.refusedBadge, /UNGROUNDED_ANSWER_REJECTED/, 'R37 Case 2 UI: Badge must show UNGROUNDED_ANSWER_REJECTED');
+      assert.equal(
+        r37Case2UiState.msgText.toLowerCase().includes('terminated'),
+        false,
+        'R37 Case 2 UI: Fabricated contract termination claim must never render in DOM'
+      );
+
+      // 10d. R38 in UI: "How many vacation days do I have? (R38)" -> "You can take 12 days off; 8 is your balance." -> REFUSED
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'How many vacation days do I have? (R38)');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
+
+      const r38UiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          refusedBadge: lastBot?.querySelector('[data-testid="ai-msg-refused-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+          hasSources: Boolean(lastBot?.querySelector('[data-testid="ai-msg-sources"]')),
+        };
+      })()`);
+      assert.equal(r38UiState.verificationState, 'REFUSED', 'R38 UI: "You can take 12 days off; 8 is your balance." must render REFUSED');
+      assert.match(r38UiState.refusedBadge, /ANSWER_SOURCE_MISMATCH/, 'R38 UI: Badge must show ANSWER_SOURCE_MISMATCH');
+      assert.equal(r38UiState.hasSources, false, 'R38 UI: Refused response must not display verified sources');
+      assert.equal(
+        r38UiState.msgText.includes('You can take 12 days off'),
+        false,
+        'R38 UI: Wrongly attributed number must never be displayed'
+      );
+
+      // 10e. Send pure greeting -> UNVERIFIED guidance state in UI
       await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Xin chào trợ lý!');
       await cdp.click('[data-testid="ai-copilot-send-btn"]', 1000);
 
@@ -1726,7 +1943,7 @@ async function main() {
       assert.match(unverifiedUiState.unverifiedBadge, /chưa trích xuất dữ liệu/i);
       assert.match(unverifiedUiState.msgText, /Xin chào bạn/i);
 
-      // 10c. Send grounded query -> VERIFIED state with sources in UI
+      // 10f. Send grounded query -> VERIFIED state with sources in UI
       await cdp.fillInput('[data-testid="ai-copilot-input"]', 'Tôi còn bao nhiêu ngày phép năm 2026?');
       await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
 
@@ -1746,16 +1963,421 @@ async function main() {
       assert.match(verifiedUiState.msgText, /còn lại là 8 ngày/i);
       assert.equal(verifiedUiState.hasSources, true, 'R35 UI: Verified answer must render tool sources');
       assert.match(verifiedUiState.sourcesText, /Quỹ phép cá nhân năm 2026/i);
+
+      await cdp.captureScreenshot(path.join(screenshotDir, 'r37-r38-ai-copilot-drawer.png'));
     } finally {
       delete app.locals.aiTestOptions;
       aiServiceBackend.clearAiRuntimeState();
     }
 
     console.log(
-      '[ASSERT 10 (R35+R36) PASS] AiCopilotRefusedDomRendered=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
+      '[ASSERT 10 (R35+R36+R37+R38) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
     );
 
-    console.log('=== [ALL R14-R36 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 11 (R39): Company Notice Real File Upload, Multi-Context Audience-Scoped Download & Legacy Unavailable Notice
+    // =========================================================================
+    console.log('--- Running Scenario 11: R39 Company Notice Real File Upload & Multi-Context Download E2E ---');
+    const crypto = require('node:crypto');
+    const noticesServiceBackend = require('../src/modules/notices/service');
+    const tempUploadInputDir = path.join(process.env.TEMP || 'C:\\Windows\\Temp', `nexus-r39-inputs-${Date.now()}`);
+    const downloadDirContextB = path.join(process.env.TEMP || 'C:\\Windows\\Temp', `nexus-r39-downloads-b-${Date.now()}`);
+    fs.mkdirSync(tempUploadInputDir, { recursive: true });
+    fs.mkdirSync(downloadDirContextB, { recursive: true });
+
+    const createdNoticeIds = [];
+    const createdStorageFiles = [];
+
+    try {
+      // 11a. Account A (HR_DIRECTOR) logs in via UI, navigates to /portal, opens CreateCompanyNoticeModal
+      await loginViaUi(cdp, hrAcc.user.email, hrAcc.password);
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/portal`, 2200);
+      await cdp.click('button[title="Đăng thông báo mới cho toàn doanh nghiệp"]', 800);
+      await cdp.waitForSelector('[data-testid="notice-title-input"]');
+
+      // Verify preset buttons (+ PDF, + DOCX, + Excel) and example.com are completely absent
+      const presetCheck = await cdp.eval(`(() => {
+        const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.innerText.trim());
+        const hasPresetBtn = buttons.some((t) => t === '+ PDF' || t === '+ DOCX' || t === '+ Excel' || t.includes('Thêm mẫu nhanh'));
+        return { hasPresetBtn };
+      })()`);
+      assert.equal(presetCheck.hasPresetBtn, false, 'R39 UI: Preset fake document buttons must be removed from CreateCompanyNoticeModal');
+
+      // 11b. Oversized file (>5MB) rejected in UI before/during upload
+      const oversizeFilePath = path.join(tempUploadInputDir, 'oversize-r39-6mb.pdf');
+      fs.writeFileSync(oversizeFilePath, Buffer.alloc(5 * 1024 * 1024 + 2048, 0x41));
+      await cdp.setFileInputFiles('[data-testid="notice-file-input"]', oversizeFilePath, 900);
+      await cdp.waitForSelector('[data-testid="notice-modal-error"]');
+      const oversizeErrorText = await cdp.eval(`document.querySelector('[data-testid="notice-modal-error"]')?.innerText || ''`);
+      assert.match(oversizeErrorText, /vượt quá giới hạn.*5MB/i, 'R39 UI: Oversized file must show 5MB limit error');
+      const attCountAfterOversize = await cdp.eval(
+        `document.querySelectorAll('[data-testid^="notice-attachment-item-"]').length`
+      );
+      assert.equal(attCountAfterOversize, 0, 'R39 UI: Oversized file must not be added to attachments list');
+
+      // 11c. Upload failure handling when backend upload throws 500
+      const origUploadAttachment = noticesServiceBackend.uploadAttachment;
+      noticesServiceBackend.uploadAttachment = async () => {
+        const err = new Error('Không thể ghi tệp đính kèm lên ổ đĩa máy chủ (simulated I/O error)');
+        err.status = 500;
+        throw err;
+      };
+      try {
+        const failFilePath = path.join(tempUploadInputDir, 'simulated-fail-r39.pdf');
+        fs.writeFileSync(failFilePath, Buffer.from('%PDF-1.4\nSimulated fail content\n%%EOF', 'utf8'));
+        await cdp.setFileInputFiles('[data-testid="notice-file-input"]', failFilePath, 1000);
+        await cdp.waitForSelector('[data-testid="notice-modal-error"]');
+        const failErrText = await cdp.eval(`document.querySelector('[data-testid="notice-modal-error"]')?.innerText || ''`);
+        assert.match(
+          failErrText,
+          /Internal Server Error|Không thể|lỗi|thử lại/i,
+          'R39 UI: Failed upload must show error banner'
+        );
+        const attCountAfterFail = await cdp.eval(
+          `document.querySelectorAll('[data-testid^="notice-attachment-item-"]').length`
+        );
+        assert.equal(attCountAfterFail, 0, 'R39 UI: Failed upload must not append broken attachment');
+      } finally {
+        noticesServiceBackend.uploadAttachment = origUploadAttachment;
+      }
+
+      // 11d. Upload temporary file and remove it via UI button -> cleaned up from DOM and disk
+      const tempRemoveFilePath = path.join(tempUploadInputDir, 'temp-remove-r39.pdf');
+      fs.writeFileSync(tempRemoveFilePath, Buffer.from('%PDF-1.4\nTemp attachment to remove before submit\n%%EOF', 'utf8'));
+      await cdp.setFileInputFiles('[data-testid="notice-file-input"]', tempRemoveFilePath, 1200);
+      await cdp.waitForSelector('[data-testid^="notice-attachment-item-NATT-"]');
+      const tempAttId = await cdp.eval(`(() => {
+        const el = document.querySelector('[data-testid^="notice-attachment-item-NATT-"]');
+        return el ? el.getAttribute('data-testid').replace('notice-attachment-item-', '') : '';
+      })()`);
+      assert.match(tempAttId, /^NATT-/, 'R39 UI: Uploaded temp attachment must receive NATT-* server ID');
+      await cdp.click(`[data-testid="remove-attachment-${tempAttId}"]`, 700);
+      const countAfterRemove = await cdp.eval(
+        `document.querySelectorAll('[data-testid^="notice-attachment-item-"]').length`
+      );
+      assert.equal(countAfterRemove, 0, 'R39 UI: Removing temp attachment must remove it from DOM');
+
+      // 11e. Upload real PDF file, target DEPT-IT, publish notice, reload /portal, and test Edit flow
+      const realPdfName = 'quy-che-it-2026-r39.pdf';
+      const realPdfPath = path.join(tempUploadInputDir, realPdfName);
+      const realPdfBuffer = Buffer.from(
+        `%PDF-1.4\n1 0 obj\n<< /Title (Quy che Phong IT 2026 R39 E2E) >>\nstream\nNEXUS-R39-BINARY-PAYLOAD-${Date.now()}\nendstream\nendobj\n%%EOF\n`,
+        'utf8'
+      );
+      const expectedSha256 = crypto.createHash('sha256').update(realPdfBuffer).digest('hex');
+      fs.writeFileSync(realPdfPath, realPdfBuffer);
+
+      await cdp.setFileInputFiles('[data-testid="notice-file-input"]', realPdfPath, 1400);
+      await cdp.waitForSelector('[data-testid^="notice-attachment-item-NATT-"]');
+      const realAttId = await cdp.eval(`(() => {
+        const el = document.querySelector('[data-testid^="notice-attachment-item-NATT-"]');
+        return el ? el.getAttribute('data-testid').replace('notice-attachment-item-', '') : '';
+      })()`);
+      assert.match(realAttId, /^NATT-/, 'R39 UI: Real PDF upload must return NATT-* attachment ID');
+      createdStorageFiles.push(realAttId);
+
+      const r39Title = `THÔNG BÁO R39 E2E QUY CHẾ PHÒNG IT ${Date.now()}`;
+      await cdp.fillInput('[data-testid="notice-title-input"]', r39Title);
+      await cdp.fillInput('[data-testid="notice-target-dept-select"]', 'DEPT-IT');
+      await cdp.fillInput(
+        '[data-testid="notice-content-input"]',
+        'Nội dung thông báo thực tế có đính kèm tệp PDF thật trên máy chủ cho khối Công nghệ.'
+      );
+      await cdp.click('[data-testid="notice-submit-btn"]', 1600);
+
+      // Verify DB row created with real NATT-* attachment and target_department_id = 'DEPT-IT'
+      const dbNoticeRes = await db.query(
+        'SELECT id, title, target_role, target_department_id, attachments FROM company_notices WHERE title = $1 ORDER BY id DESC LIMIT 1',
+        [r39Title]
+      );
+      assert.equal(dbNoticeRes.rows.length, 1, 'R39 DB: Notice must be persisted in company_notices');
+      const createdNotice = dbNoticeRes.rows[0];
+      createdNoticeIds.push(createdNotice.id);
+      assert.equal(createdNotice.target_department_id, 'DEPT-IT', 'R39 DB: target_department_id must be DEPT-IT');
+      const dbAtts = typeof createdNotice.attachments === 'string'
+        ? JSON.parse(createdNotice.attachments)
+        : createdNotice.attachments;
+      assert.equal(dbAtts.length, 1, 'R39 DB: Persisted notice must have 1 attachment');
+      assert.equal(dbAtts[0].id, realAttId, 'R39 DB: Persisted attachment ID must match uploaded NATT-*');
+      assert.equal(dbAtts[0].sha256, expectedSha256, 'R39 DB: Persisted sha256 must match uploaded file');
+
+      // Navigate to /portal and test Edit Notice via NoticeManagementModal ("Quản lý")
+      await new Promise((r) => setTimeout(r, 600));
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/portal`, 2000);
+      await cdp.click('button[title="Quản lý và thống kê toàn bộ thông báo"]', 1200);
+      await cdp.waitForSelector('button[title="Chỉnh sửa nội dung thông báo"]');
+      const clickedEdit = await cdp.eval(`(() => {
+        const rows = Array.from(document.querySelectorAll('tr'));
+        const targetRow = rows.find((r) => r.innerText.includes(${JSON.stringify(r39Title)}));
+        if (!targetRow) return false;
+        const editBtn = targetRow.querySelector('button[title="Chỉnh sửa nội dung thông báo"]');
+        if (!editBtn) return false;
+        editBtn.click();
+        return true;
+      })()`);
+      assert.equal(clickedEdit, true, 'R39 UI: HR must be able to click Edit on the published notice');
+      await new Promise((r) => setTimeout(r, 500));
+      await cdp.waitForSelector('[data-testid="notice-title-input"]');
+      const editModalState = await cdp.eval(`({
+        deptVal: document.querySelector('[data-testid="notice-target-dept-select"]')?.value || '',
+        attExists: Boolean(document.querySelector(${JSON.stringify(`[data-testid="notice-attachment-item-${realAttId}"]`)})),
+      })`);
+      assert.equal(editModalState.deptVal, 'DEPT-IT', 'R39 UI Edit: Target department must be preserved in edit modal');
+      assert.equal(editModalState.attExists, true, 'R39 UI Edit: Uploaded attachment must be preserved in edit modal');
+      await cdp.fillInput(
+        '[data-testid="notice-content-input"]',
+        'Nội dung thông báo thực tế (đã cập nhật qua chế độ chỉnh sửa) có đính kèm tệp PDF thật.'
+      );
+      await cdp.click('[data-testid="notice-submit-btn"]', 1500);
+
+      // 11f. Account B (empA in DEPT-IT) opens a brand-new isolated BrowserContext, logs in via UI, views notice & downloads binary file
+      const contextB = await createIsolatedBrowserContextSession(
+        CDP_PORT,
+        downloadDirContextB,
+        `http://127.0.0.1:${FRONTEND_PORT}/login`
+      );
+      try {
+        const empALanding = await loginViaUi(contextB.session, empA.user.email, empA.password);
+        assert.equal(empALanding, '/portal', 'R39 Context B: Employee A (DEPT-IT) must land on /portal');
+        await contextB.session.waitForSelector('h1', 8000);
+        await new Promise((r) => setTimeout(r, 1000));
+
+        const clickedNoticeInContextB = await contextB.session.eval(`(() => {
+          const cards = Array.from(document.querySelectorAll('div.cursor-pointer'));
+          const card = cards.find((c) => c.innerText && c.innerText.includes(${JSON.stringify(r39Title)}));
+          if (!card) return false;
+          card.click();
+          return true;
+        })()`);
+        assert.equal(
+          clickedNoticeInContextB,
+          true,
+          'R39 Context B: Employee A in DEPT-IT must see and open the DEPT-IT notice on /portal'
+        );
+
+        await contextB.session.waitForSelector(`[data-testid="download-notice-attachment-${realAttId}"]`);
+        const modalDetailCheck = await contextB.session.eval(`(() => {
+          const text = document.body.innerText || '';
+          return {
+            hasFakeCaClaim: text.includes('Đã ký số xác thực CA bởi Hệ thống Quản trị NEXUS'),
+            hasUpdatedContent: text.includes('đã cập nhật qua chế độ chỉnh sửa'),
+          };
+        })()`);
+        assert.equal(
+          modalDetailCheck.hasFakeCaClaim,
+          false,
+          'R39 Context B: NotificationDetailModal must not display fake CA digital signature claim'
+        );
+        assert.equal(
+          modalDetailCheck.hasUpdatedContent,
+          true,
+          'R39 Context B: NotificationDetailModal must display the updated notice content'
+        );
+
+        await contextB.session.captureScreenshot(
+          path.join(screenshotDir, 'r39-notice-attachment-verified-download.png')
+        );
+
+        // Trigger real file download via UI button click in isolated Context B
+        await contextB.session.click(`[data-testid="download-notice-attachment-${realAttId}"]`, 600);
+        const downloaded = await waitForDownloadedFile(downloadDirContextB, realPdfName, 10000);
+        const downloadedSha256 = crypto.createHash('sha256').update(downloaded.buffer).digest('hex');
+        assert.equal(
+          downloaded.buffer.length,
+          realPdfBuffer.length,
+          'R39 Context B Download: Downloaded byte length must match uploaded file'
+        );
+        assert.equal(
+          downloadedSha256,
+          expectedSha256,
+          'R39 Context B Download: Downloaded file SHA-256 hash must match uploaded file 100%'
+        );
+      } finally {
+        await contextB.close();
+      }
+
+      // 11g. Account C (salesSub in DEPT-SALES, outside DEPT-IT) in a fresh isolated BrowserContext cannot see the notice or download the file
+      const contextC = await createIsolatedBrowserContextSession(
+        CDP_PORT,
+        downloadDirContextB,
+        `http://127.0.0.1:${FRONTEND_PORT}/login`
+      );
+      try {
+        const salesSubLanding = await loginViaUi(contextC.session, salesSub.user.email, salesSub.password);
+        assert.equal(salesSubLanding, '/portal', 'R39 Context C: Employee C (DEPT-SALES) must land on /portal');
+        await new Promise((r) => setTimeout(r, 1000));
+
+        const visibleToSalesSub = await contextC.session.eval(
+          `Boolean(document.body.innerText && document.body.innerText.includes(${JSON.stringify(r39Title)}))`
+        );
+        assert.equal(
+          visibleToSalesSub,
+          false,
+          'R39 Context C: Employee C (DEPT-SALES) must not see DEPT-IT targeted notice on /portal'
+        );
+
+        const forbiddenDownloadStatus = await contextC.session.eval(`(async () => {
+          const token = localStorage.getItem('nexus_token') || localStorage.getItem('accessToken') || localStorage.getItem('token') || '';
+          const res = await fetch('http://127.0.0.1:${BACKEND_PORT}/api/notices/${createdNotice.id}/attachments/${realAttId}/download', {
+            headers: token ? { Authorization: 'Bearer ' + token } : {},
+          });
+          return res.status;
+        })()`);
+        assert.equal(
+          forbiddenDownloadStatus,
+          403,
+          'R39 Context C: Direct attachment download by out-of-scope employee must return HTTP 403 FORBIDDEN'
+        );
+      } finally {
+        await contextC.close();
+      }
+
+      // 11h. Legacy notice in DB with blob: URL renders honestly as unavailable ("Không khả dụng — cần tải lên lại")
+      const legacyTitle = `THÔNG BÁO CŨ LEGACY BLOB ${Date.now()}`;
+      const legacyInsert = await db.query(
+        `INSERT INTO company_notices (title, content, category, priority, target_role, is_pinned, author_id, attachments)
+         VALUES ($1, $2, 'policy', 'normal', NULL, TRUE, $3, $4::jsonb)
+         RETURNING id`,
+        [
+          legacyTitle,
+          'Bản ghi cũ từ trước khi có lưu trữ tệp bền vững trên máy chủ.',
+          hrAcc.emp.id,
+          JSON.stringify([
+            {
+              id: 'ATT-OLD-BLOB-1',
+              name: 'Tai_lieu_cu_blob.pdf',
+              size: '420 KB',
+              type: 'application/pdf',
+              url: 'blob:http://localhost:3000/dead-legacy-blob-uuid',
+            },
+          ]),
+        ]
+      );
+      createdNoticeIds.push(legacyInsert.rows[0].id);
+
+      await new Promise((r) => setTimeout(r, 1000));
+      await cdp.reload(2200);
+      await cdp.eval(`window.dispatchEvent(new CustomEvent('nexus:notices-updated'))`);
+      await new Promise((r) => setTimeout(r, 800));
+      const clickedLegacy = await cdp.eval(`(() => {
+        const cards = Array.from(document.querySelectorAll('div.cursor-pointer'));
+        const card = cards.find((c) => c.innerText && c.innerText.includes(${JSON.stringify(legacyTitle)}));
+        if (!card) return false;
+        card.click();
+        return true;
+      })()`);
+      assert.equal(clickedLegacy, true, 'R39 Legacy UI: Legacy notice card must open NotificationDetailModal');
+      await cdp.waitForSelector('[data-testid="notice-attachment-unavailable-ATT-OLD-BLOB-1"]');
+      const legacyUiState = await cdp.eval(`({
+        unavailableText: document.querySelector('[data-testid="notice-attachment-unavailable-ATT-OLD-BLOB-1"]')?.innerText || '',
+        downloadBtnDisabled: Boolean(document.querySelector('[data-testid="download-notice-attachment-ATT-OLD-BLOB-1"]')?.disabled),
+      })`);
+      assert.match(
+        legacyUiState.unavailableText,
+        /Không khả dụng — cần tải lên lại/i,
+        'R39 Legacy UI: Must clearly mark legacy blob attachment as unavailable'
+      );
+      assert.equal(
+        legacyUiState.downloadBtnDisabled,
+        true,
+        'R39 Legacy UI: Download button for unavailable legacy attachment must be disabled'
+      );
+      await cdp.captureScreenshot(path.join(screenshotDir, 'r39-legacy-attachment-unavailable.png'));
+    } finally {
+      for (const nid of createdNoticeIds) {
+        await db.query('DELETE FROM company_notices WHERE id = $1', [nid]).catch(() => {});
+      }
+      const storageDir = path.resolve(__dirname, '../storage/notice_attachments');
+      if (fs.existsSync(storageDir)) {
+        for (const fid of createdStorageFiles) {
+          for (const f of fs.readdirSync(storageDir)) {
+            if (f.startsWith(fid)) {
+              try { fs.unlinkSync(path.join(storageDir, f)); } catch {}
+            }
+          }
+        }
+      }
+      try { fs.rmSync(tempUploadInputDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(downloadDirContextB, { recursive: true, force: true }); } catch {}
+    }
+
+    console.log(
+      '[ASSERT 11 (R39) PASS] PresetButtonsRemoved=true, OversizeRejected=true, UploadErrorHandled=true, TempRemoveCleaned=true, EditPreservedAttachment=true, IsolatedContextBDownloadSha256Match=true, ContextCOutOfScope403=true, LegacyBlobMarkedUnavailable=true'
+    );
+
+    // =========================================================================
+    // SCENARIO 12 (PHASE B): Full Website Role / Route / Viewport (390/768/1440px) Verification Matrix
+    // =========================================================================
+    console.log('--- Running Scenario 12: Phase B Full Website Role, Route & Viewport Matrix ---');
+    const ceoAcc = await createRoleAccount({ role: 'CEO', departmentId: 'DEPT-IT', fullName: 'Tổng Giám Đốc E2E' });
+    const adminAcc = await createRoleAccount({ role: 'ADMIN', departmentId: 'DEPT-IT', fullName: 'Quản Trị Hệ Thống E2E' });
+    const kioskAcc = await createRoleAccount({ role: 'KIOSK', departmentId: 'DEPT-HR', fullName: 'Thiết Bị Kiosk E2E' });
+
+    const pageExceptions = [];
+    cdp.on('Runtime.exceptionThrown', (params) => {
+      pageExceptions.push(params?.exceptionDetails?.text || 'Runtime.exceptionThrown');
+    });
+
+    // 12a. Verify CEO login & routes (/dashboard, /payroll, /ai-analytics)
+    const ceoLanding = await loginViaUi(cdp, ceoAcc.user.email, ceoAcc.password);
+    assert.equal(ceoLanding, '/dashboard', 'Phase B CEO: Must land on /dashboard');
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/ai-analytics`, 1800);
+    const ceoAiPath = await cdp.eval('window.location.pathname');
+    assert.equal(ceoAiPath, '/ai-analytics', 'Phase B CEO: Must access /ai-analytics');
+
+    // 12b. Verify ADMIN login & role-restricted guard (/directory allowed, /payroll shows payroll-role-restricted)
+    const adminLanding = await loginViaUi(cdp, adminAcc.user.email, adminAcc.password);
+    assert.equal(adminLanding, '/directory', 'Phase B ADMIN: Must land on /directory');
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 1500);
+    const adminPayrollRestricted = await cdp.eval(
+      `Boolean(document.querySelector('[data-testid="payroll-role-restricted"]'))`
+    );
+    assert.equal(adminPayrollRestricted, true, 'Phase B ADMIN: Navigating to /payroll must render payroll-role-restricted');
+
+    // 12c. Verify KIOSK login & fullscreen terminal route (/kiosk allowed, /payroll shows payroll-role-restricted)
+    const kioskLanding = await loginViaUi(cdp, kioskAcc.user.email, kioskAcc.password);
+    assert.equal(kioskLanding, '/kiosk', 'Phase B KIOSK: Must land on /kiosk');
+    const kioskHasScannerUi = await cdp.eval(`Boolean(document.body.innerText && document.body.innerText.length > 20)`);
+    assert.equal(kioskHasScannerUi, true, 'Phase B KIOSK: Must render Kiosk terminal content');
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 1500);
+    const kioskPayrollRestricted = await cdp.eval(
+      `Boolean(document.querySelector('[data-testid="payroll-role-restricted"]'))`
+    );
+    assert.equal(kioskPayrollRestricted, true, 'Phase B KIOSK: Navigating to /payroll must render payroll-role-restricted');
+
+    // 12d. Verify Responsive Viewports (390x844 mobile, 768x1024 tablet, 1440x900 desktop) on HR_DIRECTOR
+    await loginViaUi(cdp, hrAcc.user.email, hrAcc.password);
+    const viewports = [
+      { width: 390, height: 844, mobile: true, name: '390' },
+      { width: 768, height: 1024, mobile: true, name: '768' },
+      { width: 1440, height: 900, mobile: false, name: '1440' },
+    ];
+    for (const vp of viewports) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: vp.width,
+        height: vp.height,
+        deviceScaleFactor: 1,
+        mobile: vp.mobile,
+      });
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/portal`, 1600);
+      const vpState = await cdp.eval(`({
+        innerWidth: window.innerWidth,
+        hasHeading: Boolean(document.querySelector('h1')),
+        rootRendered: Boolean(document.getElementById('root')?.innerHTML.length > 100),
+      })`);
+      assert.equal(vpState.innerWidth, vp.width, `Phase B Viewport ${vp.name}px: window.innerWidth must match`);
+      assert.equal(vpState.hasHeading, true, `Phase B Viewport ${vp.name}px: Heading must render`);
+      assert.equal(vpState.rootRendered, true, `Phase B Viewport ${vp.name}px: Root DOM must render`);
+      await cdp.captureScreenshot(path.join(screenshotDir, `phase-b-viewport-${vp.name}.png`));
+    }
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    assert.equal(pageExceptions.length, 0, `Phase B: Expected 0 uncaught page exceptions, got: ${pageExceptions.join('; ')}`);
+
+    console.log(
+      '[ASSERT 12 (PHASE B MATRIX) PASS] RolesVerified=6/6(HR_DIRECTOR,CEO,LINE_MANAGER,EMPLOYEE,ADMIN,KIOSK), NegativeRouteGuards=true, ViewportsVerified=390/768/1440px, UncaughtPageExceptions=0'
+    );
+
+    console.log('=== [ALL R14-R40 & PHASE B UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});
@@ -1779,6 +2401,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[R14-R19 UI-DRIVEN E2E VERIFICATION FAILED]', err);
+  console.error('[R14-R40 UI-DRIVEN E2E VERIFICATION FAILED]', err);
   process.exit(1);
 });
