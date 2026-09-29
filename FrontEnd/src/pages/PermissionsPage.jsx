@@ -486,8 +486,8 @@ export default function PermissionsPage() {
     setAccountsLoading(true);
     try {
       const [usersRes, empRes] = await Promise.all([
-        userService.list({ page: 1, limit: 100 }).catch(() => ({ data: [] })),
-        employeeService.getAll({ page: 1, limit: 100 }).catch(() => ({ data: [] })),
+        userService.getAll({ page: 1, limit: 200 }).catch(() => ({ data: [] })),
+        employeeService.getAll({ page: 1, limit: 200 }).catch(() => ({ data: [] })),
       ]);
       const userList = Array.isArray(usersRes?.data)
         ? usersRes.data
@@ -513,7 +513,8 @@ export default function PermissionsPage() {
     }
   }, [effectiveAccountId, showToast]);
 
-  const applyServerRbacPayload = useCallback((res) => {
+  const applyServerRbacPayload = useCallback((rawRes) => {
+    const res = rawRes?.data || rawRes || {};
     if (Array.isArray(res?.roles) && res.roles.length > 0) {
       setRoleCatalog(res.roles);
       const nextScopes = {};
@@ -531,6 +532,9 @@ export default function PermissionsPage() {
     }
     if (res?.roleCounts && typeof res.roleCounts === 'object') {
       setRoleCounts(res.roleCounts);
+    }
+    if (Array.isArray(res?.recentAuditLogs) && res.recentAuditLogs.length > 0) {
+      setAuditLogs((prev) => (prev.length > 0 ? prev : res.recentAuditLogs));
     }
   }, []);
 
@@ -556,7 +560,7 @@ export default function PermissionsPage() {
       const items = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
       setAuditLogs(items);
     } catch {
-      setAuditLogs([]);
+      // Keep recentAuditLogs from getRbacRoles when actor does not have direct /audit-logs access
     } finally {
       setAuditLoading(false);
     }
@@ -1003,7 +1007,7 @@ export default function PermissionsPage() {
       if (auditActionFilter === 'USER' && !action.includes('USER') && !action.includes('PASSWORD'))
         return false;
       if (!q) return true;
-      const actor = String(log.actorEmail || log.user_email || log.userId || '').toLowerCase();
+      const actor = String(log.userEmail || log.actorEmail || log.user_email || log.userId || '').toLowerCase();
       const table = String(log.tableName || log.table_name || '').toLowerCase();
       const record = String(log.recordId || log.record_id || '').toLowerCase();
       return (
@@ -1774,7 +1778,7 @@ export default function PermissionsPage() {
                         </div>
                       </td>
                       <td className="py-3.5 px-4 font-medium text-slate-800 whitespace-nowrap">
-                        {log.actorEmail || log.user_email || log.userId || 'Hệ thống'}
+                        {log.userEmail || log.actorEmail || log.user_email || log.userId || 'Hệ thống'}
                       </td>
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
