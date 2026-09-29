@@ -60,7 +60,7 @@ export default function Sidebar() {
           { name: 'Phê duyệt nghỉ phép', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
           { name: 'Quản trị bảng lương & quyết toán', path: '/payroll', icon: Wallet },
           { name: 'Phân tích hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
-          { name: 'Phân quyền theo vai trò', path: '/permissions', icon: ShieldCheck },
+          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
           { name: 'Cài đặt hệ thống', path: '/settings', icon: Settings },
         ];
@@ -73,7 +73,7 @@ export default function Sidebar() {
           { name: 'Thẩm duyệt nghỉ phép', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
           { name: 'Xử lý tiền lương và quyết toán', path: '/payroll', icon: Wallet },
           { name: 'Phân tích hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
-          { name: 'Phân quyền theo vai trò', path: '/permissions', icon: ShieldCheck },
+          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
           { name: 'Cài đặt hệ thống', path: '/settings', icon: Settings },
         ];
@@ -86,12 +86,12 @@ export default function Sidebar() {
           { name: 'Duyệt phép phòng ban', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Đánh giá hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
-          { name: 'Phân quyền theo vai trò', path: '/permissions', icon: ShieldCheck },
+          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
         ];
       case 'ADMIN':
         return [
-          { name: 'Phân quyền theo vai trò', path: '/permissions', icon: ShieldCheck },
+          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Danh bạ nhân sự', path: '/directory', icon: Users },
           { name: 'Quản trị tài khoản & Hệ thống', path: '/settings', icon: Settings },
         ];
@@ -104,7 +104,7 @@ export default function Sidebar() {
           { name: 'Đơn nghỉ phép của tôi', path: '/leaves', icon: CalendarDays },
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Hồ sơ nhân sự', path: '/directory', icon: Users },
-          { name: 'Phân quyền theo vai trò', path: '/permissions', icon: ShieldCheck },
+          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
         ];
     }
   };
