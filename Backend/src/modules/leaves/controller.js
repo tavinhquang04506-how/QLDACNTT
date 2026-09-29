@@ -31,6 +31,10 @@ const types = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await service.types() });
 });
 
+const holidays = asyncHandler(async (_req, res) => {
+  res.json({ success: true, data: await service.holidays() });
+});
+
 const approve = asyncHandler(async (req, res) => {
   const row = await service.decideOn(req.user, req.params.id, 'approve', req.body.note, req);
   res.json({
@@ -49,4 +53,4 @@ const cancel = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Đã hủy đơn nghỉ phép', data: await service.cancel(req.user, req.params.id, req) });
 });
 
-module.exports = { create, list, get, calendar, balances, types, approve, reject, cancel };
+module.exports = { create, list, get, calendar, balances, types, holidays, approve, reject, cancel };
