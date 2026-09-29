@@ -1105,7 +1105,228 @@ async function main() {
       `[ASSERT 6 (R20+R22) PASS] Uncreated/Error/Slow Period Guard & 505+ Multi-Page UI Export: uncreatedTotalNet="${r20UncreatedState.totalNetText.trim()}", slowInFlightDisabled=true, buttonsDisabledOnUncreated=true, modalOpenedOnUncreated=${modalOpenedOnUncreated}, 2028-11MultiPageExportRows=${recReport11.rowCount} (DB=${dbSlips11.length}, bankPayable=${recBank11.payableRowCount}, netSum=${recReport11.sums.netSalary})`
     );
 
-    console.log('=== [ALL R14-R23 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 7 (R24 + R25 + R26): Honest Recalculate UI (R25), Conflict Modal E2E (R24), & Multi-Page Snapshot/Duplicate Guard (R26)
+    // =========================================================================
+    // 7a. R25: Verify honest recalculate button & absence of fake CEO approval buttons/labels on Tháng 11/2028 (DU_THAO)
+    const r25DomState = await cdp.eval(`({
+      hasRecalculateBtn: Boolean(document.querySelector('[data-testid="recalculate-payroll-btn"]')),
+      recalculateBtnText: document.querySelector('[data-testid="recalculate-payroll-btn"]')?.innerText || '',
+      hasFakeCeoApproveBtn: Boolean(document.querySelector('[data-testid="ceo-approve-payroll-btn"]')),
+      statusBadgeText: document.querySelector('[data-testid="payroll-period-status-badge"]')?.innerText || '',
+      bodyHasFakeApprovalText: /Phê duyệt chi trả toàn công ty|CEO Đã Phê Duyệt Chi Trả|Đã phê duyệt chi trả/i.test(document.body.innerText),
+    })`);
+    assert.equal(r25DomState.hasRecalculateBtn, true, 'R25: Draft period must render [data-testid="recalculate-payroll-btn"]');
+    assert.match(r25DomState.recalculateBtnText, /Tính lại bảng lương/i, 'R25: Button label must honestly state payroll recalculation');
+    assert.equal(r25DomState.hasFakeCeoApproveBtn, false, 'R25: Must not render fake ceo-approve-payroll-btn');
+    assert.equal(r25DomState.bodyHasFakeApprovalText, false, 'R25: Must not display fake approval labels');
+    assert.match(r25DomState.statusBadgeText, /Đang xử lý dự thảo/i, 'R25: Status badge must reflect DU_THAO honestly');
+
+    // 7b. R24: Apply manual HR adjustments on paidEmp1 in 2028-11, mutate attendance & base_salary, then trigger conflict modal in UI
+    const slip11Emp1 = (
+      await db.query('SELECT * FROM payslips WHERE period_id = $1 AND employee_id = $2', [period11Row.id, paidEmp1.emp.id])
+    ).rows[0];
+    await payrollServiceBackend.updatePayslip(
+      hrActor,
+      slip11Emp1.id,
+      {
+        actualWorkDays: 20,
+        baseSalary: 35000000,
+        bonus: 1800000,
+        note: 'HR E2E R24 manual adjustment on actualWorkDays, baseSalary, bonus',
+      },
+      null
+    );
+
+    // Mutate underlying attendance (15 -> 16 days) and employees.base_salary (22M -> 26M) for paidEmp1
+    await db.query(
+      "INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours) VALUES ($1, '2028-11-20', 'DUNG_GIO', 0)",
+      [paidEmp1.emp.id]
+    );
+    await db.query('UPDATE employees SET base_salary = 26000000 WHERE id = $1', [paidEmp1.emp.id]);
+
+    // Click `Tính lại bảng lương (Dự thảo)` in UI -> must catch 409 ADJUSTMENT_SOURCE_CONFLICT and open modal
+    await cdp.click('[data-testid="recalculate-payroll-btn"]', 1800);
+    await cdp.waitForSelector('[data-testid="adjustment-conflict-modal"]');
+
+    const r24InitialModal = await cdp.eval(`({
+      rowCount: document.querySelectorAll('[data-testid="conflict-item-row"]').length,
+      modalText: document.querySelector('[data-testid="adjustment-conflict-modal"]')?.innerText || '',
+      prevDays: document.querySelector('[data-testid="conflict-prev-source-${paidEmp1.emp.id}-actualWorkDays"]')?.innerText || '',
+      currDays: document.querySelector('[data-testid="conflict-curr-source-${paidEmp1.emp.id}-actualWorkDays"]')?.innerText || '',
+      manualDays: document.querySelector('[data-testid="conflict-manual-val-${paidEmp1.emp.id}-actualWorkDays"]')?.innerText || '',
+      prevBase: document.querySelector('[data-testid="conflict-prev-source-${paidEmp1.emp.id}-baseSalary"]')?.innerText || '',
+      currBase: document.querySelector('[data-testid="conflict-curr-source-${paidEmp1.emp.id}-baseSalary"]')?.innerText || '',
+      manualBase: document.querySelector('[data-testid="conflict-manual-val-${paidEmp1.emp.id}-baseSalary"]')?.innerText || '',
+    })`);
+    assert.equal(r24InitialModal.rowCount, 2, 'R24: Modal must render 2 conflict rows (actualWorkDays & baseSalary)');
+    assert.match(r24InitialModal.modalText, /Đã chọn:\s*0\/2\s*xung đột/i, 'R24: Modal must have 0/2 selected by default');
+    assert.equal(r24InitialModal.prevDays.trim(), '15 ngày');
+    assert.equal(r24InitialModal.currDays.trim(), '16 ngày');
+    assert.equal(r24InitialModal.manualDays.trim(), '20 ngày');
+    assert.match(r24InitialModal.prevBase, /22\.000\.000/);
+    assert.match(r24InitialModal.currBase, /26\.000\.000/);
+    assert.match(r24InitialModal.manualBase, /35\.000\.000/);
+
+    // 1) Click Submit without selecting choices -> must block with error in modal
+    await cdp.click('[data-testid="conflict-submit-btn"]', 500);
+    const r24UnselectedError = await cdp.eval(
+      `document.querySelector('[data-testid="conflict-modal-error"]')?.innerText || ''`
+    );
+    assert.match(r24UnselectedError, /Vui lòng chọn phương án xử lý/i, 'R24: Submit without choices must show validation error');
+
+    // 2) Click Cancel -> closes modal without modifying DB payslip
+    await cdp.click('[data-testid="conflict-cancel-btn"]', 500);
+    const modalOpenAfterCancel = await cdp.eval(
+      `Boolean(document.querySelector('[data-testid="adjustment-conflict-modal"]'))`
+    );
+    assert.equal(modalOpenAfterCancel, false, 'R24: Cancel button must close conflict modal');
+    const slipAfterCancel = (
+      await db.query('SELECT actual_work_days, base_salary, bonus FROM payslips WHERE id = $1', [slip11Emp1.id])
+    ).rows[0];
+    assert.equal(Number(slipAfterCancel.actual_work_days), 20, 'R24: Cancel must leave manual actual_work_days=20 untouched');
+    assert.equal(Number(slipAfterCancel.base_salary), 35000000, 'R24: Cancel must leave manual base_salary=35M untouched');
+
+    // 3) Reopen modal, select KEEP_MANUAL for actualWorkDays and USE_SOURCE for baseSalary, then mutate attendance AGAIN (16 -> 17) while modal is open
+    await cdp.click('[data-testid="recalculate-payroll-btn"]', 1800);
+    await cdp.waitForSelector('[data-testid="adjustment-conflict-modal"]');
+    await cdp.click(`[data-testid="conflict-keep-manual-${paidEmp1.emp.id}-actualWorkDays"]`, 300);
+    await cdp.click(`[data-testid="conflict-use-source-${paidEmp1.emp.id}-baseSalary"]`, 300);
+
+    await db.query(
+      "INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours) VALUES ($1, '2028-11-21', 'DUNG_GIO', 0)",
+      [paidEmp1.emp.id]
+    );
+
+    // Click Submit -> backend rejects stale expectedCurrentSourceValue (16 !== 17), modal stays open with stale notice & updated 17 ngày
+    await cdp.click('[data-testid="conflict-submit-btn"]', 1800);
+    const r24AfterMidModalChange = await cdp.eval(`({
+      modalStillOpen: Boolean(document.querySelector('[data-testid="adjustment-conflict-modal"]')),
+      staleNotice: document.querySelector('[data-testid="conflict-stale-notice"]')?.innerText || '',
+      currDaysAfterUpdate: document.querySelector('[data-testid="conflict-curr-source-${paidEmp1.emp.id}-actualWorkDays"]')?.innerText || '',
+      modalText: document.querySelector('[data-testid="adjustment-conflict-modal"]')?.innerText || '',
+    })`);
+    assert.equal(r24AfterMidModalChange.modalStillOpen, true, 'R24: Modal must stay open when source changed while modal was open');
+    assert.match(r24AfterMidModalChange.staleNotice, /thay đổi thêm trong lúc bạn đang đối soát/i);
+    assert.equal(r24AfterMidModalChange.currDaysAfterUpdate.trim(), '17 ngày', 'R24: Modal must update currentSourceValue to 17 ngày');
+    assert.match(r24AfterMidModalChange.modalText, /Đã chọn:\s*1\/2\s*xung đột/i, 'R24: Stale actualWorkDays decision must be invalidated while unchanged baseSalary stays selected');
+
+    // 4) Re-select KEEP_MANUAL for actualWorkDays, simulate HTTP 500 on calculate -> error shown in modal, no false success
+    await cdp.click(`[data-testid="conflict-keep-manual-${paidEmp1.emp.id}-actualWorkDays"]`, 300);
+    const origCalcR24 = payrollServiceBackend.calculate.bind(payrollServiceBackend);
+    payrollServiceBackend.calculate = async () => {
+      throw new Error('SIMULATED_CALCULATE_500_ON_CONFLICT_SUBMIT');
+    };
+    try {
+      await cdp.click('[data-testid="conflict-submit-btn"]', 1200);
+      const r24Error500State = await cdp.eval(`({
+        modalStillOpen: Boolean(document.querySelector('[data-testid="adjustment-conflict-modal"]')),
+        errorText: document.querySelector('[data-testid="conflict-modal-error"]')?.innerText || '',
+        hasSuccessBanner: Boolean(document.querySelector('[data-testid="payroll-reconcile-success-banner"]')),
+      })`);
+      assert.equal(r24Error500State.modalStillOpen, true, 'R24: Modal must stay open on 500 error');
+      assert.ok(r24Error500State.errorText.length > 0, 'R24: Modal must display error message on 500 failure');
+      assert.equal(r24Error500State.hasSuccessBanner, false, 'R24: Must never show false success banner on 500 failure');
+    } finally {
+      payrollServiceBackend.calculate = origCalcR24;
+    }
+
+    // 5) Submit valid resolutions -> modal closes, success banner appears, DB & audit_logs updated, reload persists
+    await cdp.click('[data-testid="conflict-submit-btn"]', 3200);
+    const r24AfterSuccess = await cdp.eval(`({
+      modalOpen: Boolean(document.querySelector('[data-testid="adjustment-conflict-modal"]')),
+      successBanner: document.querySelector('[data-testid="payroll-reconcile-success-banner"]')?.innerText || '',
+    })`);
+    assert.equal(r24AfterSuccess.modalOpen, false, 'R24: Conflict modal must close after successful reconciliation');
+    assert.match(r24AfterSuccess.successBanner, /Đã đối soát xung đột điều chỉnh thủ công/i);
+
+    // Reload /payroll and select Tháng 11/2028 to verify persisted state
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 2200);
+    await cdp.waitForSelector('[data-testid="payroll-period-select"]');
+    await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 11/2028');
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const slipAfterR24Reconcile = (
+      await db.query('SELECT * FROM payslips WHERE period_id = $1 AND employee_id = $2', [
+        period11Row.id,
+        paidEmp1.emp.id,
+      ])
+    ).rows[0];
+    assert.equal(Number(slipAfterR24Reconcile.actual_work_days), 20, 'R24: KEEP_MANUAL must persist actual_work_days=20');
+    assert.equal(Number(slipAfterR24Reconcile.base_salary), 26000000, 'R24: USE_SOURCE must persist new base_salary=26M');
+    assert.equal(Number(slipAfterR24Reconcile.bonus), 1800000, 'R24: Non-conflicting manual bonus=1.8M must be preserved');
+
+    const r24AuditRow = (
+      await db.query(
+        "SELECT new_values FROM audit_logs WHERE action = 'CALCULATE_PAYROLL' AND new_values->>'period' = '2028-11' ORDER BY created_at DESC LIMIT 1"
+      )
+    ).rows[0];
+    assert.equal(
+      Array.isArray(r24AuditRow?.new_values?.reconciled_conflicts) && r24AuditRow.new_values.reconciled_conflicts.length,
+      2,
+      'R24: audit_logs must record reconciled_conflicts for both resolved fields'
+    );
+
+    // 7c. R26: Multi-page loader duplicate employee_id & mid-export monetary mutation guards in UI
+    // Negative 1: Inject duplicate employee_id on page 2 (OFFSET 500) during UI CSV export -> must block download & show error banner
+    const origListPayslips = payrollServiceBackend.listPayslips.bind(payrollServiceBackend);
+    payrollServiceBackend.listPayslips = async (actor, query, scope) => {
+      const res = await origListPayslips(actor, query, scope);
+      if (Number(query?.page) === 2 && res.data.length > 0) {
+        const clonedRows = res.data.map((r, idx) =>
+          idx === 0 ? { ...r, employee_id: paidEmp1.emp.id } : r
+        );
+        return { ...res, data: clonedRows };
+      }
+      return res;
+    };
+    try {
+      const csvFilesBeforeDup = fs.readdirSync(downloadDir).length;
+      await cdp.click('[data-testid="export-payroll-csv-btn"]', 1200);
+      const dupExportError = await cdp.eval(
+        `document.querySelector('[data-testid="payroll-export-error-banner"]')?.innerText || ''`
+      );
+      const csvFilesAfterDup = fs.readdirSync(downloadDir).length;
+      assert.match(dupExportError, /trùng lặp nhân viên|trùng nhân viên/i, 'R26: UI must display duplicate employee error banner when page 2 has duplicate employee_id');
+      assert.equal(csvFilesAfterDup, csvFilesBeforeDup, 'R26: UI must NOT download CSV when duplicate employee_id is detected across pages');
+    } finally {
+      payrollServiceBackend.listPayslips = origListPayslips;
+    }
+
+    // Negative 2: Mutate monetary amount (bonus/net_salary) in DB AFTER UI loaded Tháng 11/2028 while keeping row count (505+) identical -> export must fail snapshot/totalNet check
+    await db.query(
+      'UPDATE payslips SET bonus = bonus + 777000, net_salary = net_salary + 777000 WHERE period_id = $1 AND employee_id = $2',
+      [period11Row.id, paidEmp2.emp.id]
+    );
+    try {
+      const csvFilesBeforeSnapMismatch = fs.readdirSync(downloadDir).length;
+      await cdp.click('[data-testid="export-payroll-csv-btn"]', 1200);
+      const snapMismatchError = await cdp.eval(
+        `document.querySelector('[data-testid="payroll-export-error-banner"]')?.innerText || ''`
+      );
+      const csvFilesAfterSnapMismatch = fs.readdirSync(downloadDir).length;
+      assert.match(
+        snapMismatchError,
+        /thay đổi|tổng thực lĩnh|snapshot/i,
+        'R26: UI must display snapshot/totalNet mismatch error when monetary values changed without changing row count'
+      );
+      assert.equal(
+        csvFilesAfterSnapMismatch,
+        csvFilesBeforeSnapMismatch,
+        'R26: UI must NOT download CSV when snapshot changed after page load'
+      );
+    } finally {
+      await db.query(
+        'UPDATE payslips SET bonus = bonus - 777000, net_salary = net_salary - 777000 WHERE period_id = $1 AND employee_id = $2',
+        [period11Row.id, paidEmp2.emp.id]
+      );
+    }
+
+    console.log(
+      `[ASSERT 7 (R24+R25+R26) PASS] R25HonestRecalcBtn=true, R24Modal(unselectedBlocked=true, cancelSafe=true, midModalStaleDetected=true, error500Safe=true, persistedDays=${slipAfterR24Reconcile.actual_work_days}, persistedBase=${slipAfterR24Reconcile.base_salary}, preservedBonus=${slipAfterR24Reconcile.bonus}, auditConflicts=${r24AuditRow.new_values.reconciled_conflicts.length}), R26ExportGuards(duplicateBlocked=true, snapshotMonetaryChangeBlocked=true)`
+    );
+
+    console.log('=== [ALL R14-R26 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});

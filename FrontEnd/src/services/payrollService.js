@@ -11,11 +11,17 @@ const payrollService = {
     const query = new URLSearchParams(params).toString();
     return api.get(`/payroll/payslips${query ? '?' + query : ''}`);
   },
-  getAllPayslipsForPeriod: (period, pageSize = 500, extraParams = {}) =>
+  getAllPayslipsForPeriod: (
+    period,
+    pageSize = 500,
+    { extraParams = {}, expectedSnapshotToken = null, expectedTotalNet = null } = {}
+  ) =>
     fetchAllPayslipsForPeriod(payrollService.getPayslips, {
       period,
       pageSize,
       extraParams,
+      expectedSnapshotToken,
+      expectedTotalNet,
     }),
   getMyPayslips: () => api.get('/payroll/me'),
   calculate: (period, options = {}) =>
