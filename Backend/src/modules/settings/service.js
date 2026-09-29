@@ -1,6 +1,11 @@
 const db = require('../../config/db');
-const { AppError, badRequest } = require('../../utils/AppError');
+const { AppError, badRequest, forbidden } = require('../../utils/AppError');
 const { writeAudit } = require('../../utils/audit');
+const { matrix: DEFAULT_RBAC_MATRIX } = require('../../policies/matrix');
+
+const VALID_RBAC_ROLES = ['CEO', 'HR_DIRECTOR', 'LINE_MANAGER', 'EMPLOYEE', 'ADMIN', 'KIOSK'];
+const VALID_RBAC_SCOPES = ['all', 'department', 'self'];
+const CEO_LOCKED_PERMISSIONS = new Set(['settings.read', 'settings.manage', 'user.read', 'user.update', 'audit.read']);
 
 const DEFAULT_SETTINGS = {
   late_grace_minutes: 15,
@@ -103,7 +108,7 @@ function extractSnakePolicy(obj = {}) {
 
 async function getSettings(executor = db, { forUpdate = false } = {}) {
   const { rows } = await executor.query(
-    `SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key${forUpdate ? ' FOR UPDATE' : ''}`
+    `SELECT key, value, category, description, updated_by, updated_at FROM system_settings WHERE key != 'rbac_role_matrix' ORDER BY key${forUpdate ? ' FOR UPDATE' : ''}`
   );
   if (!rows || rows.length === 0) {
     throw new AppError(500, 'SETTINGS_NOT_INITIALIZED', 'Bảng cấu hình hệ thống system_settings chưa được khởi tạo');
@@ -317,10 +322,228 @@ async function updateSettings(actor, body, req = null) {
   });
 }
 
+function cloneDefaultRbacMatrix() {
+  const copy = {};
+  for (const [permKey, roleMap] of Object.entries(DEFAULT_RBAC_MATRIX)) {
+    copy[permKey] = { ...roleMap };
+  }
+  return copy;
+}
+
+async function getRbacRoleMatrix(executor = db) {
+  const baseMatrix = cloneDefaultRbacMatrix();
+  const [settingRes, countsRes] = await Promise.all([
+    executor.query(
+      `SELECT value, updated_by, updated_at FROM system_settings WHERE key = 'rbac_role_matrix'`
+    ),
+    executor.query(
+      `SELECT role_code, COUNT(*)::int AS count FROM users GROUP BY role_code`
+    ),
+  ]);
+
+  let updatedAt = null;
+  let updatedBy = null;
+  if (settingRes.rows.length > 0) {
+    const row = settingRes.rows[0];
+    updatedAt = row.updated_at;
+    updatedBy = row.updated_by;
+    const saved = row.value && typeof row.value === 'object' ? row.value : {};
+    for (const [permKey, roleScopes] of Object.entries(saved)) {
+      if (!baseMatrix[permKey] || !roleScopes || typeof roleScopes !== 'object') continue;
+      const nextMap = { ...baseMatrix[permKey] };
+      for (const roleCode of VALID_RBAC_ROLES) {
+        if (roleCode in roleScopes) {
+          const val = roleScopes[roleCode];
+          if (val === null || val === 'none' || val === '') {
+            delete nextMap[roleCode];
+          } else if (VALID_RBAC_SCOPES.includes(val)) {
+            nextMap[roleCode] = val;
+          }
+        }
+      }
+      baseMatrix[permKey] = nextMap;
+    }
+  }
+
+  // Ensure CEO locked permissions are always 'all'
+  for (const lockedKey of CEO_LOCKED_PERMISSIONS) {
+    if (baseMatrix[lockedKey]) {
+      baseMatrix[lockedKey].CEO = 'all';
+    }
+  }
+
+  const roleCounts = VALID_RBAC_ROLES.reduce((acc, r) => {
+    acc[r] = 0;
+    return acc;
+  }, {});
+  for (const r of countsRes.rows) {
+    if (r.role_code) roleCounts[r.role_code] = Number(r.count) || 0;
+  }
+
+  return {
+    matrix: baseMatrix,
+    defaultMatrix: cloneDefaultRbacMatrix(),
+    roleCounts,
+    updatedAt,
+    updatedBy,
+  };
+}
+
+async function updateRbacRoleMatrix(actor, body = {}, req = null) {
+  const actorRole = actor?.roleCode || actor?.role || 'EMPLOYEE';
+  const actorEmpId = actor?.employeeId || actor?.employee_id || null;
+  const targetRole = body?.roleCode ? String(body.roleCode).trim().toUpperCase() : null;
+
+  if (targetRole && !VALID_RBAC_ROLES.includes(targetRole)) {
+    throw badRequest(`Vai trò không hợp lệ: ${targetRole}`);
+  }
+  if (actorRole === 'HR_DIRECTOR' && targetRole && ['CEO', 'ADMIN'].includes(targetRole)) {
+    throw forbidden('Giám đốc Nhân sự không được phép chỉnh sửa cấu hình quyền hạn của vai trò CEO hoặc ADMIN');
+  }
+
+  return db.withTransaction(async (client) => {
+    const current = await getRbacRoleMatrix(client);
+    const nextMatrix = cloneDefaultRbacMatrix();
+    for (const [permKey, scopes] of Object.entries(current.matrix)) {
+      nextMatrix[permKey] = { ...scopes };
+    }
+
+    if (targetRole && body?.permissions && typeof body.permissions === 'object') {
+      for (const [permKey, rawScope] of Object.entries(body.permissions)) {
+        if (!nextMatrix[permKey]) continue;
+        if (targetRole === 'CEO' && CEO_LOCKED_PERMISSIONS.has(permKey)) {
+          nextMatrix[permKey].CEO = 'all';
+          continue;
+        }
+        const normalizedScope = rawScope ? String(rawScope).toLowerCase() : null;
+        if (!normalizedScope || normalizedScope === 'none') {
+          delete nextMatrix[permKey][targetRole];
+        } else if (VALID_RBAC_SCOPES.includes(normalizedScope)) {
+          nextMatrix[permKey][targetRole] = normalizedScope;
+        } else {
+          throw badRequest(`Phạm vi quyền "${rawScope}" của "${permKey}" không hợp lệ`);
+        }
+      }
+    } else if (body?.matrix && typeof body.matrix === 'object') {
+      for (const [permKey, roleScopes] of Object.entries(body.matrix)) {
+        if (!nextMatrix[permKey] || !roleScopes || typeof roleScopes !== 'object') continue;
+        for (const rCode of VALID_RBAC_ROLES) {
+          if (actorRole === 'HR_DIRECTOR' && ['CEO', 'ADMIN'].includes(rCode)) continue;
+          if (rCode === 'CEO' && CEO_LOCKED_PERMISSIONS.has(permKey)) {
+            nextMatrix[permKey].CEO = 'all';
+            continue;
+          }
+          if (rCode in roleScopes) {
+            const s = roleScopes[rCode] ? String(roleScopes[rCode]).toLowerCase() : null;
+            if (!s || s === 'none') {
+              delete nextMatrix[permKey][rCode];
+            } else if (VALID_RBAC_SCOPES.includes(s)) {
+              nextMatrix[permKey][rCode] = s;
+            }
+          }
+        }
+      }
+    } else {
+      throw badRequest('Dữ liệu cập nhật phân quyền vai trò không hợp lệ');
+    }
+
+    // Serialize explicit nulls for removed default permissions so getRbacRoleMatrix knows they were turned off
+    const serialized = {};
+    for (const permKey of Object.keys(DEFAULT_RBAC_MATRIX)) {
+      serialized[permKey] = {};
+      for (const rCode of VALID_RBAC_ROLES) {
+        serialized[permKey][rCode] = nextMatrix[permKey]?.[rCode] || null;
+      }
+    }
+
+    await client.query(
+      `INSERT INTO system_settings (key, value, category, description, updated_by, updated_at)
+       VALUES ('rbac_role_matrix', $1::jsonb, 'rbac', 'Ma trận phân quyền RBAC theo vai trò', $2, NOW())
+       ON CONFLICT (key) DO UPDATE
+         SET value = EXCLUDED.value,
+             updated_by = EXCLUDED.updated_by,
+             updated_at = NOW()`,
+      [JSON.stringify(serialized), actorEmpId]
+    );
+
+    await writeAudit(client, {
+      user: actor,
+      action: 'UPDATE_RBAC_ROLE_MATRIX',
+      table: 'roles',
+      recordId: targetRole || 'ALL_ROLES',
+      oldValues: targetRole
+        ? Object.fromEntries(Object.keys(DEFAULT_RBAC_MATRIX).map((k) => [k, current.matrix[k]?.[targetRole] || null]))
+        : undefined,
+      newValues: targetRole
+        ? Object.fromEntries(Object.keys(DEFAULT_RBAC_MATRIX).map((k) => [k, nextMatrix[k]?.[targetRole] || null]))
+        : { updatedRole: 'ALL_ROLES' },
+      req,
+    });
+
+    return getRbacRoleMatrix(client);
+  });
+}
+
+async function resetRbacRoleMatrix(actor, body = {}, req = null) {
+  const actorRole = actor?.roleCode || actor?.role || 'EMPLOYEE';
+  const actorEmpId = actor?.employeeId || actor?.employee_id || null;
+  const targetRole = body?.roleCode ? String(body.roleCode).trim().toUpperCase() : null;
+
+  if (targetRole && !VALID_RBAC_ROLES.includes(targetRole)) {
+    throw badRequest(`Vai trò không hợp lệ: ${targetRole}`);
+  }
+  if (actorRole === 'HR_DIRECTOR' && targetRole && ['CEO', 'ADMIN'].includes(targetRole)) {
+    throw forbidden('Giám đốc Nhân sự không được phép đặt lại quyền của vai trò CEO hoặc ADMIN');
+  }
+
+  return db.withTransaction(async (client) => {
+    if (!targetRole) {
+      await client.query(`DELETE FROM system_settings WHERE key = 'rbac_role_matrix'`);
+    } else {
+      const current = await getRbacRoleMatrix(client);
+      const defaults = cloneDefaultRbacMatrix();
+      const serialized = {};
+      for (const permKey of Object.keys(DEFAULT_RBAC_MATRIX)) {
+        serialized[permKey] = {};
+        for (const rCode of VALID_RBAC_ROLES) {
+          if (rCode === targetRole) {
+            serialized[permKey][rCode] = defaults[permKey]?.[rCode] || null;
+          } else {
+            serialized[permKey][rCode] = current.matrix[permKey]?.[rCode] || null;
+          }
+        }
+      }
+      await client.query(
+        `INSERT INTO system_settings (key, value, category, description, updated_by, updated_at)
+         VALUES ('rbac_role_matrix', $1::jsonb, 'rbac', 'Ma trận phân quyền RBAC theo vai trò', $2, NOW())
+         ON CONFLICT (key) DO UPDATE
+           SET value = EXCLUDED.value,
+               updated_by = EXCLUDED.updated_by,
+               updated_at = NOW()`,
+        [JSON.stringify(serialized), actorEmpId]
+      );
+    }
+
+    await writeAudit(client, {
+      user: actor,
+      action: 'RESET_RBAC_ROLE_MATRIX',
+      table: 'roles',
+      recordId: targetRole || 'ALL_ROLES',
+      newValues: { resetToDefault: targetRole || 'ALL_ROLES' },
+      req,
+    });
+
+    return getRbacRoleMatrix(client);
+  });
+}
+
 module.exports = {
   DEFAULT_SETTINGS,
   getSettings,
   getSettingsForPeriod,
   listPolicyVersions,
   updateSettings,
+  getRbacRoleMatrix,
+  updateRbacRoleMatrix,
+  resetRbacRoleMatrix,
 };
