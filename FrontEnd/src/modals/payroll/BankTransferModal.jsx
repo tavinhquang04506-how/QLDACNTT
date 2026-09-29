@@ -255,6 +255,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
               In Ủy nhiệm chi (PDF)
             </button>
             <button
+              data-testid="bank-transfer-export-csv-btn"
               onClick={handleExport}
               className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm transition active:scale-95 flex items-center gap-1.5"
             >
