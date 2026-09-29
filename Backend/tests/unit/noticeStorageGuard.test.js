@@ -1,5 +1,5 @@
 // ============================================
-// tests/unit/noticeStorageGuard.test.js — Unit tests for R46 & R47 fail-closed guards (No PostgreSQL required)
+// tests/unit/noticeStorageGuard.test.js — Unit tests for R46, R47 & R48 fail-closed guards (No PostgreSQL required)
 // ============================================
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const noticesService = require('../../src/modules/notices/service');
 
-describe('R46 & R47 Unit Guards: Notice Test Storage Ownership & Fail-Closed DB Cleanup', () => {
+describe('R46, R47 & R48 Unit Guards: Notice Test Storage Ownership, Fail-Closed DB Cleanup & Unified Advisory Locks', () => {
   const createdTempDirs = [];
 
   after(() => {
@@ -159,8 +159,8 @@ describe('R46 & R47 Unit Guards: Notice Test Storage Ownership & Fail-Closed DB 
     }
   });
 
-  it('R47: cleanupExpiredOrphanAttachments and reconcileAttachmentStorage fail closed (preserve files on disk) when DB query throws', async () => {
-    const isolatedDir = noticesService.createIsolatedTestStorageDir('r47-unit-fail-closed-');
+  it('R47 & R48: cleanupExpiredOrphanAttachments, reconcileAttachmentStorage, and deleteAttachment fail closed on DB error and skip/conflict when pg_try_advisory_xact_lock is held', async () => {
+    const isolatedDir = noticesService.createIsolatedTestStorageDir('r47-r48-unit-fail-closed-');
     const prevTestDir = process.env.TEST_NOTICE_ATTACHMENTS_DIR;
     process.env.TEST_NOTICE_ATTACHMENTS_DIR = isolatedDir;
 
@@ -174,11 +174,11 @@ describe('R46 & R47 Unit Guards: Notice Test Storage Ownership & Fail-Closed DB 
         JSON.stringify(
           {
             id: attId,
-            name: 'fail-closed.pdf',
-            type: 'application/pdf',
+            originalName: 'fail-closed.pdf',
+            mimeType: 'application/pdf',
             sizeBytes: 31,
             sha256: '0'.repeat(64),
-            uploadedBy: 'EMP-002',
+            uploadedByUserId: 'USR-002',
             createdAt: new Date(Date.now() - 5 * 3600 * 1000).toISOString(), // 5h old (>2h TTL)
             noticeId: null,
             state: 'staged',
@@ -188,9 +188,14 @@ describe('R46 & R47 Unit Guards: Notice Test Storage Ownership & Fail-Closed DB 
         )
       );
 
+      // 1. Fail-closed when DB query throws
       const failingExecutor = {
-        async query() {
-          throw new Error('SIMULATED_POSTGRES_DOWN');
+        async withTransaction(fn) {
+          return fn({
+            async query() {
+              throw new Error('SIMULATED_POSTGRES_DOWN');
+            },
+          });
         },
       };
 
@@ -209,6 +214,54 @@ describe('R46 & R47 Unit Guards: Notice Test Storage Ownership & Fail-Closed DB 
       assert.equal(reconcileRes.deletedPending.length, 0);
       assert.equal(fs.existsSync(binPath), true);
       assert.equal(fs.existsSync(metaPath), true);
+
+      await assert.rejects(
+        () =>
+          noticesService.deleteAttachment({ userId: 'USR-002' }, attId, {
+            executor: failingExecutor,
+          }),
+        /SIMULATED_POSTGRES_DOWN/
+      );
+      assert.equal(fs.existsSync(binPath), true);
+
+      // 2. R48: When pg_try_advisory_xact_lock returns acquired=false (lock held by another process's transaction),
+      // cleanup and reconcile skip the file (`skippedInFlight`), and deleteAttachment throws 409 ATTACHMENT_CONCURRENT_CONFLICT
+      const lockedByOtherProcessExecutor = {
+        async withTransaction(fn) {
+          return fn({
+            async query(sql) {
+              if (sql.includes('pg_try_advisory_xact_lock')) {
+                return { rows: [{ acquired: false }] };
+              }
+              throw new Error('Should not query company_notices when advisory lock is not acquired');
+            },
+          });
+        },
+      };
+
+      const cleanupLockedRes = await noticesService.cleanupExpiredOrphanAttachments(
+        noticesService.STAGED_TTL_MS,
+        lockedByOtherProcessExecutor
+      );
+      assert.equal(cleanupLockedRes.deleted.length, 0);
+      assert.deepEqual(cleanupLockedRes.skippedInFlight, [attId]);
+      assert.equal(fs.existsSync(binPath), true);
+
+      const reconcileLockedRes = await noticesService.reconcileAttachmentStorage(
+        lockedByOtherProcessExecutor
+      );
+      assert.equal(reconcileLockedRes.deleted.length, 0);
+      assert.deepEqual(reconcileLockedRes.skippedInFlight, [attId]);
+      assert.equal(fs.existsSync(binPath), true);
+
+      await assert.rejects(
+        () =>
+          noticesService.deleteAttachment({ userId: 'USR-002' }, attId, {
+            executor: lockedByOtherProcessExecutor,
+          }),
+        (err) => err && err.status === 409 && err.code === 'ATTACHMENT_CONCURRENT_CONFLICT'
+      );
+      assert.equal(fs.existsSync(binPath), true);
     } finally {
       noticesService.cleanupTestStorageDir();
       if (prevTestDir === undefined) delete process.env.TEST_NOTICE_ATTACHMENTS_DIR;
