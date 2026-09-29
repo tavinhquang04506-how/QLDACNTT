@@ -406,11 +406,66 @@ function acquireAttachmentLocks(attachmentIds = []) {
 }
 
 /**
- * R47: Database-wide transaction-scoped advisory lock (`pg_try_advisory_xact_lock`)
- * so concurrent requests across multiple Node.js processes cannot bind/delete the same attachment simultaneously.
+ * R48: Execute `fn(client)` inside a dedicated PostgreSQL transaction (`BEGIN ... COMMIT/ROLLBACK`)
+ * so `pg_try_advisory_xact_lock` stays held across the entire check-and-act critical section.
+ * Never falls back to loose `pool.query(...)` calls (which would release transaction-scoped advisory locks after a single statement).
+ */
+async function runInAttachmentTransaction(executor, fn) {
+  const target = executor || db;
+  if (typeof target.withTransaction === 'function') {
+    return target.withTransaction(fn);
+  }
+  if (typeof target.connect === 'function') {
+    const client = await target.connect();
+    let releaseErr;
+    try {
+      await client.query('BEGIN');
+      const res = await fn(client);
+      await client.query('COMMIT');
+      return res;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rbErr) {
+        releaseErr = rbErr;
+      }
+      throw err;
+    } finally {
+      client.release(releaseErr);
+    }
+  }
+  if (typeof target.query === 'function') {
+    return fn(target);
+  }
+  throw new Error('Invalid database executor passed to runInAttachmentTransaction');
+}
+
+/**
+ * R47 & R48: Try to acquire a transaction-scoped PostgreSQL advisory lock (`pg_try_advisory_xact_lock`)
+ * on a dedicated transaction client for a single attachment ID.
+ * Returns `true` if acquired, `false` if another transaction across any process currently holds the lock.
+ */
+async function tryAcquireDbAttachmentLock(client, attachmentId) {
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('Dedicated transaction client is required for pg_try_advisory_xact_lock');
+  }
+  const safeId = String(attachmentId || '').trim();
+  if (!/^NATT-[A-Za-z0-9-]+$/.test(safeId)) return true;
+  const lockRes = await client.query(
+    `SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired`,
+    [`nexus_notice_att:${safeId}`]
+  );
+  return !(lockRes?.rows?.[0] && lockRes.rows[0].acquired === false);
+}
+
+/**
+ * R47 & R48: Database-wide transaction-scoped advisory lock (`pg_try_advisory_xact_lock`)
+ * so concurrent requests across multiple Node.js processes cannot bind/delete/cleanup the same attachment simultaneously.
  */
 async function acquireDbAttachmentLocks(client, attachmentIds = []) {
-  if (!client || typeof client.query !== 'function') return;
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('Dedicated transaction client is required for acquireDbAttachmentLocks');
+  }
   const sortedIds = Array.from(
     new Set(
       (attachmentIds || [])
@@ -420,11 +475,8 @@ async function acquireDbAttachmentLocks(client, attachmentIds = []) {
   ).sort();
 
   for (const id of sortedIds) {
-    const lockRes = await client.query(
-      `SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired`,
-      [`nexus_notice_att:${id}`]
-    );
-    if (lockRes?.rows?.[0] && lockRes.rows[0].acquired === false) {
+    const acquired = await tryAcquireDbAttachmentLock(client, id);
+    if (!acquired) {
       throw new AppError(
         409,
         'ATTACHMENT_CONCURRENT_CONFLICT',
@@ -518,11 +570,14 @@ async function findReferencingNoticeInDb(executor, attachmentId) {
 const STAGED_TTL_MS = 2 * 60 * 60 * 1000;
 
 /**
- * R47: Fail-closed TTL cleanup of expired `staged` attachments.
- * - Before deleting ANY expired `staged` file, queries PostgreSQL (`findReferencingNoticeInDb`) to verify
- *   whether a committed notice references it (e.g. after a post-commit crash before `.meta.json` was marked `bound`).
+ * R47 & R48: Fail-closed TTL cleanup of expired `staged` attachments.
+ * - Opens a transaction on a dedicated DB client and attempts to acquire the unified `pg_try_advisory_xact_lock`
+ *   for each candidate attachment ID BEFORE checking DB references or deleting files.
+ * - If the DB advisory lock is held by another transaction (e.g. an in-flight `create`/`update` before `COMMIT` in any process),
+ *   skips the attachment (`skippedInFlight`) and never deletes it.
+ * - After acquiring the lock, re-reads both PostgreSQL (`findReferencingNoticeInDb`) and on-disk metadata (`readAttachmentMeta`).
  * - If referenced in DB: heals `.meta.json` to `state: 'bound'` with `noticeId` instead of deleting!
- * - If DB lookup fails/throws: fails closed and preserves the file on disk!
+ * - If DB lookup fails/throws: fails closed (`skippedDbError`) and preserves the file on disk!
  */
 async function cleanupExpiredOrphanAttachments(maxAgeMs = STAGED_TTL_MS, executor = db) {
   const storageDir = ensureStorageDir();
@@ -570,33 +625,47 @@ async function cleanupExpiredOrphanAttachments(maxAgeMs = STAGED_TTL_MS, executo
     }
 
     try {
-      let referencingNotice = null;
-      try {
-        referencingNotice = await findReferencingNoticeInDb(executor, meta.id);
-      } catch (_dbErr) {
-        // R47: Fail closed when DB lookup fails — never delete a file if DB reference cannot be verified!
-        summary.skippedDbError.push(meta.id);
-        continue;
-      }
+      await runInAttachmentTransaction(executor, async (client) => {
+        const dbLockAcquired = await tryAcquireDbAttachmentLock(client, meta.id);
+        if (!dbLockAcquired) {
+          summary.skippedInFlight.push(meta.id);
+          return;
+        }
 
-      if (referencingNotice) {
-        // R47: File IS referenced in PostgreSQL! Heal `.meta.json` to `bound` instead of deleting.
-        writeAttachmentMetaRaw(metaFull, {
-          ...meta,
-          state: 'bound',
-          noticeId: referencingNotice.id,
-          boundAt: meta.boundAt || new Date().toISOString(),
-          recoveredByReconcileAt: new Date().toISOString(),
-        });
-        summary.healedToBound.push(meta.id);
-      } else {
-        // Re-read metadata to verify it wasn't updated while awaiting DB
+        const referencingNotice = await findReferencingNoticeInDb(client, meta.id);
         const freshMeta = readAttachmentMeta(meta.id);
-        if (freshMeta && freshMeta.state === 'staged' && !freshMeta.noticeId) {
+        if (!freshMeta) return;
+
+        if (referencingNotice) {
+          // R47 & R48: File IS referenced in PostgreSQL! Heal `.meta.json` to `bound` instead of deleting.
+          writeAttachmentMetaRaw(freshMeta.metaPath, {
+            ...freshMeta,
+            state: 'bound',
+            noticeId: referencingNotice.id,
+            boundAt: freshMeta.boundAt || new Date().toISOString(),
+            recoveredByReconcileAt: new Date().toISOString(),
+          });
+          summary.healedToBound.push(meta.id);
+          return;
+        }
+
+        const freshCreatedAtRaw = freshMeta.createdAt || freshMeta.uploadedAt;
+        const freshCreatedAtMs = freshCreatedAtRaw ? Date.parse(freshCreatedAtRaw) : 0;
+        const stillExpiredStaged =
+          (!freshMeta.noticeId || freshMeta.state === 'staged') &&
+          freshMeta.state !== 'bound' &&
+          freshMeta.state !== 'deletion-pending' &&
+          freshCreatedAtMs > 0 &&
+          now - freshCreatedAtMs > maxAgeMs;
+
+        if (stillExpiredStaged) {
           deleteAttachmentFiles(meta.id);
           summary.deleted.push(meta.id);
         }
-      }
+      });
+    } catch (_dbErr) {
+      // R47 & R48: Fail closed when DB transaction/lookup fails — never delete a file if DB reference cannot be verified!
+      summary.skippedDbError.push(meta.id);
     } finally {
       if (releaseLock) releaseLock();
     }
@@ -605,11 +674,13 @@ async function cleanupExpiredOrphanAttachments(maxAgeMs = STAGED_TTL_MS, executo
 }
 
 /**
- * R43 & R47: Idempotent, fail-closed reconciliation between PostgreSQL `company_notices.attachments` and filesystem metadata.
- * - Any `staged` or `deletion-pending` file that IS referenced in DB (e.g., after a process crash after DB commit or before rollback finished)
- *   is promoted/restored to `state: 'bound'` with the authoritative `noticeId` from PostgreSQL.
- * - Any `deletion-pending` file not referenced in DB is physically deleted.
- * - Any expired `staged` file (`age > maxStagedAgeMs`) confirmed unreferenced in DB is physically deleted.
+ * R43, R47 & R48: Idempotent, fail-closed reconciliation between PostgreSQL `company_notices.attachments` and filesystem metadata.
+ * - Acquires the unified PostgreSQL transaction advisory lock (`pg_try_advisory_xact_lock`) on a dedicated transaction client
+ *   for each attachment ID before reading DB references and on-disk metadata.
+ * - If another process/connection holds the advisory lock on an attachment (e.g. an uncommitted `create`/`update`),
+ *   records `skippedInFlight` and leaves the file untouched.
+ * - Any `staged` or `deletion-pending` file that IS referenced in DB is promoted/restored to `state: 'bound'`.
+ * - Any `deletion-pending` or expired `staged` file confirmed unreferenced in DB while holding the advisory lock is physically deleted.
  * - If DB lookup fails for any file, fails closed (`skippedDbError`) and preserves the file on disk.
  */
 async function reconcileAttachmentStorage(executor = db, options = {}) {
@@ -665,64 +736,70 @@ async function reconcileAttachmentStorage(executor = db, options = {}) {
     }
 
     try {
-      let referencingNotice = null;
-      try {
-        referencingNotice = await findReferencingNoticeInDb(executor, meta.id);
-      } catch (dbErr) {
-        // R47: Fail closed when DB is unreachable or query throws
-        actions.skippedDbError.push(meta.id);
-        if (!actions.dbError) {
-          actions.dbError = dbErr?.message || String(dbErr);
+      await runInAttachmentTransaction(executor, async (client) => {
+        const dbLockAcquired = await tryAcquireDbAttachmentLock(client, meta.id);
+        if (!dbLockAcquired) {
+          actions.skippedInFlight.push(meta.id);
+          return;
         }
-        continue;
-      }
 
-      if (referencingNotice) {
-        if (
-          meta.state !== 'bound' ||
-          meta.noticeId !== referencingNotice.id ||
-          meta.deletionPendingAt !== undefined
-        ) {
-          const prevState = meta.state;
-          const updatedMeta = {
-            ...meta,
-            state: 'bound',
-            noticeId: referencingNotice.id,
-            boundAt: meta.boundAt || new Date().toISOString(),
-            recoveredByReconcileAt: new Date().toISOString(),
-          };
-          delete updatedMeta.deletionPendingAt;
-          writeAttachmentMetaRaw(metaFull, updatedMeta);
-          actions.restored.push(meta.id);
-          if (prevState === 'staged' || !meta.noticeId) {
-            actions.promotedStaged.push(meta.id);
-          } else {
-            actions.recoveredPending.push(meta.id);
+        const referencingNotice = await findReferencingNoticeInDb(client, meta.id);
+        const freshMeta = readAttachmentMeta(meta.id);
+        if (!freshMeta) return;
+
+        if (referencingNotice) {
+          if (
+            freshMeta.state !== 'bound' ||
+            freshMeta.noticeId !== referencingNotice.id ||
+            freshMeta.deletionPendingAt !== undefined
+          ) {
+            const prevState = freshMeta.state;
+            const updatedMeta = {
+              ...freshMeta,
+              state: 'bound',
+              noticeId: referencingNotice.id,
+              boundAt: freshMeta.boundAt || new Date().toISOString(),
+              recoveredByReconcileAt: new Date().toISOString(),
+            };
+            delete updatedMeta.deletionPendingAt;
+            writeAttachmentMetaRaw(freshMeta.metaPath, updatedMeta);
+            actions.restored.push(meta.id);
+            if (prevState === 'staged' || !freshMeta.noticeId) {
+              actions.promotedStaged.push(meta.id);
+            } else {
+              actions.recoveredPending.push(meta.id);
+            }
           }
-        }
-      } else {
-        // Confirmed 0 references in `company_notices`
-        if (meta.state === 'deletion-pending') {
-          deleteAttachmentFiles(meta.id);
-          actions.deleted.push(meta.id);
-          actions.deletedPending.push(meta.id);
-        } else if (meta.state === 'staged' || !meta.noticeId) {
-          const createdAtRaw = meta.createdAt || meta.uploadedAt;
-          const createdAtMs = createdAtRaw ? Date.parse(createdAtRaw) : 0;
-          if (createdAtMs > 0 && now - createdAtMs > maxStagedAgeMs) {
-            deleteAttachmentFiles(meta.id);
-            actions.deleted.push(meta.id);
-            actions.deletedExpiredStaged.push(meta.id);
-          }
-        } else if (meta.state === 'bound' && meta.noticeId) {
-          // Was marked bound to a notice that was deleted in DB before post-commit unlink completed
-          const boundAtMs = Date.parse(meta.boundAt || meta.createdAt || '') || 0;
-          if (boundAtMs === 0 || now - boundAtMs > Math.min(maxStagedAgeMs, 60 * 1000)) {
+        } else {
+          // Confirmed 0 references in `company_notices` while holding the cross-process DB advisory lock
+          if (freshMeta.state === 'deletion-pending') {
             deleteAttachmentFiles(meta.id);
             actions.deleted.push(meta.id);
             actions.deletedPending.push(meta.id);
+          } else if (freshMeta.state === 'staged' || !freshMeta.noticeId) {
+            const createdAtRaw = freshMeta.createdAt || freshMeta.uploadedAt;
+            const createdAtMs = createdAtRaw ? Date.parse(createdAtRaw) : 0;
+            if (createdAtMs > 0 && now - createdAtMs > maxStagedAgeMs) {
+              deleteAttachmentFiles(meta.id);
+              actions.deleted.push(meta.id);
+              actions.deletedExpiredStaged.push(meta.id);
+            }
+          } else if (freshMeta.state === 'bound' && freshMeta.noticeId) {
+            // Was marked bound to a notice that was deleted in DB before post-commit unlink completed
+            const boundAtMs = Date.parse(freshMeta.boundAt || freshMeta.createdAt || '') || 0;
+            if (boundAtMs === 0 || now - boundAtMs > Math.min(maxStagedAgeMs, 60 * 1000)) {
+              deleteAttachmentFiles(meta.id);
+              actions.deleted.push(meta.id);
+              actions.deletedPending.push(meta.id);
+            }
           }
         }
+      });
+    } catch (dbErr) {
+      // R47 & R48: Fail closed when DB is unreachable or query throws
+      actions.skippedDbError.push(meta.id);
+      if (!actions.dbError) {
+        actions.dbError = dbErr?.message || String(dbErr);
       }
     } finally {
       if (releaseLock) releaseLock();
@@ -898,34 +975,45 @@ async function deleteAttachment(actor, attachmentId, options = {}) {
   const executor = options.executor || db;
   const releaseLock = acquireAttachmentLocks([attachmentId]);
   try {
-    const stored = readAttachmentMeta(attachmentId);
-    if (!stored) {
-      throw notFound('Không tìm thấy tệp đính kèm tạm thời trên máy chủ');
-    }
-    if (
-      stored.uploadedByUserId &&
-      actor?.userId &&
-      String(stored.uploadedByUserId) !== String(actor.userId)
-    ) {
-      throw forbidden('Bạn không phải người tải lên tệp đính kèm tạm thời này nên không có quyền xóa.');
-    }
+    return await runInAttachmentTransaction(executor, async (client) => {
+      // R48: Acquire the unified transaction-scoped DB advisory lock BEFORE reading metadata or DB reference
+      await acquireDbAttachmentLocks(client, [attachmentId]);
 
-    // R47: Always verify against PostgreSQL even if `stored.noticeId` is null (in case of post-commit crash)
-    const referencingNotice = await findReferencingNoticeInDb(executor, attachmentId);
-    if (referencingNotice) {
-      writeAttachmentMetaRaw(stored.metaPath, {
-        ...stored,
-        state: 'bound',
-        noticeId: referencingNotice.id,
-        boundAt: stored.boundAt || new Date().toISOString(),
-      });
-      throw badRequest(
-        'Tệp đang được gắn với văn bản thông báo đã phát hành; vui lòng gỡ tệp và lưu cập nhật thông báo.'
-      );
-    }
+      const stored = readAttachmentMeta(attachmentId);
+      if (!stored || stored.state === 'deletion-pending') {
+        throw notFound('Không tìm thấy tệp đính kèm tạm thời trên máy chủ');
+      }
+      if (
+        stored.uploadedByUserId &&
+        actor?.userId &&
+        String(stored.uploadedByUserId) !== String(actor.userId)
+      ) {
+        throw forbidden('Bạn không phải người tải lên tệp đính kèm tạm thời này nên không có quyền xóa.');
+      }
 
-    deleteAttachmentFiles(attachmentId);
-    return { deleted: true, id: attachmentId };
+      // R47 & R48: Always verify against PostgreSQL on the locked transaction client
+      const referencingNotice = await findReferencingNoticeInDb(client, attachmentId);
+      if (referencingNotice || stored.noticeId) {
+        if (referencingNotice) {
+          writeAttachmentMetaRaw(stored.metaPath, {
+            ...stored,
+            state: 'bound',
+            noticeId: referencingNotice.id,
+            boundAt: stored.boundAt || new Date().toISOString(),
+          });
+        }
+        throw badRequest(
+          'Tệp đang được gắn với văn bản thông báo đã phát hành; vui lòng gỡ tệp và lưu cập nhật thông báo.'
+        );
+      }
+
+      if (typeof options.beforeDeleteUnlinkHook === 'function') {
+        await options.beforeDeleteUnlinkHook(client, attachmentId);
+      }
+
+      deleteAttachmentFiles(attachmentId);
+      return { deleted: true, id: attachmentId };
+    });
   } finally {
     releaseLock();
   }
@@ -1141,10 +1229,10 @@ async function create(actor, body, req, options = {}) {
     prepareVerifiedAttachmentsForNotice(actor, null, body.attachments || []);
 
     const createdRow = await executor.withTransaction(async (client) => {
-      // R47: Acquire DB-level transaction advisory locks on all attachment IDs (works across multiple processes)
+      // R47 & R48: Acquire DB-level transaction advisory locks on all attachment IDs (works across multiple processes)
       await acquireDbAttachmentLocks(client, inputAttIds);
 
-      // R47: Check PostgreSQL truth for each attachment ID to detect:
+      // R47 & R48: Check PostgreSQL truth for each attachment ID AFTER acquiring advisory locks to detect:
       // 1) An idempotent retry of a previously committed `create` call that failed post-commit before updating `.meta.json`, or
       // 2) A conflicting attempt to bind an attachment that was already committed to another notice in DB.
       for (const attId of inputAttIds) {
@@ -1179,6 +1267,9 @@ async function create(actor, body, req, options = {}) {
           );
         }
       }
+
+      // R48: Re-read and verify on-disk existence/ownership AFTER acquiring the DB advisory locks
+      prepareVerifiedAttachmentsForNotice(actor, null, body.attachments || []);
 
       if (body.targetDepartmentId) await assertDepartment(client, body.targetDepartmentId);
 
