@@ -82,4 +82,35 @@ async function withTransaction(fn) {
   }
 }
 
-module.exports = { pool, query, getClient, withTransaction };
+/**
+ * Run `fn(client)` inside a REPEATABLE READ READ ONLY transaction so multi-query reads
+ * (such as pagination metadata + snapshot_token + page rows) share a single atomic MVCC snapshot.
+ */
+async function withReadSnapshot(fn) {
+  if (dbModule.query !== query && !pool.connect?.mock) {
+    return fn(dbModule);
+  }
+  if (config.isTest) {
+    await ensureTestPoolSafe('db.withReadSnapshot');
+  }
+  const client = await pool.connect();
+  let releaseError;
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      releaseError = rollbackErr;
+    }
+    throw err;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+const dbModule = { pool, query, getClient, withTransaction, withReadSnapshot };
+module.exports = dbModule;

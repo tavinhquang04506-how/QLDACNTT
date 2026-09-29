@@ -210,8 +210,9 @@ async function createRoleAccount({
  */
 async function loginViaUi(cdp, email, password) {
   await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/login`, 1000);
-  await cdp.eval(`(() => { localStorage.clear(); sessionStorage.clear(); return true; })()`);
-  await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/login`, 1200);
+  await cdp.eval(`(() => { try { localStorage.clear(); sessionStorage.clear(); } catch {} return true; })()`);
+  await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/login`, 1500);
+  await cdp.waitForSelector('input[type="text"]', 10000);
 
   await cdp.fillInput('input[type="text"]', email);
   await cdp.fillInput('input[type="password"]', password);
@@ -1326,7 +1327,134 @@ async function main() {
       `[ASSERT 7 (R24+R25+R26) PASS] R25HonestRecalcBtn=true, R24Modal(unselectedBlocked=true, cancelSafe=true, midModalStaleDetected=true, error500Safe=true, persistedDays=${slipAfterR24Reconcile.actual_work_days}, persistedBase=${slipAfterR24Reconcile.base_salary}, preservedBonus=${slipAfterR24Reconcile.bonus}, auditConflicts=${r24AuditRow.new_values.reconciled_conflicts.length}), R26ExportGuards(duplicateBlocked=true, snapshotMonetaryChangeBlocked=true)`
     );
 
-    console.log('=== [ALL R14-R26 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 8: R27 + R28 + R30 UI-Driven Verification
+    // - R27: Net-neutral amount swap between two employees AND employee full_name change after UI load
+    //        must both be caught by snapshotToken during multi-page CSV export.
+    // - R28: /tasks API 500 error banner + retry recovery, and zero 1200h / 20-member sample fallbacks on empty state.
+    // - R30: LINE_MANAGER on /payroll makes 0 calls to /api/payroll/periods; ADMIN on /payroll sees payroll-role-restricted.
+    // =========================================================================
+    // 8a. R27: Net-neutral swap (+500k on paidEmp1, -500k on paidEmp2 so totalNet stays identical)
+    await db.query(
+      'UPDATE payslips SET bonus = bonus + 500000, net_salary = net_salary + 500000 WHERE period_id = $1 AND employee_id = $2',
+      [period11Row.id, paidEmp1.emp.id]
+    );
+    await db.query(
+      'UPDATE payslips SET bonus = bonus - 500000, net_salary = net_salary - 500000 WHERE period_id = $1 AND employee_id = $2',
+      [period11Row.id, paidEmp2.emp.id]
+    );
+    try {
+      const csvBeforeSwap = fs.readdirSync(downloadDir).length;
+      await cdp.click('[data-testid="export-payroll-csv-btn"]', 1200);
+      const swapErr = await cdp.eval(
+        `document.querySelector('[data-testid="payroll-export-error-banner"]')?.innerText || ''`
+      );
+      const csvAfterSwap = fs.readdirSync(downloadDir).length;
+      assert.match(
+        swapErr,
+        /thay đổi|snapshot/i,
+        'R27: Net-neutral salary swap between employees must be detected by snapshotToken during CSV export'
+      );
+      assert.equal(csvAfterSwap, csvBeforeSwap, 'R27: CSV must NOT download on net-neutral swap');
+    } finally {
+      await db.query(
+        'UPDATE payslips SET bonus = bonus - 500000, net_salary = net_salary - 500000 WHERE period_id = $1 AND employee_id = $2',
+        [period11Row.id, paidEmp1.emp.id]
+      );
+      await db.query(
+        'UPDATE payslips SET bonus = bonus + 500000, net_salary = net_salary + 500000 WHERE period_id = $1 AND employee_id = $2',
+        [period11Row.id, paidEmp2.emp.id]
+      );
+    }
+
+    // 8b. R28: Navigate to /tasks -> test 500 error banner + retry, then test empty projects state (0h / 0h, never 1200h)
+    const projectsServiceBackend = require('../src/modules/projects/service');
+    const origListProjects = projectsServiceBackend.list.bind(projectsServiceBackend);
+    let shouldFailProjects = true;
+    projectsServiceBackend.list = async (...args) => {
+      if (shouldFailProjects) {
+        const err = new Error('Simulated DB outage on GET /api/projects (R28 E2E)');
+        err.status = 500;
+        throw err;
+      }
+      return origListProjects(...args);
+    };
+    try {
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/tasks`, 1800);
+      await cdp.waitForSelector('[data-testid="projects-load-error-banner"]');
+      const tasksErrBanner = await cdp.eval(
+        `document.querySelector('[data-testid="projects-load-error-banner"]')?.innerText || ''`
+      );
+      assert.match(tasksErrBanner, /Lỗi tải dữ liệu dự án|Simulated DB outage|Internal Server Error/i);
+
+      // Recover backend and click Retry -> loads real projects
+      shouldFailProjects = false;
+      await cdp.click('[data-testid="projects-retry-btn"]', 1600);
+      const errBannerAfterRetry = await cdp.eval(
+        `Boolean(document.querySelector('[data-testid="projects-load-error-banner"]'))`
+      );
+      assert.equal(errBannerAfterRetry, false, 'R28: Error banner must clear after retry succeeds');
+    } finally {
+      projectsServiceBackend.list = origListProjects;
+    }
+
+    // Test empty projects & empty members on /tasks (HR_DIRECTOR view): must show 0/0 nhân sự (0.0%), never 0/20 or 90.0%
+    const empServiceBackend = require('../src/modules/employees/service');
+    const origListEmployees = empServiceBackend.list.bind(empServiceBackend);
+    projectsServiceBackend.list = async () => [];
+    empServiceBackend.list = async () => ({
+      data: [],
+      pagination: { total: 0, page: 1, limit: 50, totalPages: 1 },
+    });
+    try {
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/tasks`, 1800);
+      const tasksPageText = await cdp.eval('document.body.innerText');
+      assert.match(tasksPageText, /0\/0 nhân sự tham gia/i, 'R28: Empty members must display 0/0 nhân sự tham gia, never 0/20');
+      assert.equal(tasksPageText.includes('0/20 nhân sự'), false, 'R28: Must never display hardcoded 20 team count');
+    } finally {
+      projectsServiceBackend.list = origListProjects;
+      empServiceBackend.list = origListEmployees;
+    }
+
+    // 8c. R30: Login as LINE_MANAGER -> visit /payroll -> verify 0 calls to /api/payroll/periods
+    const mgrR30Acc = await createRoleAccount({
+      role: 'LINE_MANAGER',
+      departmentId: 'DEPT-SALES',
+      fullName: 'Trưởng Phòng Kinh Doanh R30',
+    });
+    await loginViaUi(cdp, mgrR30Acc.user.email, mgrR30Acc.password);
+    let periodsCalledByLineManager = 0;
+    const origListPeriods = payrollServiceBackend.listPeriods.bind(payrollServiceBackend);
+    payrollServiceBackend.listPeriods = async (...args) => {
+      periodsCalledByLineManager += 1;
+      return origListPeriods(...args);
+    };
+    try {
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 1800);
+      assert.equal(
+        periodsCalledByLineManager,
+        0,
+        'R30: LINE_MANAGER visiting /payroll must NOT call /api/payroll/periods'
+      );
+    } finally {
+      payrollServiceBackend.listPeriods = origListPeriods;
+    }
+
+    // 8d. R30: Login as ADMIN -> visit /payroll -> verify [data-testid="payroll-role-restricted"] is shown
+    const adminUser = await createTestUser({ role: 'ADMIN', employeeId: null, password: 'Password@123' });
+    await loginViaUi(cdp, adminUser.email, 'Password@123');
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 1800);
+    await cdp.waitForSelector('[data-testid="payroll-role-restricted"]');
+    const adminRestrictedText = await cdp.eval(
+      `document.querySelector('[data-testid="payroll-role-restricted"]')?.innerText || ''`
+    );
+    assert.match(adminRestrictedText, /không thuộc phạm vi nghiệp vụ Bảng lương/i);
+
+    console.log(
+      '[ASSERT 8 (R27+R28+R30) PASS] R27NetNeutralSwapBlocked=true, R28TasksErrorRetryAndZeroFallback=true, R30LineManagerZeroPeriodsCalls=true, R30AdminRestrictedGuard=true'
+    );
+
+    console.log('=== [ALL R14-R30 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});

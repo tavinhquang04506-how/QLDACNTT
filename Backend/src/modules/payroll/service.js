@@ -978,26 +978,28 @@ async function transfer(actor, id, req) {
 }
 
 async function bankTransfer(id) {
-  const period = await findPeriod(db, id);
-  if (!LOCKED.includes(period.status)) throw new AppError(409, 'INVALID_STATUS', 'Kỳ lương chưa được chốt');
-  const { rows } = await db.query(
-    `SELECT ps.employee_id, e.full_name, ps.bank_account, ps.bank_name, ps.net_salary
-       FROM payslips ps JOIN employees e ON e.id = ps.employee_id WHERE ps.period_id = $1 ORDER BY ps.employee_id`,
-    [id]
-  );
-  const payable = rows.filter((r) => r.bank_account && r.bank_name);
-  return {
-    period: period.period,
-    status: period.status,
-    count: payable.length,
-    totalAmount: payable.reduce((sum, r) => sum + Number(r.net_salary), 0), // sum of the lines in this batch
-    periodTotalNet: Number(period.total_net),
-    items: payable.map((r) => ({
-      employee_id: r.employee_id, full_name: r.full_name, bank_account: r.bank_account, bank_name: r.bank_name,
-      amount: Number(r.net_salary), memo: `LUONG ${period.period} ${r.employee_id}`,
-    })),
-    missingBank: rows.filter((r) => !r.bank_account || !r.bank_name).map((r) => ({ employee_id: r.employee_id, full_name: r.full_name })),
-  };
+  return db.withReadSnapshot(async (client) => {
+    const period = await findPeriod(client, id);
+    if (!LOCKED.includes(period.status)) throw new AppError(409, 'INVALID_STATUS', 'Kỳ lương chưa được chốt');
+    const { rows } = await client.query(
+      `SELECT ps.employee_id, e.full_name, ps.bank_account, ps.bank_name, ps.net_salary
+         FROM payslips ps JOIN employees e ON e.id = ps.employee_id WHERE ps.period_id = $1 ORDER BY ps.employee_id`,
+      [id]
+    );
+    const payable = rows.filter((r) => r.bank_account && r.bank_name);
+    return {
+      period: period.period,
+      status: period.status,
+      count: payable.length,
+      totalAmount: payable.reduce((sum, r) => sum + Number(r.net_salary), 0), // sum of the lines in this batch
+      periodTotalNet: Number(period.total_net),
+      items: payable.map((r) => ({
+        employee_id: r.employee_id, full_name: r.full_name, bank_account: r.bank_account, bank_name: r.bank_name,
+        amount: Number(r.net_salary), memo: `LUONG ${period.period} ${r.employee_id}`,
+      })),
+      missingBank: rows.filter((r) => !r.bank_account || !r.bank_name).map((r) => ({ employee_id: r.employee_id, full_name: r.full_name })),
+    };
+  });
 }
 
 const PAYSLIP_SQL = `
@@ -1012,89 +1014,122 @@ const PAYSLIP_SQL = `
  * Employees (and managers) only ever see their own payslips, and only once the period is locked.
  * R22: Deterministic multi-page ordering (`pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC`)
  * ensures 501+ payslip pagination never skips or duplicates rows across page boundaries.
+ * R27: Executes scope resolution, aggregate totals, full-dataset snapshot_token (including joined
+ * employee/department fields), and paginated rows inside a single REPEATABLE READ READ ONLY transaction
+ * snapshot on the same DB client.
  */
 async function listPayslips(user, query, scope) {
   const { page, limit, offset } = parsePagination(query, { defaultLimit: 100, maxLimit: 500 });
-  const params = [];
-  const where = [];
-  const cond = await scopeCondition(db, user, scope, { employee: 'ps.employee_id', department: 'e.department_id' }, params);
-  if (cond) where.push(cond);
-  if (scope !== 'all') where.push("pp.status IN ('DA_CHOT', 'DA_CHUYEN_KHOAN')");
-  if (query.period) {
-    params.push(query.period);
-    where.push(`pp.period = $${params.length}`);
-  }
-  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const aggRes = await db.query(
-    `SELECT COUNT(*)::int AS count,
-            COALESCE(SUM(ps.net_salary), 0)::numeric AS total_net,
-            COALESCE(SUM(ps.gross_income), 0)::numeric AS total_gross,
-            COALESCE(SUM(ps.base_salary), 0)::numeric AS total_base,
-            COALESCE(SUM(ps.ot_pay), 0)::numeric AS total_ot_pay,
-            COALESCE(SUM(ps.allowances + ps.bonus), 0)::numeric AS total_kpi_and_allowances,
-            COALESCE(SUM(ps.bhxh_amount + ps.bhyt_amount + ps.bhtn_amount), 0)::numeric AS total_insurance,
-            COALESCE(SUM(ps.pit_amount), 0)::numeric AS total_pit,
-            MD5(
-              COALESCE(
-                string_agg(
-                  CONCAT_WS(
-                    ':',
-                    ps.id::text,
-                    ps.employee_id,
-                    pp.period,
-                    ps.base_salary::text,
-                    ps.actual_work_days::text,
-                    ps.ot_hours::text,
-                    ps.ot_pay::text,
-                    ps.allowances::text,
-                    ps.bonus::text,
-                    ps.gross_income::text,
-                    ps.bhxh_amount::text,
-                    ps.bhyt_amount::text,
-                    ps.bhtn_amount::text,
-                    ps.pit_amount::text,
-                    ps.net_salary::text,
-                    COALESCE(ps.bank_account, ''),
-                    COALESCE(ps.bank_name, ''),
-                    COALESCE(ps.note, ''),
-                    ps.status,
-                    COALESCE(pp.policy_snapshot->>'source_fingerprint', '')
+  return db.withReadSnapshot(async (client) => {
+    const params = [];
+    const where = [];
+    const cond = await scopeCondition(client, user, scope, { employee: 'ps.employee_id', department: 'e.department_id' }, params);
+    if (cond) where.push(cond);
+    if (scope !== 'all') where.push("pp.status IN ('DA_CHOT', 'DA_CHUYEN_KHOAN')");
+    if (query.period) {
+      params.push(query.period);
+      where.push(`pp.period = $${params.length}`);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const scopeParamIdx = params.length + 1;
+    const aggRes = await client.query(
+      `SELECT COUNT(*)::int AS count,
+              COALESCE(SUM(ps.net_salary), 0)::numeric AS total_net,
+              COALESCE(SUM(ps.gross_income), 0)::numeric AS total_gross,
+              COALESCE(SUM(ps.base_salary), 0)::numeric AS total_base,
+              COALESCE(SUM(ps.ot_pay), 0)::numeric AS total_ot_pay,
+              COALESCE(SUM(ps.allowances + ps.bonus), 0)::numeric AS total_kpi_and_allowances,
+              COALESCE(SUM(ps.bhxh_amount + ps.bhyt_amount + ps.bhtn_amount), 0)::numeric AS total_insurance,
+              COALESCE(SUM(ps.pit_amount), 0)::numeric AS total_pit,
+              MD5(
+                COALESCE(
+                  string_agg(
+                    CONCAT_WS(
+                      ':',
+                      ps.id::text,
+                      ps.employee_id,
+                      COALESCE(e.full_name, ''),
+                      COALESCE(e.job_title, ''),
+                      COALESCE(e.department_id, ''),
+                      COALESCE(d.name, ''),
+                      pp.period,
+                      pp.status,
+                      COALESCE(ps.standard_work_days::text, ''),
+                      ps.base_salary::text,
+                      ps.actual_work_days::text,
+                      ps.ot_hours::text,
+                      ps.ot_pay::text,
+                      ps.allowances::text,
+                      ps.bonus::text,
+                      ps.gross_income::text,
+                      ps.bhxh_amount::text,
+                      ps.bhyt_amount::text,
+                      ps.bhtn_amount::text,
+                      COALESCE(ps.pit_taxable::text, ''),
+                      ps.pit_amount::text,
+                      ps.net_salary::text,
+                      COALESCE(ps.bank_account, ''),
+                      COALESCE(ps.bank_name, ''),
+                      COALESCE(ps.note, ''),
+                      ps.status,
+                      COALESCE(pp.policy_snapshot->>'source_fingerprint', ''),
+                      COALESCE($${scopeParamIdx}::text, '')
+                    ),
+                    '|' ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC
                   ),
-                  '|' ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC
-                ),
-                'EMPTY'
-              )
-            ) AS snapshot_token
-       FROM payslips ps
-       JOIN payroll_periods pp ON pp.id = ps.period_id
-       JOIN employees e ON e.id = ps.employee_id
-       ${clause}`,
-    params
-  );
-  const aggRow = aggRes.rows[0] || {};
-  const total = parseInt(aggRow.count || 0, 10);
-  const { rows } = await db.query(
-    `${PAYSLIP_SQL} ${clause} ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, limit, offset]
-  );
-  const meta = paginationMeta(total, page, limit);
-  return {
-    data: rows,
-    pagination: {
-      ...meta,
-      period: query.period || null,
-      snapshotToken: aggRow.snapshot_token || 'EMPTY',
-      aggregates: {
-        totalNet: Number(aggRow.total_net || 0),
-        totalGross: Number(aggRow.total_gross || 0),
-        totalBase: Number(aggRow.total_base || 0),
-        totalOtPay: Number(aggRow.total_ot_pay || 0),
-        totalKpiAndAllowances: Number(aggRow.total_kpi_and_allowances || 0),
-        totalInsurance: Number(aggRow.total_insurance || 0),
-        totalPit: Number(aggRow.total_pit || 0),
+                  'EMPTY'
+                )
+              ) AS snapshot_token
+         FROM payslips ps
+         JOIN payroll_periods pp ON pp.id = ps.period_id
+         JOIN employees e ON e.id = ps.employee_id
+         LEFT JOIN departments d ON e.department_id = d.id
+         ${clause}`,
+      [...params, String(scope || '')]
+    );
+    const aggRow = aggRes.rows[0] || {};
+    const total = parseInt(aggRow.count || 0, 10);
+    const { rows } = await client.query(
+      `${PAYSLIP_SQL} ${clause} ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+
+    const totalNet = Number(aggRow.total_net || 0);
+    const totalGross = Number(aggRow.total_gross || 0);
+    if (
+      (total === 0 && rows.length > 0) ||
+      rows.length > total ||
+      (page === 1 &&
+        offset === 0 &&
+        rows.length === total &&
+        Math.round(rows.reduce((s, r) => s + Number(r.net_salary || 0), 0)) !== Math.round(totalNet))
+    ) {
+      throw new AppError(
+        409,
+        'PAYROLL_SNAPSHOT_INCONSISTENT',
+        'Phát hiện dữ liệu bảng lương thay đổi không đồng nhất giữa metadata và danh sách phiếu lương. Vui lòng tải lại.'
+      );
+    }
+
+    const meta = paginationMeta(total, page, limit);
+    return {
+      data: rows,
+      pagination: {
+        ...meta,
+        period: query.period || null,
+        snapshotToken: aggRow.snapshot_token || 'EMPTY',
+        aggregates: {
+          totalNet,
+          totalGross,
+          totalBase: Number(aggRow.total_base || 0),
+          totalOtPay: Number(aggRow.total_ot_pay || 0),
+          totalKpiAndAllowances: Number(aggRow.total_kpi_and_allowances || 0),
+          totalInsurance: Number(aggRow.total_insurance || 0),
+          totalPit: Number(aggRow.total_pit || 0),
+        },
       },
-    },
-  };
+    };
+  });
 }
 
 async function myPayslips(user) {

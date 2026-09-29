@@ -1,8 +1,80 @@
 const db = require('../../config/db');
+const config = require('../../config/env');
 const { departmentOf } = require('../projects/access');
 const dashboardService = require('../dashboard/service');
 const turnoverService = require('../analytics/turnover');
 const { cellOf, CELLS } = require('../analytics/nineBox');
+const settingsService = require('../settings/service');
+
+const MAX_ATTENDANCE_RANGE_DAYS = 62;
+
+/**
+ * R29: Centralized timezone-aware clock helper (Asia/Ho_Chi_Minh by default).
+ * Accepts an optional `nowOverride` (Date, ISO string, or timestamp) for deterministic testing.
+ */
+function getCurrentClock(nowOverride = null, timeZone = null) {
+  const tz = timeZone || process.env.APP_TIMEZONE || config.timezone || 'Asia/Ho_Chi_Minh';
+  const rawDate = nowOverride ? new Date(nowOverride) : new Date();
+  const safeDate = Number.isNaN(rawDate.getTime()) ? new Date() : rawDate;
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(safeDate);
+
+  const yearStr = parts.find((p) => p.type === 'year')?.value || String(safeDate.getUTCFullYear());
+  const monthStr = parts.find((p) => p.type === 'month')?.value || String(safeDate.getUTCMonth() + 1).padStart(2, '0');
+  const dayStr = parts.find((p) => p.type === 'day')?.value || String(safeDate.getUTCDate()).padStart(2, '0');
+
+  return {
+    timeZone: tz,
+    year: Number(yearStr),
+    month: `${yearStr}-${monthStr}`,
+    date: `${yearStr}-${monthStr}-${dayStr}`,
+    iso: safeDate.toISOString(),
+  };
+}
+
+function isValidPeriodMonth(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(trimmed);
+  if (!m) return false;
+  const year = Number(m[1]);
+  return year >= 2000 && year <= 2100;
+}
+
+function isValidIsoDate(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  const m = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(trimmed);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (year < 2000 || year > 2100) return false;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() + 1 === month &&
+    d.getUTCDate() === day
+  );
+}
+
+function extractPeriodFromQuery(rawQuery = '') {
+  const text = String(rawQuery || '');
+  const isoMatch = /\b(20\d{2})-(0[1-9]|1[0-2])\b/.exec(text);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}`;
+  }
+  const vnMatch = /(?:tháng|kỳ(?:\s+lương)?)\s*(0?[1-9]|1[0-2])\s*(?:\/|-|\s+năm\s+)\s*(20\d{2})/i.exec(text);
+  if (vnMatch) {
+    return `${vnMatch[2]}-${String(Number(vnMatch[1])).padStart(2, '0')}`;
+  }
+  return null;
+}
 
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+|previous\s+|prior\s+)?instructions/gi,
@@ -89,11 +161,13 @@ const TOOL_DECLARATIONS = [
   },
   {
     name: 'search_policies',
-    description: 'Tìm kiếm quy chế nội bộ đã phê duyệt (handbook_docs) và thông số cấu hình hệ thống (system_settings) đang có hiệu lực.',
+    description: 'Tìm kiếm quy chế nội bộ đã phê duyệt (handbook_docs) và thông số cấu hình hệ thống (system_settings / system_policy_versions) theo đúng kỳ hiệu lực.',
     parameters: {
       type: 'OBJECT',
       properties: {
         query: { type: 'STRING', description: 'Từ khóa hoặc câu hỏi về chính sách/quy chế công ty' },
+        period: { type: 'STRING', description: 'Kỳ lương tùy chọn YYYY-MM khi người dùng hỏi chính sách áp dụng cho một tháng/kỳ cụ thể (ví dụ: 2025-01, 2026-08)' },
+        effectiveDate: { type: 'STRING', description: 'Ngày cần kiểm tra hiệu lực chính sách YYYY-MM-DD' },
       },
       required: ['query'],
     },
@@ -101,7 +175,8 @@ const TOOL_DECLARATIONS = [
 ];
 
 async function getMyLeaveBalance(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   if (!actor || !actor.employeeId || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
     return {
       ok: false,
@@ -117,7 +192,19 @@ async function getMyLeaveBalance(actor, args = {}, executor = db) {
     };
   }
 
-  const year = Number(args.year) || 2026;
+  let year = clock.year;
+  if (args.year !== undefined && args.year !== null && String(args.year).trim() !== '') {
+    const parsedYear = Number(args.year);
+    if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Tham số year không hợp lệ (cần năm nguyên YYYY từ 2000 đến 2100).',
+      };
+    }
+    year = parsedYear;
+  }
+
   const params = [actor.employeeId, year];
   let typeFilter = '';
   if (args.leaveType) {
@@ -177,7 +264,8 @@ async function getMyLeaveBalance(actor, args = {}, executor = db) {
 }
 
 async function getMyAttendance(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   if (!actor || !actor.employeeId || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
     return {
       ok: false,
@@ -193,10 +281,51 @@ async function getMyAttendance(actor, args = {}, executor = db) {
     };
   }
 
-  let from = args.from;
-  let to = args.to;
-  if (!from || !to) {
-    const month = /^\d{4}-\d{2}$/.test(args.month || '') ? args.month : '2026-09';
+  const rawFrom = args.from !== undefined && args.from !== null ? String(args.from).trim() : '';
+  const rawTo = args.to !== undefined && args.to !== null ? String(args.to).trim() : '';
+  const rawMonth = args.month !== undefined && args.month !== null ? String(args.month).trim() : '';
+
+  let from = '';
+  let to = '';
+
+  if (rawFrom || rawTo) {
+    if (!rawFrom || !rawTo || !isValidIsoDate(rawFrom) || !isValidIsoDate(rawTo)) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Khoảng ngày tra cứu chấm công không hợp lệ (cần cả from và to theo định dạng thực tế YYYY-MM-DD).',
+      };
+    }
+    if (rawFrom > rawTo) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Ngày bắt đầu (from) không được lớn hơn ngày kết thúc (to).',
+      };
+    }
+    const diffDays =
+      Math.round((new Date(`${rawTo}T00:00:00Z`) - new Date(`${rawFrom}T00:00:00Z`)) / 86400000) + 1;
+    if (diffDays > MAX_ATTENDANCE_RANGE_DAYS) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: `Khoảng ngày tra cứu chấm công vượt quá giới hạn cho phép (${MAX_ATTENDANCE_RANGE_DAYS} ngày).`,
+      };
+    }
+    from = rawFrom;
+    to = rawTo;
+  } else {
+    let month = clock.month;
+    if (rawMonth) {
+      if (!isValidPeriodMonth(rawMonth)) {
+        return {
+          ok: false,
+          errorCode: 'INVALID_ARGUMENT',
+          message: 'Tham số month không hợp lệ (định dạng bắt buộc YYYY-MM, ví dụ 2026-10).',
+        };
+      }
+      month = rawMonth;
+    }
     from = `${month}-01`;
     const [y, m] = month.split('-').map(Number);
     const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -271,7 +400,8 @@ async function getMyAttendance(actor, args = {}, executor = db) {
 }
 
 async function getMyPayslip(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   if (!actor || !actor.employeeId || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
     return {
       ok: false,
@@ -289,8 +419,16 @@ async function getMyPayslip(actor, args = {}, executor = db) {
 
   const params = [actor.employeeId];
   let periodWhere = '';
-  if (args.period) {
-    params.push(String(args.period).trim());
+  if (args.period !== undefined && args.period !== null && String(args.period).trim() !== '') {
+    const rawPeriod = String(args.period).trim();
+    if (!isValidPeriodMonth(rawPeriod) && !/^\d+$/.test(rawPeriod)) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Tham số period không hợp lệ (cần định dạng kỳ lương YYYY-MM).',
+      };
+    }
+    params.push(rawPeriod);
     periodWhere = 'AND (pp.period = $2 OR pp.id::text = $2)';
   }
 
@@ -381,13 +519,24 @@ async function getMyPayslip(actor, args = {}, executor = db) {
 }
 
 async function getScopedDashboard(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   if (!actor || !['CEO', 'HR_DIRECTOR', 'LINE_MANAGER'].includes(actor.roleCode)) {
     return {
       ok: false,
       errorCode: 'FORBIDDEN_SCOPE',
       message: 'Bạn không có quyền truy cập số liệu tổng hợp Dashboard của phòng ban hoặc toàn công ty.',
     };
+  }
+
+  if (args.period !== undefined && args.period !== null && String(args.period).trim() !== '') {
+    if (!isValidPeriodMonth(String(args.period).trim())) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Tham số period của get_scoped_dashboard không hợp lệ (định dạng YYYY-MM).',
+      };
+    }
   }
 
   if (actor.roleCode === 'LINE_MANAGER') {
@@ -436,7 +585,8 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
 }
 
 async function getScopedPerformance(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   if (!actor || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
     return {
       ok: false,
@@ -624,9 +774,36 @@ async function getScopedPerformance(actor, args = {}, executor = db) {
 }
 
 async function searchPolicies(actor, args = {}, executor = db) {
-  const nowIso = new Date().toISOString();
+  const clock = getCurrentClock(actor?.now || args?.__now);
+  const nowIso = clock.iso;
   const rawQuery = String(args.query || '').trim();
   const qLower = rawQuery.toLowerCase();
+
+  if (args.period !== undefined && args.period !== null && String(args.period).trim() !== '') {
+    if (!isValidPeriodMonth(String(args.period).trim())) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Tham số period của search_policies không hợp lệ (định dạng bắt buộc YYYY-MM).',
+      };
+    }
+  }
+  if (args.effectiveDate !== undefined && args.effectiveDate !== null && String(args.effectiveDate).trim() !== '') {
+    if (!isValidIsoDate(String(args.effectiveDate).trim())) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGUMENT',
+        message: 'Tham số effectiveDate của search_policies không hợp lệ (định dạng bắt buộc YYYY-MM-DD).',
+      };
+    }
+  }
+
+  const targetPeriod =
+    args.period && String(args.period).trim()
+      ? String(args.period).trim()
+      : args.effectiveDate && String(args.effectiveDate).trim()
+      ? String(args.effectiveDate).trim().slice(0, 7)
+      : extractPeriodFromQuery(rawQuery);
 
   const { rows: allDocs } = await executor.query(
     `SELECT id, title, category, content, version, is_active, updated_at
@@ -634,11 +811,68 @@ async function searchPolicies(actor, args = {}, executor = db) {
       ORDER BY id ASC`
   );
 
-  const { rows: settingsRows } = await executor.query(
-    `SELECT key, value, category, description, updated_at
-       FROM system_settings
-      ORDER BY key ASC`
-  );
+  // R29: When a specific period is requested (via args.period, args.effectiveDate, or query text),
+  // resolve the exact policy version effective for that period from system_policy_versions
+  // (or locked payroll_periods.policy_snapshot) instead of returning current system_settings.
+  let relevantSettings = [];
+  let resolvedEffectiveFrom = null;
+  let resolvedPolicyVersionId = null;
+  let resolvedPolicySource = null;
+
+  if (targetPeriod) {
+    let periodPolicy = null;
+    try {
+      periodPolicy = await settingsService.getSettingsForPeriod(executor, targetPeriod);
+    } catch (err) {
+      if (err?.code === 'POLICY_VERSION_NOT_FOUND') {
+        return {
+          ok: true,
+          found: false,
+          policyVersionFound: false,
+          errorCode: 'POLICY_VERSION_NOT_FOUND',
+          queriedPeriod: targetPeriod,
+          matches: [],
+          systemSettings: [],
+          message: err.message,
+          sources: [],
+        };
+      }
+      throw err;
+    }
+
+    resolvedEffectiveFrom = periodPolicy.policyEffectiveFrom || periodPolicy.policy_effective_from || targetPeriod;
+    resolvedPolicyVersionId = periodPolicy.policy_version_id || 1;
+    const metaExclude = new Set(['updated_at', 'updated_by', 'policy_version_id']);
+    relevantSettings = Object.entries(periodPolicy)
+      .filter(([k, v]) => !metaExclude.has(k) && v !== undefined && v !== null)
+      .map(([k, v]) => ({
+        key: k,
+        value: String(v),
+        effectiveFrom: resolvedEffectiveFrom,
+        policyVersionId: resolvedPolicyVersionId,
+      }));
+
+    resolvedPolicySource = {
+      id: `policy-version:${resolvedEffectiveFrom}:v${resolvedPolicyVersionId}`,
+      title: `Phiên bản cấu hình chính sách hiệu lực từ kỳ ${resolvedEffectiveFrom} (tra cứu kỳ ${targetPeriod})`,
+      asOf: periodPolicy.updated_at ? new Date(periodPolicy.updated_at).toISOString() : nowIso,
+    };
+  } else {
+    const { rows: settingsRows } = await executor.query(
+      `SELECT key, value, category, description, updated_at
+         FROM system_settings
+        ORDER BY key ASC`
+    );
+    const effRow = settingsRows.find((s) => s.key === 'policy_effective_from');
+    resolvedEffectiveFrom = effRow?.value || clock.month;
+    relevantSettings = settingsRows.map((s) => ({
+      key: s.key,
+      value: s.value,
+      category: s.category,
+      description: s.description,
+      effectiveFrom: resolvedEffectiveFrom,
+    }));
+  }
 
   const tokens = qLower
     .replace(/[^\p{L}\p{N}\s_-]/gu, ' ')
@@ -679,12 +913,13 @@ async function searchPolicies(actor, args = {}, executor = db) {
   const bestInactiveScore = scoredInactive[0]?.score || 0;
   const expiredMatchPreferred = bestInactiveScore > 0 && bestInactiveScore > bestActiveScore;
 
-  if (!hasSpecificActiveMatch || scoredActive.length === 0 || expiredMatchPreferred) {
+  if (!hasSpecificActiveMatch || (scoredActive.length === 0 && !targetPeriod) || expiredMatchPreferred) {
     const expiredOnly = expiredMatchPreferred || (scoredActive.length === 0 && scoredInactive.length > 0);
     return {
       ok: true,
       found: false,
       expiredMatch: expiredOnly,
+      queriedPeriod: targetPeriod || null,
       matches: [],
       systemSettings: [],
       message: expiredOnly
@@ -710,22 +945,22 @@ async function searchPolicies(actor, args = {}, executor = db) {
     };
   });
 
-  const relevantSettings = settingsRows.map((s) => ({
-    key: s.key,
-    value: s.value,
-    category: s.category,
-    description: s.description,
-  }));
-
   const sources = matches.map((m) => ({
     id: `policy:${m.id}:v${m.version}`,
     title: `${m.title} (${m.id} v${m.version})`,
     asOf: m.updatedAt,
   }));
+  if (resolvedPolicySource) {
+    sources.push(resolvedPolicySource);
+  }
 
   return {
     ok: true,
     found: true,
+    policyVersionFound: true,
+    queriedPeriod: targetPeriod || null,
+    effectiveFrom: resolvedEffectiveFrom,
+    policyVersionId: resolvedPolicyVersionId,
     promptInjectionFiltered: anyInjectionFiltered,
     matches,
     systemSettings: relevantSettings,
@@ -759,4 +994,8 @@ module.exports = {
   TOOL_HANDLERS,
   executeToolCall,
   sanitizePolicyText,
+  getCurrentClock,
+  isValidPeriodMonth,
+  isValidIsoDate,
+  extractPeriodFromQuery,
 };
