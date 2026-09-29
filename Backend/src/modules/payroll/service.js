@@ -1072,7 +1072,7 @@ async function listPayslips(user, query, scope) {
                       COALESCE(ps.bank_name, ''),
                       COALESCE(ps.note, ''),
                       ps.status,
-                      COALESCE(pp.policy_snapshot->>'source_fingerprint', ''),
+                      COALESCE(to_jsonb(pp)->'policy_snapshot'->>'source_fingerprint', ''),
                       COALESCE($${scopeParamIdx}::text, '')
                     ),
                     '|' ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC
