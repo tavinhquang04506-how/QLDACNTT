@@ -58,15 +58,16 @@ Cơ sở dữ liệu Docker được khởi tạo sạch sẽ (Clean DB) với d
 Dự án quy tụ toàn bộ mã nguồn Frontend, Backend và Database Schema trong một repository duy nhất:
 
 ```
-QLDACNTT_THUC_HIEN_LAM_TEST/
+QLDACNTT/
 ├── package.json                         # Monorepo root config & orchestration scripts
 ├── docker-compose.yml                   # Docker Compose cấu hình Production
 ├── docker-compose.dev.yml               # Docker Compose cấu hình Development (Hot-reload)
+├── docker-compose.test.yml              # Docker Compose môi trường kiểm thử cô lập
 ├── .env.docker.example                  # Mẫu biến môi trường Docker
 ├── README.md                            # Tài liệu hướng dẫn fullstack tổng quan
 ├── HUONG_DAN_KIEN_TRUC_VA_DAC_TA_HE_THONG_HRMS.md # Đặc tả hệ thống chi tiết
 ├── database/
-│   ├── schema.sql                       # 20 bảng PostgreSQL, triggers & dữ liệu mẫu seed
+│   ├── schema.sql                       # 20 bảng PostgreSQL gốc, triggers & dữ liệu mẫu seed
 │   └── docker-init/
 │       └── 01-init-clean-db.sql         # Script khởi tạo Clean DB và Super Admin cho Docker
 ├── Backend/                             # RESTful API Service (Express.js)
@@ -76,21 +77,18 @@ QLDACNTT_THUC_HIEN_LAM_TEST/
 │   ├── server.js                        # Điểm khởi chạy API server (Port 8000)
 │   ├── db.js                            # PostgreSQL connection pool (pg)
 │   ├── .env.example                     # Mẫu cấu hình môi trường Backend
-│   ├── .env                             # Cấu hình môi trường thực tế (chứa DB credentials)
-│   ├── middleware/                      # Middleware xác thực JWT và phân quyền RBAC
-│   │   └── auth.js
-│   ├── routes/                          # Các RESTful API routes
-│   │   ├── auth.js                      # Đăng nhập, thông tin user, đổi mật khẩu
-│   │   ├── employees.js                 # Quản lý hồ sơ nhân viên
-│   │   ├── departments.js               # Quản lý cơ cấu phòng ban
-│   │   ├── attendance.js                # Chấm công, check-in, check-out
-│   │   ├── leaves.js                    # Quản lý nghỉ phép, phê duyệt 2 cấp
-│   │   ├── payroll.js                   # Tính toán bảng lương, phiếu lương
-│   │   ├── projects.js                  # Dự án, công việc (Kanban), Squads
-│   │   └── dashboard.js                 # Chỉ số KPIs, thông báo hệ thống
-│   └── scripts/                         # Automation & Health Check Scripts
+│   ├── .env                             # Cấu hình môi trường thực tế (không commit lên Git)
+│   ├── migrations/                      # Các bản nâng cấp CSDL tuần tự (001 -> 011)
+│   ├── src/
+│   │   ├── app.js                       # Khởi tạo ứng dụng Express & định tuyến tổng
+│   │   ├── middleware/                  # Xác thực JWT, phân quyền RBAC, xử lý lỗi chuẩn hóa
+│   │   └── modules/                     # 22 modules nghiệp vụ (auth, employees, attendance,
+│   │                                    # leaves, payroll, projects, analytics, ai, settings...)
+│   └── scripts/                         # Automation, Migration & Evaluation Scripts
+│       ├── migrate.js                   # Thực thi và kiểm tra trạng thái migrations
 │       ├── test-db.js                   # Kiểm tra kết nối và đối chiếu 20 bảng DB
-│       └── smoke-test.js                # Kiểm thử toàn diện chuỗi API endpoints
+│       ├── smoke-test.js                # Kiểm thử toàn diện chuỗi API endpoints
+│       └── run-ai-v1-live-eval.js       # Bộ đánh giá thực nghiệm Grounded AI Copilot V1
 └── FrontEnd/                            # Giao diện người dùng (React 18 + Vite)
     ├── Dockerfile                       # Dockerfile Production (Multi-stage -> Nginx)
     ├── Dockerfile.dev                   # Dockerfile Development
@@ -99,11 +97,11 @@ QLDACNTT_THUC_HIEN_LAM_TEST/
     ├── vite.config.js                   # Cấu hình Vite (Port 3000, alias @)
     ├── .env                             # VITE_API_URL=http://localhost:8000/api
     └── src/
-        ├── App.jsx                      # Root Router & Shell layout
-        ├── context/                     # Context quản lý Auth, Modals, v.v.
+        ├── App.jsx                      # Root Router & Shell layout (Admin / Portal)
+        ├── context/                     # Context quản lý Auth, Modals, Notifications...
         ├── services/                    # Tầng giao tiếp Backend API
         ├── pages/                       # Các trang tính năng chuẩn hóa
-        └── modals/                      # Hệ thống modals theo module nghiệp vụ
+        └── modals/                      # Hệ thống modals theo module nghiệp vụ (bao gồm AI Copilot)
 ```
 
 ---
@@ -120,7 +118,7 @@ QLDACNTT_THUC_HIEN_LAM_TEST/
 
 ## 4. Cài đặt nhanh Local (1 Lệnh)
 
-Tại thư mục gốc `QLDACNTT_THUC_HIEN_LAM_TEST`, cài đặt toàn bộ dependencies cho cả root, Backend và Frontend chỉ với một câu lệnh:
+Tại thư mục gốc `QLDACNTT`, cài đặt toàn bộ dependencies cho cả root, Backend và Frontend chỉ với một câu lệnh:
 
 ```bash
 npm run install:all
@@ -132,7 +130,7 @@ npm run install:all
 
 ## 5. Khởi tạo Cơ sở Dữ liệu & Biến Môi trường Local
 
-### Bước 4.1: Tạo Database PostgreSQL và nạp Schema
+### Bước 5.1: Tạo Database PostgreSQL, nạp Schema và chạy Migrations
 Mở PostgreSQL CLI (`psql`) hoặc pgAdmin:
 
 ```sql
@@ -140,16 +138,20 @@ Mở PostgreSQL CLI (`psql`) hoặc pgAdmin:
 CREATE DATABASE nexus_hrms;
 ```
 
-Sau đó import file schema và dữ liệu mẫu:
+Sau đó import file schema gốc (`database/schema.sql`) và áp dụng toàn bộ 11 bản migrations (`001` -> `011`):
 - **Trên Windows (cmd/powershell):**
   ```bash
   psql -U postgres -d nexus_hrms -f database/schema.sql
+  node Backend/scripts/migrate.js --target-db=nexus_hrms --confirm-production-db=nexus_hrms
   ```
-- **Hoặc qua pgAdmin**: Mở database `nexus_hrms` -> Mở công cụ `Query Tool` -> Đọc nội dung `database/schema.sql` -> Nhấn **Execute (F5)**.
+- **Kiểm tra trạng thái sẵn sàng của CSDL (`READY 11/11`):**
+  ```bash
+  node Backend/scripts/migrate.js --status --target-db=nexus_hrms
+  ```
 
-*File `database/schema.sql` đã bao gồm cấu trúc 20 bảng chuẩn, ràng buộc khóa ngoại, triggers tính toán và tập dữ liệu mẫu ban đầu.*
+*File `database/schema.sql` khởi tạo 20 bảng chuẩn ban đầu, sau đó bộ migrations `Backend/migrations/001..011` nâng cấp thêm các bảng/ràng buộc bảo mật, thông báo nội bộ, cẩm nang nhân sự, cài đặt hệ thống và đánh giá năng lực.*
 
-### Bước 4.2: Cấu hình biến môi trường Backend (`Backend/.env`)
+### Bước 5.2: Cấu hình biến môi trường Backend (`Backend/.env`)
 Tạo file `Backend/.env` dựa trên `Backend/.env.example`:
 
 ```env
@@ -170,9 +172,15 @@ JWT_EXPIRES_IN=24h
 
 # CORS
 FRONTEND_URL=http://localhost:3000
+
+# Grounded AI Copilot V1 (Google Gemini - Tùy chọn)
+AI_ENABLED=true
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
-### Bước 4.3: Cấu hình biến môi trường Frontend (`FrontEnd/.env`)
+### Bước 5.3: Cấu hình biến môi trường Frontend (`FrontEnd/.env`)
 File `FrontEnd/.env` đã được thiết lập mặc định để kết nối đến Backend:
 
 ```env
@@ -213,7 +221,7 @@ Nếu cần debug hoặc kiểm thử độc lập:
 
 ## 7. Bộ công cụ Kiểm thử Tự động (Automation Scripts)
 
-Dự án cung cấp sẵn hai bộ công cụ kiểm thử tích hợp tại root:
+Dự án cung cấp bộ công cụ kiểm thử tự động toàn diện từ Unit Test, Database Test, API Smoke Test cho đến đánh giá thực nghiệm AI Copilot:
 
 ### 1. Kiểm tra kết nối & đối chiếu Schema Database (`npm run db:test`)
 ```bash
@@ -235,19 +243,15 @@ npm run test:smoke
   4. `GET /api/auth/me`: Kiểm tra xác thực Bearer token và lấy hồ sơ người dùng đăng nhập.
   5. `GET /api/employees`: Kiểm tra quyền truy cập và dữ liệu danh bạ nhân sự.
 
-### 3. Backend tests, migrations and API docs
-
+### 3. Kiểm thử Unit, Integration, Migrations & AI Copilot V1
 ```bash
-npm run test:unit --prefix Backend   # unit tests (no database)
-npm test --prefix Backend            # recreates nexus_hrms_test from database/schema.sql + migrations, then runs all tests
-npm run migrate --prefix Backend     # applies pending SQL files from Backend/migrations to the DB in Backend/.env
+npm run test:unit --prefix Backend   # Chạy bộ Unit Tests (không cần kết nối DB)
+npm test --prefix Backend            # Tái tạo DB kiểm thử cô lập (nexus_hrms_test) từ schema + 11 migrations và chạy toàn bộ Integration Tests
+node Backend/scripts/run-ai-v1-live-eval.js --require-live  # Kiểm thử 18 kịch bản thực tế Grounded AI Copilot V1 với Google Gemini trên DB test
 ```
-
-Schema changes go in `Backend/migrations/NNN_description.sql`; never edit `database/schema.sql` for new changes.
-
-Demo data for the newer modules (notices, handbook, performance reviews): `npm run seed:demo --prefix Backend` (idempotent).
-
-API reference for the frontend: `Backend/docs/openapi.yaml` (OpenAPI 3). Sessions use a short-lived `accessToken` plus a single-use `refreshToken` (`POST /api/auth/refresh`); `POST /api/auth/login` still returns the legacy `token` field. Set `JWT_EXPIRES_IN=30m` in `Backend/.env` once the frontend refreshes tokens; set `TRUST_PROXY=1` when running behind a reverse proxy.
+- Mọi thay đổi cấu trúc CSDL mới đều được quản lý tuần tự tại `Backend/migrations/NNN_description.sql` (tuyệt đối không sửa đè lịch sử các migration đã chạy).
+- Để nạp thêm dữ liệu mẫu cho các phân hệ thông báo nội bộ, cẩm nang nhân sự và đánh giá năng lực: `npm run seed:demo --prefix Backend` (hỗ trợ chạy lặp an toàn - idempotent).
+- Phiên đăng nhập sử dụng cặp `accessToken` ngắn hạn kết hợp `refreshToken` xoay vòng một lần (`POST /api/auth/refresh`), đồng thời vẫn duy trì trường `token` tương thích ngược cho `POST /api/auth/login`.
 
 ---
 
@@ -283,7 +287,8 @@ Base URL: `http://localhost:8000/api`. Tài liệu đầy đủ (request, respon
 | Dự án | `/api/projects`, `/api/tasks`, `/api/squads` | Kanban có nghiệm thu, nhóm và chat nhóm |
 | Thông báo | `/api/notifications`, `/api/notices`, `/api/handbook` | thông báo cá nhân/vai trò, thông báo nội bộ, cẩm nang |
 | Phân tích | `/api/analytics` | đánh giá năng lực, 9-box, rủi ro nghỉ việc, PIP |
-| Hệ thống | `/api/dashboard`, `/api/audit-logs`, `/api/health` | KPI theo phạm vi, nhật ký hệ thống |
+| Trợ lý AI | `/api/ai/copilot` | Grounded AI HR Copilot V1 (tra cứu phép, lương, công, quy chế kiểm chứng theo RBAC) |
+| Hệ thống | `/api/dashboard`, `/api/settings`, `/api/audit-logs`, `/api/health` | KPI theo phạm vi, cấu hình hệ thống, nhật ký kiểm toán |
 
 **Quy ước chung:** thành công `{ success: true, data, pagination? }`; lỗi `{ success: false, code, message, details? }`. Gửi `Authorization: Bearer <accessToken>`. Danh sách có `?page&limit` (giới hạn được kẹp về mức tối đa). Trường ngày (`DATE`) trả về chuỗi `YYYY-MM-DD`.
 
@@ -295,12 +300,14 @@ Base URL: `http://localhost:8000/api`. Tài liệu đầy đủ (request, respon
   [docs/docker-deployment-guide.md](docs/docker-deployment-guide.md)
 - 📘 **Tài liệu Kiến trúc & Đặc tả Nghiệp vụ Toàn diện**:  
   [HUONG_DAN_KIEN_TRUC_VA_DAC_TA_HE_THONG_HRMS.md](HUONG_DAN_KIEN_TRUC_VA_DAC_TA_HE_THONG_HRMS.md)
+- 🤖 **Kiến trúc Grounded AI Copilot V1 & Kiểm soát RBAC**:  
+  [docs/remediation/AI_V1_ARCHITECTURE.md](docs/remediation/AI_V1_ARCHITECTURE.md)
+- 🛠️ **Runbook Vận hành Migration CSDL (`001` -> `011`)**:  
+  [docs/remediation/MIGRATION_RUNBOOK.md](docs/remediation/MIGRATION_RUNBOOK.md)
+- ✅ **Báo cáo Kiểm thử Nghiệm thu Toàn hệ thống (UAT)**:  
+  [docs/remediation/FINAL_WEBSITE_UAT.md](docs/remediation/FINAL_WEBSITE_UAT.md)
 - 🗄️ **Cơ sở Dữ liệu Schema & Seed Script (PostgreSQL)**:  
   [database/schema.sql](database/schema.sql)
-- 🔍 **Script Kiểm thử CSDL**:  
-  [Backend/scripts/test-db.js](Backend/scripts/test-db.js)
-- 🧪 **Script Kiểm thử API Smoke Test**:  
-  [Backend/scripts/smoke-test.js](Backend/scripts/smoke-test.js)
 
 ---
 *© 2026 NEXUS HRMS Project — QLDACNTT Enterprise Software Implementation.*
