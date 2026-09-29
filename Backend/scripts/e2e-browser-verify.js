@@ -412,6 +412,10 @@ async function main() {
 
   const cdp = new CdpSession(pageTarget.webSocketDebuggerUrl);
   await cdp.connect();
+  const pageExceptions = [];
+  cdp.on('Runtime.exceptionThrown', (params) => {
+    pageExceptions.push(params?.exceptionDetails?.text || 'Runtime.exceptionThrown');
+  });
   await cdp.send('Browser.setDownloadBehavior', {
     behavior: 'allow',
     downloadPath: downloadDir,
@@ -1801,6 +1805,8 @@ async function main() {
         } else if (userText.includes('How many vacation days do I have? (R38)')) {
           // R38: Both 12 (entitlement) and 8 (remaining) exist in tool output, but "can take 12 days off" misattributes total_days to remaining_days
           replyText = `You can take ${b.entitlement} days off; ${b.remaining} is your balance.`;
+        } else if (userText.includes('How many vacation days do I have? (R41)')) {
+          replyText = `Your remaining balance is ${b.remaining} days. Your employment contract is terminated.`;
         } else {
           replyText = `Năm ${b.year}, tổng phép được cấp của bạn là ${b.entitlement} ngày, đã sử dụng ${b.used} ngày và số phép còn lại là ${b.remaining} ngày.`;
         }
@@ -1964,6 +1970,26 @@ async function main() {
       assert.equal(verifiedUiState.hasSources, true, 'R35 UI: Verified answer must render tool sources');
       assert.match(verifiedUiState.sourcesText, /Quỹ phép cá nhân năm 2026/i);
 
+      // 10g. R41 in UI: "How many vacation days do I have? (R41)" -> model appends "Your employment contract is terminated." -> UI renders server-verified template with remaining 8 days and 0 ungrounded contract claims
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'How many vacation days do I have? (R41)');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1200);
+
+      const r41UiState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        return {
+          verificationState: lastBot?.getAttribute('data-verification-state') || '',
+          verifiedBadge: lastBot?.querySelector('[data-testid="ai-msg-verified-badge"]')?.innerText || '',
+          msgText: lastBot?.querySelector('[data-testid="ai-msg-text"]')?.innerText || '',
+          hasSources: Boolean(lastBot?.querySelector('[data-testid="ai-msg-sources"]')),
+        };
+      })()`);
+      assert.equal(r41UiState.verificationState, 'VERIFIED', 'R41 UI: Sanitized server-rendered answer must be VERIFIED');
+      assert.match(r41UiState.msgText, /remaining 8 days/i, 'R41 UI: Must render verified remaining 8 days');
+      assert.equal(r41UiState.msgText.toLowerCase().includes('terminated'), false, 'R41 UI: Ungrounded contract termination claim must never render');
+      assert.equal(r41UiState.msgText.toLowerCase().includes('contract'), false, 'R41 UI: Ungrounded contract claim must never render');
+      assert.equal(r41UiState.hasSources, true, 'R41 UI: Verified answer must retain tool sources');
+
       await cdp.captureScreenshot(path.join(screenshotDir, 'r37-r38-ai-copilot-drawer.png'));
     } finally {
       delete app.locals.aiTestOptions;
@@ -1971,7 +1997,7 @@ async function main() {
     }
 
     console.log(
-      '[ASSERT 10 (R35+R36+R37+R38) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
+      '[ASSERT 10 (R35+R36+R37+R38+R41) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, R41MixedClauseSanitizedVerified=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
     );
 
     // =========================================================================
@@ -2228,6 +2254,19 @@ async function main() {
           403,
           'R39 Context C: Direct attachment download by out-of-scope employee must return HTTP 403 FORBIDDEN'
         );
+        await contextC.session.click('#topbar-notification-bell', 900);
+        const visibleInNotifCenterToSalesSub = await contextC.session.eval(
+          `Boolean(document.body.innerText && document.body.innerText.includes(${JSON.stringify(r39Title)}))`
+        );
+        assert.equal(
+          visibleInNotifCenterToSalesSub,
+          false,
+          'R42 Context C: Employee C (DEPT-SALES) must NOT see DEPT-IT targeted notice inside NotificationCenterModal'
+        );
+        await contextC.session.eval(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+        await new Promise((r) => setTimeout(r, 400));
+        assert.equal(forbiddenDownloadStatus, 403, 'R39 Context C: 403 FORBIDDEN'
+        );
       } finally {
         await contextC.close();
       }
@@ -2287,7 +2326,8 @@ async function main() {
       for (const nid of createdNoticeIds) {
         await db.query('DELETE FROM company_notices WHERE id = $1', [nid]).catch(() => {});
       }
-      const storageDir = path.resolve(__dirname, '../storage/notice_attachments');
+      noticesServiceBackend.cleanupTestStorageDir();
+      const storageDir = noticesServiceBackend.getStorageDir();
       if (fs.existsSync(storageDir)) {
         for (const fid of createdStorageFiles) {
           for (const f of fs.readdirSync(storageDir)) {
@@ -2302,7 +2342,7 @@ async function main() {
     }
 
     console.log(
-      '[ASSERT 11 (R39) PASS] PresetButtonsRemoved=true, OversizeRejected=true, UploadErrorHandled=true, TempRemoveCleaned=true, EditPreservedAttachment=true, IsolatedContextBDownloadSha256Match=true, ContextCOutOfScope403=true, LegacyBlobMarkedUnavailable=true'
+      '[ASSERT 11 (R39+R42+R44) PASS] PresetButtonsRemoved=true, OversizeRejected=true, UploadErrorHandled=true, TempRemoveCleaned=true, EditPreservedAttachment=true, IsolatedContextBDownloadSha256Match=true, ContextCOutOfScope403=true, R42NotifCenterScoped=true, R44TempStorageIsolated=true, LegacyBlobMarkedUnavailable=true'
     );
 
     // =========================================================================
@@ -2313,7 +2353,7 @@ async function main() {
     const adminAcc = await createRoleAccount({ role: 'ADMIN', departmentId: 'DEPT-IT', fullName: 'Quản Trị Hệ Thống E2E' });
     const kioskAcc = await createRoleAccount({ role: 'KIOSK', departmentId: 'DEPT-HR', fullName: 'Thiết Bị Kiosk E2E' });
 
-    const pageExceptions = [];
+    const scenario12InitialExceptionCount = pageExceptions.length;
     cdp.on('Runtime.exceptionThrown', (params) => {
       pageExceptions.push(params?.exceptionDetails?.text || 'Runtime.exceptionThrown');
     });
@@ -2337,8 +2377,20 @@ async function main() {
     // 12c. Verify KIOSK login & fullscreen terminal route (/kiosk allowed, /payroll shows payroll-role-restricted)
     const kioskLanding = await loginViaUi(cdp, kioskAcc.user.email, kioskAcc.password);
     assert.equal(kioskLanding, '/kiosk', 'Phase B KIOSK: Must land on /kiosk');
-    const kioskHasScannerUi = await cdp.eval(`Boolean(document.body.innerText && document.body.innerText.length > 20)`);
-    assert.equal(kioskHasScannerUi, true, 'Phase B KIOSK: Must render Kiosk terminal content');
+    const kioskUiDetails = await cdp.eval(`(() => {
+      const text = document.body.innerText || '';
+      return {
+        hasHeader: text.includes('KIOSK ĐIỂM DANH CỔNG A1'),
+        hasOnlineBadge: text.includes('ONLINE'),
+        hasTotpFooter: text.includes('Bảo mật TOTP thời gian thực'),
+        hasExitBtn: Array.from(document.querySelectorAll('button')).some((b) => b.innerText.includes('Thoát Kiosk')),
+      };
+    })()`);
+    assert.equal(kioskUiDetails.hasHeader, true, 'R45 KIOSK: Must render KIOSK ĐIỂM DANH CỔNG A1 header');
+    assert.equal(kioskUiDetails.hasOnlineBadge, true, 'R45 KIOSK: Must render ONLINE status badge');
+    assert.equal(kioskUiDetails.hasTotpFooter, true, 'R45 KIOSK: Must render TOTP security footer');
+    assert.equal(kioskUiDetails.hasExitBtn, true, 'R45 KIOSK: Must render Thoát Kiosk button');
+    assert.equal(kioskUiDetails.hasHeader && kioskUiDetails.hasOnlineBadge, true, 'Phase B KIOSK: Must render Kiosk terminal content');
     await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 1500);
     const kioskPayrollRestricted = await cdp.eval(
       `Boolean(document.querySelector('[data-testid="payroll-role-restricted"]'))`
@@ -2368,16 +2420,48 @@ async function main() {
       assert.equal(vpState.innerWidth, vp.width, `Phase B Viewport ${vp.name}px: window.innerWidth must match`);
       assert.equal(vpState.hasHeading, true, `Phase B Viewport ${vp.name}px: Heading must render`);
       assert.equal(vpState.rootRendered, true, `Phase B Viewport ${vp.name}px: Root DOM must render`);
+      const vpLayoutAndModalState = await cdp.eval(`(() => {
+        const scrollWidth = document.documentElement.scrollWidth;
+        const innerWidth = window.innerWidth;
+        const bellBtn = document.getElementById('topbar-notification-bell');
+        const bellRect = bellBtn ? bellBtn.getBoundingClientRect() : { width: 0, height: 0 };
+        return {
+          noHorizontalOverflow: scrollWidth <= innerWidth + 1,
+          scrollWidth,
+          innerWidth,
+          bellVisible: bellRect.width > 0 && bellRect.height > 0,
+        };
+      })()`);
+      assert.equal(
+        vpLayoutAndModalState.noHorizontalOverflow,
+        true,
+        `R45 Viewport ${vp.name}px: Must have no horizontal overflow (scrollWidth=${vpLayoutAndModalState.scrollWidth} <= innerWidth=${vpLayoutAndModalState.innerWidth})`
+      );
+      assert.equal(vpLayoutAndModalState.bellVisible, true, `R45 Viewport ${vp.name}px: Topbar notification bell must be visible and clickable`);
+      // Open NotificationCenterModal, check scroll container overflowY, and close via Escape key
+      await cdp.click('#topbar-notification-bell', 600);
+      const modalOpenState = await cdp.eval(`(() => {
+        const scrollableBody = document.querySelector('.overflow-y-auto');
+        const style = scrollableBody ? window.getComputedStyle(scrollableBody) : null;
+        return {
+          modalVisible: Boolean(document.body.innerText.includes('Trung tâm thông báo') || scrollableBody),
+          overflowY: style ? style.overflowY : '',
+        };
+      })()`);
+      assert.equal(modalOpenState.modalVisible, true, `R45 Viewport ${vp.name}px: Modal must open on click`);
+      assert.match(modalOpenState.overflowY, /auto|scroll/, `R45 Viewport ${vp.name}px: Modal body must have scrollable overflowY`);
+      await cdp.eval(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      await new Promise((r) => setTimeout(r, 400));
       await cdp.captureScreenshot(path.join(screenshotDir, `phase-b-viewport-${vp.name}.png`));
     }
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     assert.equal(pageExceptions.length, 0, `Phase B: Expected 0 uncaught page exceptions, got: ${pageExceptions.join('; ')}`);
 
     console.log(
-      '[ASSERT 12 (PHASE B MATRIX) PASS] RolesVerified=6/6(HR_DIRECTOR,CEO,LINE_MANAGER,EMPLOYEE,ADMIN,KIOSK), NegativeRouteGuards=true, ViewportsVerified=390/768/1440px, UncaughtPageExceptions=0'
+      '[ASSERT 12 (PHASE B & R45 ROUTE/RENDER/BEHAVIORAL MATRIX) PASS] RolesVerified=6/6(HR_DIRECTOR,CEO,LINE_MANAGER,EMPLOYEE,ADMIN,KIOSK), KioskTerminalElements=true, NegativeRouteGuards=true, ViewportsVerified=390/768/1440px(NoHorizontalOverflow,ModalScrollAndEscapeClose=true), GlobalUncaughtPageExceptions=0'
     );
 
-    console.log('=== [ALL R14-R40 & PHASE B UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    console.log('=== [ALL R14-R45 & PHASE B UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});

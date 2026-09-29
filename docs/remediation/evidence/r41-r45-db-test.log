@@ -1,0 +1,52 @@
+
+> nexus-hrms-monorepo@1.0.0 db:test
+> npm run db:test --prefix Backend
+
+
+> nexus-hrms-backend@1.0.0 db:test
+> node scripts/test-db.js
+
+╔════════════════════════════════════════════════════════════╗
+║   🐘 NEXUS HRMS — PostgreSQL Connection & Schema Test      ║
+╚════════════════════════════════════════════════════════════╝
+📡 Host:      127.0.0.1:5432
+📦 Database:  nexus_hrms_test
+👤 User:      postgres
+────────────────────────────────────────────────────────────
+✅ [OK] Kết nối PostgreSQL thành công (26ms)
+
+ℹ️  DB Version:   PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit
+ℹ️  Active DB:    nexus_hrms_test (current_database() verified)
+ℹ️  Server Time:  Sat Oct 24 2026 14:41:12 GMT+0700 (Giờ Đông Dương)
+
+📊 Tìm thấy tổng cộng: 34 base tables và 2 views trong public schema.
+📖 Đã load danh sách 20 bảng chuẩn từ: C:\Users\tavin\Downloads\QLDACNTT\database\schema.sql
+
+📋 Chi tiết 20 bảng chuẩn trong database/schema.sql:
+   1. [✓ OK]    roles
+   2. [✓ OK]    departments
+   3. [✓ OK]    positions
+   4. [✓ OK]    employees
+   5. [✓ OK]    users
+   6. [✓ OK]    user_roles
+   7. [✓ OK]    attendance_logs
+   8. [✓ OK]    leave_types
+   9. [✓ OK]    leave_requests
+  10. [✓ OK]    leave_balances
+  11. [✓ OK]    payroll_periods
+  12. [✓ OK]    payslips
+  13. [✓ OK]    projects
+  14. [✓ OK]    tasks
+  15. [✓ OK]    task_logs
+  16. [✓ OK]    squads
+  17. [✓ OK]    squad_members
+  18. [✓ OK]    squad_messages
+  19. [✓ OK]    audit_logs
+  20. [✓ OK]    notifications
+
+👁️  Views hỗ trợ: v_employee_public, v_today_attendance
+
+────────────────────────────────────────────────────────────
+📈 Kết quả: 20/20 bảng chuẩn đã sẵn sàng (100%)
+🎉 TRẠNG THÁI: TẤT CẢ 20 BẢNG CHUẨN ĐỀU ĐÃ ĐỒNG BỘ VÀ KHỚP 100%!
+────────────────────────────────────────────────────────────

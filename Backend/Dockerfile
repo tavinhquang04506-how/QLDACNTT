@@ -11,16 +11,19 @@ WORKDIR /app
 # Set production environment
 ENV NODE_ENV=production
 ENV PORT=8000
+ENV STORAGE_ROOT=/app/storage
+ENV NOTICE_ATTACHMENTS_DIR=/app/storage/notice_attachments
 
 # Install production dependencies first (caching layer)
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy application source code
+# Copy application source code (.dockerignore excludes host storage/)
 COPY . .
 
-# Create non-root user and set permissions
-RUN addgroup -g 1001 -S nodejs && \
+# Create persistent storage mount directory, non-root user, and set permissions
+RUN mkdir -p /app/storage/notice_attachments && \
+    addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001 -G nodejs && \
     chown -R nodejs:nodejs /app
 
