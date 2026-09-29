@@ -4,7 +4,6 @@ import userService from '../services/userService';
 import { generateCSVContent, downloadFile } from '../utils/fileExportUtils';
 import {
   RBAC_ROLES,
-  ROLE_MAP,
   SCOPE_META,
   RBAC_MODULES,
   TOTAL_PERMISSIONS_COUNT,
@@ -25,10 +24,13 @@ import {
   Save,
   Sparkles,
   ArrowRight,
-  Info,
   Eye,
   X,
   Sliders,
+  Plus,
+  Pencil,
+  Trash2,
+  Copy,
 } from 'lucide-react';
 
 const CEO_LOCKED_PERMISSIONS = new Set([
@@ -38,6 +40,17 @@ const CEO_LOCKED_PERMISSIONS = new Set([
   'user.update',
   'audit.read',
 ]);
+
+const COLOR_THEME_OPTIONS = [
+  { key: 'purple', label: 'Tím', dot: 'bg-purple-600', badge: 'bg-purple-50 text-purple-700 border-purple-200' },
+  { key: 'blue', label: 'Xanh dương', dot: 'bg-blue-600', badge: 'bg-blue-50 text-blue-700 border-blue-200' },
+  { key: 'emerald', label: 'Xanh ngọc', dot: 'bg-emerald-600', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  { key: 'amber', label: 'Vàng cam', dot: 'bg-amber-500', badge: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { key: 'indigo', label: 'Chàm', dot: 'bg-indigo-600', badge: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  { key: 'rose', label: 'Hồng đỏ', dot: 'bg-rose-600', badge: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'cyan', label: 'Xanh lam', dot: 'bg-cyan-600', badge: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
+  { key: 'slate', label: 'Xám', dot: 'bg-slate-500', badge: 'bg-slate-100 text-slate-700 border-slate-300' },
+];
 
 const SCOPE_OPTIONS = [
   {
@@ -64,7 +77,7 @@ const SCOPE_OPTIONS = [
   {
     value: 'none',
     shortLabel: '—',
-    label: 'Không cấp',
+    label: 'Tắt',
     activeClass: 'bg-slate-700 text-white border-slate-700 shadow-2xs',
     idleClass: 'bg-white text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-700',
   },
@@ -101,6 +114,17 @@ function formatDateTime(value) {
   });
 }
 
+function toRoleCodeSlug(text = '') {
+  return String(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 28);
+}
+
 export default function PermissionsPage() {
   const { currentRole } = useAuth();
   const actorRole = currentRole?.key || 'EMPLOYEE';
@@ -108,9 +132,10 @@ export default function PermissionsPage() {
   const canReadAuditLogs = ['CEO', 'ADMIN'].includes(actorRole);
 
   const [activeTab, setActiveTab] = useState('role-editor');
+  const [rolesList, setRolesList] = useState(() => RBAC_ROLES);
   const [selectedRoleKey, setSelectedRoleKey] = useState('HR_DIRECTOR');
 
-  // Role Permission Matrix State (persisted in PostgreSQL via /api/settings/rbac-roles)
+  // Role Permission Matrix State
   const [savedMatrix, setSavedMatrix] = useState(() => buildInitialCatalogMatrix());
   const [draftMatrix, setDraftMatrix] = useState(() => buildInitialCatalogMatrix());
   const [roleCounts, setRoleCounts] = useState({
@@ -121,18 +146,30 @@ export default function PermissionsPage() {
     ADMIN: 0,
     KIOSK: 0,
   });
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
-  const [lastUpdatedBy, setLastUpdatedBy] = useState(null);
   const [loadingMatrix, setLoadingMatrix] = useState(false);
   const [savingMatrix, setSavingMatrix] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // Filters for Tab 1 (Role Editor) & Tab 2 (Full Matrix)
+  // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [moduleFilter, setModuleFilter] = useState('ALL');
-  const [grantFilter, setGrantFilter] = useState('ALL'); // ALL | GRANTED | DENIED
+  const [grantFilter, setGrantFilter] = useState('ALL');
 
-  // Audit Logs State (for Role Permission Changes)
+  // Create / Edit / Delete Role Modals
+  const [roleModalMode, setRoleModalMode] = useState(null); // 'create' | 'edit' | null
+  const [roleForm, setRoleForm] = useState({
+    code: '',
+    name: '',
+    shortName: '',
+    level: 'Chuyên trách',
+    defaultScope: 'Theo phòng ban (DEPT)',
+    colorTheme: 'cyan',
+    templateRoleCode: 'EMPLOYEE',
+    summary: '',
+  });
+  const [deleteTargetRole, setDeleteTargetRole] = useState(null);
+
+  // Audit Logs State
   const [auditLogs, setAuditLogs] = useState([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [selectedAuditItem, setSelectedAuditItem] = useState(null);
@@ -143,6 +180,11 @@ export default function PermissionsPage() {
       setToast((prev) => (prev?.message === message ? null : prev));
     }, 4000);
   }, []);
+
+  const roleMap = useMemo(
+    () => Object.fromEntries(rolesList.map((r) => [r.key, r])),
+    [rolesList]
+  );
 
   const canActorModifyRole = useCallback(
     (targetRoleCode) => {
@@ -156,25 +198,36 @@ export default function PermissionsPage() {
     [actorRole, canEditRoles]
   );
 
+  const applyServerPayload = useCallback((data) => {
+    if (!data) return;
+    if (Array.isArray(data.roles) && data.roles.length > 0) {
+      setRolesList(data.roles);
+      setSelectedRoleKey((prev) =>
+        data.roles.some((r) => r.key === prev) ? prev : data.roles[0].key
+      );
+    }
+    if (data.matrix) {
+      setSavedMatrix(cloneMatrix(data.matrix));
+      setDraftMatrix(cloneMatrix(data.matrix));
+    }
+    if (data.roleCounts) {
+      setRoleCounts(data.roleCounts);
+    }
+  }, []);
+
   const loadRbacMatrix = useCallback(async () => {
     setLoadingMatrix(true);
     try {
       const res = await userService.getRbacRoles();
-      if (res?.success && res.data?.matrix) {
-        setSavedMatrix(cloneMatrix(res.data.matrix));
-        setDraftMatrix(cloneMatrix(res.data.matrix));
-        if (res.data.roleCounts) {
-          setRoleCounts(res.data.roleCounts);
-        }
-        setLastUpdatedAt(res.data.updatedAt || null);
-        setLastUpdatedBy(res.data.updatedBy || null);
+      if (res?.success && res.data) {
+        applyServerPayload(res.data);
       }
     } catch {
-      // Keep local catalog fallback if endpoint fails
+      // Fallback to local catalog
     } finally {
       setLoadingMatrix(false);
     }
-  }, []);
+  }, [applyServerPayload]);
 
   const loadRoleAuditLogs = useCallback(async () => {
     if (!canReadAuditLogs) return;
@@ -208,7 +261,7 @@ export default function PermissionsPage() {
   // Compute statistics per role from draftMatrix
   const roleStatsMap = useMemo(() => {
     const stats = {};
-    for (const r of RBAC_ROLES) {
+    for (const r of rolesList) {
       let granted = 0;
       let allCount = 0;
       let deptCount = 0;
@@ -248,10 +301,10 @@ export default function PermissionsPage() {
       };
     }
     return stats;
-  }, [draftMatrix, savedMatrix]);
+  }, [rolesList, draftMatrix, savedMatrix]);
 
-  const selectedRoleMeta = ROLE_MAP[selectedRoleKey] || RBAC_ROLES[0];
-  const selectedRoleStats = roleStatsMap[selectedRoleKey] || {
+  const selectedRoleMeta = roleMap[selectedRoleKey] || rolesList[0] || RBAC_ROLES[0];
+  const selectedRoleStats = roleStatsMap[selectedRoleMeta.key] || {
     granted: 0,
     allCount: 0,
     deptCount: 0,
@@ -259,9 +312,9 @@ export default function PermissionsPage() {
     noneCount: TOTAL_PERMISSIONS_COUNT,
     changedCount: 0,
   };
-  const canModifySelectedRole = canActorModifyRole(selectedRoleKey);
+  const canModifySelectedRole = canActorModifyRole(selectedRoleMeta.key);
 
-  // Filtered modules for Tab 1 & Tab 2
+  // Filtered modules
   const filteredModules = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return RBAC_MODULES.filter((mod) =>
@@ -272,11 +325,10 @@ export default function PermissionsPage() {
           if (q) {
             const matchKey = p.key.toLowerCase().includes(q);
             const matchLabel = p.label.toLowerCase().includes(q);
-            const matchDesc = p.desc.toLowerCase().includes(q);
-            if (!matchKey && !matchLabel && !matchDesc) return false;
+            if (!matchKey && !matchLabel) return false;
           }
           if (activeTab === 'role-editor' && grantFilter !== 'ALL') {
-            const hasScope = Boolean(draftMatrix[p.key]?.[selectedRoleKey]);
+            const hasScope = Boolean(draftMatrix[p.key]?.[selectedRoleMeta.key]);
             if (grantFilter === 'GRANTED' && !hasScope) return false;
             if (grantFilter === 'DENIED' && hasScope) return false;
           }
@@ -285,20 +337,116 @@ export default function PermissionsPage() {
         return { ...mod, permissions: matchedPerms };
       })
       .filter((mod) => mod.permissions.length > 0);
-  }, [searchQuery, moduleFilter, grantFilter, activeTab, draftMatrix, selectedRoleKey]);
+  }, [searchQuery, moduleFilter, grantFilter, activeTab, draftMatrix, selectedRoleMeta.key]);
+
+  // Handlers for Role CRUD (Create, Edit, Clone, Delete)
+  const handleOpenCreateRoleModal = (templateRole = null) => {
+    setRoleForm({
+      code: '',
+      name: templateRole ? `${templateRole.name} (Bản sao)` : '',
+      shortName: templateRole ? `${templateRole.shortName} Copy` : '',
+      level: templateRole?.level || 'Chuyên trách',
+      defaultScope: templateRole?.defaultScope || 'Theo phòng ban (DEPT)',
+      colorTheme: templateRole?.colorTheme || 'cyan',
+      templateRoleCode: templateRole?.key || 'EMPLOYEE',
+      summary: templateRole?.summary || '',
+    });
+    setRoleModalMode('create');
+  };
+
+  const handleOpenEditRoleModal = (role) => {
+    setRoleForm({
+      code: role.key,
+      name: role.name || '',
+      shortName: role.shortName || '',
+      level: role.level || 'Cấp 3',
+      defaultScope: role.defaultScope || 'Theo phòng ban (DEPT)',
+      colorTheme: role.colorTheme || 'blue',
+      templateRoleCode: '',
+      summary: role.summary || '',
+    });
+    setRoleModalMode('edit');
+  };
+
+  const handleSubmitRoleModal = async (e) => {
+    e.preventDefault();
+    if (!roleForm.name.trim()) {
+      showToast('Vui lòng nhập tên vai trò.', 'error');
+      return;
+    }
+
+    setSavingMatrix(true);
+    try {
+      if (roleModalMode === 'create') {
+        const codeToCreate = roleForm.code.trim() || toRoleCodeSlug(roleForm.name);
+        const res = await userService.createRbacRole({
+          code: codeToCreate,
+          name: roleForm.name.trim(),
+          shortName: roleForm.shortName.trim() || roleForm.name.trim(),
+          level: roleForm.level.trim(),
+          defaultScope: roleForm.defaultScope,
+          colorTheme: roleForm.colorTheme,
+          templateRoleCode: roleForm.templateRoleCode || undefined,
+          summary: roleForm.summary.trim(),
+        });
+        if (res?.success && res.data) {
+          applyServerPayload(res.data);
+          const createdRole = res.data.roles?.[res.data.roles.length - 1];
+          if (createdRole) setSelectedRoleKey(createdRole.key);
+          setRoleModalMode(null);
+          showToast(`Đã tạo vai trò mới "${roleForm.name.trim()}" thành công!`);
+        }
+      } else if (roleModalMode === 'edit') {
+        const res = await userService.updateRbacRoleInfo(roleForm.code, {
+          name: roleForm.name.trim(),
+          shortName: roleForm.shortName.trim() || roleForm.name.trim(),
+          level: roleForm.level.trim(),
+          defaultScope: roleForm.defaultScope,
+          colorTheme: roleForm.colorTheme,
+          summary: roleForm.summary.trim(),
+        });
+        if (res?.success && res.data) {
+          applyServerPayload(res.data);
+          setRoleModalMode(null);
+          showToast(`Đã cập nhật thông tin vai trò "${roleForm.name.trim()}" thành công!`);
+        }
+      }
+    } catch (err) {
+      showToast(err?.message || 'Không thể lưu thông tin vai trò.', 'error');
+    } finally {
+      setSavingMatrix(false);
+    }
+  };
+
+  const handleConfirmDeleteRole = async () => {
+    if (!deleteTargetRole) return;
+    setSavingMatrix(true);
+    try {
+      const res = await userService.deleteRbacRole(deleteTargetRole.key);
+      if (res?.success && res.data) {
+        applyServerPayload(res.data);
+        setDeleteTargetRole(null);
+        showToast(`Đã xóa vai trò "${deleteTargetRole.name}" thành công.`);
+      }
+    } catch (err) {
+      showToast(err?.message || 'Không thể xóa vai trò này.', 'error');
+    } finally {
+      setSavingMatrix(false);
+    }
+  };
 
   // Handlers for changing permission scopes of a Role
   const handleSetPermissionScope = (roleKey, permKey, nextScope) => {
     if (!canActorModifyRole(roleKey)) {
       showToast(
-        `Vai trò hiện tại của bạn (${actorRole}) không có quyền chỉnh sửa cấu hình của vai trò ${roleKey}.`,
+        `Vai trò hiện tại của bạn (${actorRole}) không có quyền chỉnh sửa vai trò ${roleKey}.`,
         'warning'
       );
       return;
     }
     if (roleKey === 'CEO' && CEO_LOCKED_PERMISSIONS.has(permKey) && nextScope !== 'all') {
       showToast(
-        `Quyền cốt lõi "${permKey}" của Tổng Giám Đốc (CEO) được khóa ở mức Toàn công ty (ALL) để bảo vệ hệ thống.`,
+        `Quyền cốt lõi "${permKey}" của Tổng Giám Đốc (CEO) được khóa ở mức Toàn công ty (ALL).`,
         'warning'
       );
       return;
@@ -322,20 +470,20 @@ export default function PermissionsPage() {
       const next = cloneMatrix(prev);
       for (const perm of mod.permissions) {
         if (!next[perm.key]) next[perm.key] = {};
-        if (selectedRoleKey === 'CEO' && CEO_LOCKED_PERMISSIONS.has(perm.key)) {
+        if (selectedRoleMeta.key === 'CEO' && CEO_LOCKED_PERMISSIONS.has(perm.key)) {
           next[perm.key].CEO = 'all';
           continue;
         }
         if (!nextScope || nextScope === 'none') {
-          delete next[perm.key][selectedRoleKey];
+          delete next[perm.key][selectedRoleMeta.key];
         } else {
-          next[perm.key][selectedRoleKey] = nextScope;
+          next[perm.key][selectedRoleMeta.key] = nextScope;
         }
       }
       return next;
     });
     showToast(
-      `Đã gán nhanh phạm vi "${nextScope === 'none' ? 'Không cấp' : nextScope.toUpperCase()}" cho phân hệ "${mod.name}" của vai trò ${selectedRoleMeta.shortName}.`
+      `Đã gán nhanh phạm vi "${nextScope === 'none' ? 'Tắt' : nextScope.toUpperCase()}" cho phân hệ "${mod.name}".`
     );
   };
 
@@ -346,22 +494,19 @@ export default function PermissionsPage() {
       const permissionsPayload = {};
       for (const mod of RBAC_MODULES) {
         for (const perm of mod.permissions) {
-          permissionsPayload[perm.key] = draftMatrix[perm.key]?.[selectedRoleKey] || null;
+          permissionsPayload[perm.key] = draftMatrix[perm.key]?.[selectedRoleMeta.key] || null;
         }
       }
 
       const res = await userService.updateRbacRoles({
-        roleCode: selectedRoleKey,
+        roleCode: selectedRoleMeta.key,
         permissions: permissionsPayload,
       });
 
-      if (res?.success && res.data?.matrix) {
-        setSavedMatrix(cloneMatrix(res.data.matrix));
-        setDraftMatrix(cloneMatrix(res.data.matrix));
-        setLastUpdatedAt(res.data.updatedAt || new Date().toISOString());
-        setLastUpdatedBy(res.data.updatedBy || currentRole?.employeeId || actorRole);
+      if (res?.success && res.data) {
+        applyServerPayload(res.data);
         showToast(
-          `Đã lưu cấu hình phân quyền của vai trò "${selectedRoleMeta.name}" vào cơ sở dữ liệu thành công!`
+          `Đã lưu cấu hình phân quyền của vai trò "${selectedRoleMeta.name}" thành công!`
         );
       }
     } catch (err) {
@@ -371,21 +516,17 @@ export default function PermissionsPage() {
     }
   };
 
-  const handleResetRoleToDefault = async () => {
-    if (!canModifySelectedRole) return;
+  const handleResetAllRolesToDefault = async () => {
+    if (!canEditRoles) return;
     setSavingMatrix(true);
     try {
-      const res = await userService.resetRbacRoles({ roleCode: selectedRoleKey });
-      if (res?.success && res.data?.matrix) {
-        setSavedMatrix(cloneMatrix(res.data.matrix));
-        setDraftMatrix(cloneMatrix(res.data.matrix));
-        setLastUpdatedAt(res.data.updatedAt || null);
-        showToast(
-          `Đã khôi phục quyền hạn của vai trò "${selectedRoleMeta.name}" về mặc định chuẩn doanh nghiệp.`
-        );
+      const res = await userService.resetRbacRoles({});
+      if (res?.success && res.data) {
+        applyServerPayload(res.data);
+        showToast('Đã khôi phục toàn bộ danh mục vai trò và quyền hạn về mặc định chuẩn.');
       }
     } catch (err) {
-      showToast(err?.message || 'Không thể khôi phục mặc định vai trò.', 'error');
+      showToast(err?.message || 'Không thể khôi phục mặc định.', 'error');
     } finally {
       setSavingMatrix(false);
     }
@@ -397,11 +538,11 @@ export default function PermissionsPage() {
       for (const mod of RBAC_MODULES) {
         for (const perm of mod.permissions) {
           if (!next[perm.key]) next[perm.key] = {};
-          const savedVal = savedMatrix[perm.key]?.[selectedRoleKey] || null;
+          const savedVal = savedMatrix[perm.key]?.[selectedRoleMeta.key] || null;
           if (savedVal) {
-            next[perm.key][selectedRoleKey] = savedVal;
+            next[perm.key][selectedRoleMeta.key] = savedVal;
           } else {
-            delete next[perm.key][selectedRoleKey];
+            delete next[perm.key][selectedRoleMeta.key];
           }
         }
       }
@@ -413,10 +554,9 @@ export default function PermissionsPage() {
   const handleExportRoleMatrixCSV = () => {
     const headers = [
       'Phân hệ nghiệp vụ',
-      'Mã quyền (Permission Code)',
+      'Mã quyền',
       'Tên quyền hạn',
-      'API Endpoint',
-      ...RBAC_ROLES.map((r) => `${r.shortName} (${r.key})`),
+      ...rolesList.map((r) => `${r.shortName} (${r.key})`),
     ];
     const rows = [];
     for (const mod of RBAC_MODULES) {
@@ -425,8 +565,7 @@ export default function PermissionsPage() {
           mod.name,
           perm.key,
           perm.label,
-          perm.endpoint || perm.desc,
-          ...RBAC_ROLES.map((r) => {
+          ...rolesList.map((r) => {
             const sc = draftMatrix[perm.key]?.[r.key];
             return sc ? SCOPE_META[sc]?.shortLabel || sc.toUpperCase() : '—';
           }),
@@ -435,7 +574,7 @@ export default function PermissionsPage() {
     }
     const csv = generateCSVContent(headers, rows);
     downloadFile(csv, 'ma-tran-phan-quyen-theo-vai-tro-rbac-2026.csv', 'text/csv;charset=utf-8;');
-    showToast(`Đã xuất Ma trận 64 quyền × 6 vai trò ra file CSV.`);
+    showToast(`Đã xuất Ma trận phân quyền ${rolesList.length} vai trò ra file CSV.`);
   };
 
   return (
@@ -468,26 +607,12 @@ export default function PermissionsPage() {
         </div>
       )}
 
-      {/* Page Header */}
+      {/* Clean Page Header */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Role-Based Access Control (RBAC) • Phân quyền theo Vai trò Chức danh</span>
-            </div>
-            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
-              Quản trị Phân quyền theo Vai trò (RBAC)
-            </h1>
-            <p className="text-sm text-slate-500 max-w-3xl">
-              Thiết lập quyền hạn nghiệp vụ và phạm vi truy cập dữ liệu (
-              <span className="font-semibold text-emerald-700">Toàn công ty ALL</span> •{' '}
-              <span className="font-semibold text-blue-700">Phòng ban DEPT</span> •{' '}
-              <span className="font-semibold text-amber-700">Cá nhân SELF</span>) cho từng nhóm{' '}
-              <strong className="text-slate-800">Vai trò (Role)</strong> trong doanh nghiệp, thay vì phải
-              gán quyền lẻ tẻ trên từng tài khoản.
-            </p>
-          </div>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            Quản trị Phân quyền theo Vai trò (RBAC)
+          </h1>
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
@@ -497,6 +622,19 @@ export default function PermissionsPage() {
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
               <span>Xuất Ma trận Vai trò CSV</span>
             </button>
+
+            {canEditRoles && (
+              <button
+                onClick={handleResetAllRolesToDefault}
+                disabled={savingMatrix}
+                title="Khôi phục danh mục 6 vai trò và quyền hạn mặc định ban đầu"
+                className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RotateCcw className="w-4 h-4 text-slate-500" />
+                <span>Khôi phục gốc</span>
+              </button>
+            )}
+
             <button
               onClick={loadRbacMatrix}
               disabled={loadingMatrix}
@@ -505,25 +643,32 @@ export default function PermissionsPage() {
               <RefreshCw className={`w-4 h-4 ${loadingMatrix ? 'animate-spin text-blue-600' : ''}`} />
               <span>Đồng bộ</span>
             </button>
+
+            {canEditRoles && (
+              <button
+                onClick={() => handleOpenCreateRoleModal(null)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Thêm Vai trò Mới</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* 4 Role-Centric Summary KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-100">
+        {/* 4 Concise Summary KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5 pt-5 border-t border-slate-100">
           <div className="p-4 rounded-xl bg-purple-50/50 border border-purple-200/70">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-purple-800">Tổng số Vai trò Chuẩn</span>
+              <span className="text-xs font-semibold text-purple-800">Tổng số Vai trò</span>
               <span className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
                 <ShieldCheck className="w-4 h-4" />
               </span>
             </div>
             <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-2xl font-extrabold text-purple-950">{RBAC_ROLES.length}</span>
+              <span className="text-2xl font-extrabold text-purple-950">{rolesList.length}</span>
               <span className="text-xs font-semibold text-purple-700">nhóm vai trò (Roles)</span>
             </div>
-            <p className="text-[11px] text-purple-800/80 mt-1">
-              CEO • HRD • Trưởng phòng • Nhân viên • Admin • Kiosk
-            </p>
           </div>
 
           <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-200/70">
@@ -537,9 +682,6 @@ export default function PermissionsPage() {
               <span className="text-2xl font-extrabold text-blue-950">{RBAC_MODULES.length}</span>
               <span className="text-xs font-semibold text-blue-700">phân hệ chức năng</span>
             </div>
-            <p className="text-[11px] text-blue-800/80 mt-1">
-              Nhân sự, Công, Phép, Lương, Dự án, 9-Box, AI...
-            </p>
           </div>
 
           <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200/70">
@@ -555,9 +697,6 @@ export default function PermissionsPage() {
               </span>
               <span className="text-xs font-semibold text-emerald-700">quyền chi tiết (Actions)</span>
             </div>
-            <p className="text-[11px] text-emerald-800/80 mt-1">
-              Kiểm soát Xem, Thêm, Sửa, Xóa, Phê duyệt, Chốt lương
-            </p>
           </div>
 
           <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-200/70">
@@ -571,14 +710,11 @@ export default function PermissionsPage() {
               <span className="text-2xl font-extrabold text-amber-950">3 Cấp</span>
               <span className="text-xs font-semibold text-amber-800">ALL • DEPT • SELF</span>
             </div>
-            <p className="text-[11px] text-amber-800/80 mt-1">
-              Cập nhật gần nhất: {formatDateTime(lastUpdatedAt)}
-            </p>
           </div>
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex flex-wrap items-center gap-2 mt-6 pt-4 border-t border-slate-200/80">
+        <div className="flex flex-wrap items-center gap-2 mt-5 pt-4 border-t border-slate-200/80">
           <button
             onClick={() => setActiveTab('role-editor')}
             className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -588,7 +724,7 @@ export default function PermissionsPage() {
             }`}
           >
             <Sliders className="w-4 h-4" />
-            <span>1. Thiết lập Quyền hạn theo từng Vai trò (6 Vai trò)</span>
+            <span>Thiết lập quyền theo vai trò ({rolesList.length})</span>
           </button>
 
           <button
@@ -600,7 +736,7 @@ export default function PermissionsPage() {
             }`}
           >
             <ShieldCheck className="w-4 h-4" />
-            <span>2. Ma trận So sánh Tổng thể 6 Vai trò ({TOTAL_PERMISSIONS_COUNT} Quyền)</span>
+            <span>Ma trận phân quyền tổng thể</span>
           </button>
 
           <button
@@ -612,7 +748,7 @@ export default function PermissionsPage() {
             }`}
           >
             <GitBranch className="w-4 h-4" />
-            <span>3. Tháp Phân cấp Vai trò & Luồng Phê duyệt</span>
+            <span>Phân cấp & Nhật ký thay đổi</span>
           </button>
         </div>
       </div>
@@ -622,53 +758,68 @@ export default function PermissionsPage() {
          ===================================================================== */}
       {activeTab === 'role-editor' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* LEFT COLUMN: 6 ROLES SELECTOR */}
+          {/* LEFT COLUMN: ROLES LIST + CRUD ACTIONS */}
           <div className="lg:col-span-4 space-y-3">
             <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-                  Danh mục 6 Vai trò Hệ thống
+                  Danh mục Vai trò ({rolesList.length})
                 </h2>
-                <span className="text-[11px] font-semibold text-blue-600">
-                  Chọn vai trò để phân quyền
-                </span>
+                {canEditRoles && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCreateRoleModal(null)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-bold transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Tạo vai trò</span>
+                  </button>
+                )}
               </div>
 
               <div className="space-y-2.5">
-                {RBAC_ROLES.map((role) => {
-                  const isSelected = selectedRoleKey === role.key;
+                {rolesList.map((role) => {
+                  const isSelected = selectedRoleMeta.key === role.key;
                   const rStats = roleStatsMap[role.key] || {
                     granted: 0,
                     changedCount: 0,
                   };
                   const pct = Math.round((rStats.granted / TOTAL_PERMISSIONS_COUNT) * 100);
                   const memberCount = roleCounts[role.key] ?? 0;
+                  const canModifyThisRole = canActorModifyRole(role.key);
+                  const canDeleteThisRole =
+                    canModifyThisRole && role.key !== 'CEO' && role.key !== actorRole;
 
                   return (
                     <div
                       key={role.key}
                       onClick={() => setSelectedRoleKey(role.key)}
-                      className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                      className={`p-4 rounded-xl border transition-all cursor-pointer group ${
                         isSelected
                           ? 'bg-blue-50/60 border-blue-500 ring-2 ring-blue-500/15 shadow-xs'
                           : 'bg-white border-slate-200/80 hover:border-slate-300 hover:bg-slate-50/50'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span
                               className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${role.badgeClass}`}
                             >
                               {role.badge}
                             </span>
+                            {!role.isSystem && (
+                              <span className="px-1.5 py-0.5 rounded bg-cyan-50 text-cyan-700 border border-cyan-200 text-[10px] font-bold">
+                                Tùy chỉnh
+                              </span>
+                            )}
                             {rStats.changedCount > 0 && (
                               <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
-                                +{rStats.changedCount} thay đổi
+                                +{rStats.changedCount} sửa
                               </span>
                             )}
                           </div>
-                          <h3 className="text-sm font-extrabold text-slate-900 mt-1.5">
+                          <h3 className="text-sm font-extrabold text-slate-900 mt-1.5 truncate">
                             {role.name}
                           </h3>
                         </div>
@@ -678,12 +829,12 @@ export default function PermissionsPage() {
                             {rStats.granted}/{TOTAL_PERMISSIONS_COUNT}
                           </span>
                           <span className="block text-[10px] text-slate-400 font-semibold">
-                            quyền bật ({pct}%)
+                            quyền ({pct}%)
                           </span>
                         </div>
                       </div>
 
-                      {/* Permission Coverage Progress Bar */}
+                      {/* Progress Bar */}
                       <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-3">
                         <div
                           className={`h-full rounded-full transition-all ${role.dotClass}`}
@@ -692,10 +843,53 @@ export default function PermissionsPage() {
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2.5 pt-2 border-t border-slate-100">
-                        <span>Phạm vi chính: <strong className="text-slate-700">{role.defaultScope}</strong></span>
-                        <span className="font-semibold text-slate-600">
-                          {memberCount} nhân sự
+                        <span className="truncate">
+                          Phạm vi: <strong className="text-slate-700">{role.defaultScope}</strong>
                         </span>
+
+                        <div
+                          className="flex items-center gap-1 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {canEditRoles && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCreateRoleModal(role)}
+                              title={`Nhân bản từ vai trò ${role.name}`}
+                              className="p-1 rounded hover:bg-slate-200/70 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {canModifyThisRole && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditRoleModal(role)}
+                              title={`Sửa thông tin vai trò ${role.name}`}
+                              className="p-1 rounded hover:bg-blue-100 text-slate-400 hover:text-blue-700 transition-colors cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {canDeleteThisRole && (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTargetRole(role)}
+                              title={`Xóa vai trò ${role.name}`}
+                              className="p-1 rounded hover:bg-rose-100 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {memberCount > 0 && (
+                            <span className="ml-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold">
+                              {memberCount} NS
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -716,34 +910,43 @@ export default function PermissionsPage() {
                     >
                       {selectedRoleMeta.badge}
                     </span>
-                    <span className="text-xs font-semibold text-slate-500">
-                      • {selectedRoleMeta.hierarchy}
-                    </span>
+                    <code className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono text-[11px] font-bold">
+                      Mã: {selectedRoleMeta.key}
+                    </code>
                     <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[11px] font-bold">
-                      {roleCounts[selectedRoleKey] ?? 0} nhân sự thuộc vai trò này
+                      {roleCounts[selectedRoleMeta.key] ?? 0} nhân sự
                     </span>
                   </div>
                   <h2 className="text-xl font-extrabold text-slate-900">
-                    Cấu hình Quyền hạn Vai trò: {selectedRoleMeta.name}
+                    {selectedRoleMeta.name}
                   </h2>
                   <p className="text-xs text-slate-600 leading-relaxed">
                     {selectedRoleMeta.summary}
                   </p>
                 </div>
 
-                {/* Save & Reset Buttons for Selected Role */}
+                {/* Role Actions Bar (Edit Info, Delete Role, Save Permissions) */}
                 {canModifySelectedRole ? (
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      disabled={savingMatrix}
-                      onClick={handleResetRoleToDefault}
-                      title="Khôi phục toàn bộ 64 quyền của vai trò này về chuẩn mặc định"
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                      onClick={() => handleOpenEditRoleModal(selectedRoleMeta)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all cursor-pointer"
                     >
-                      <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Khôi phục Mặc định</span>
+                      <Pencil className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Sửa vai trò</span>
                     </button>
+
+                    {selectedRoleMeta.key !== 'CEO' && selectedRoleMeta.key !== actorRole && (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTargetRole(selectedRoleMeta)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-200 bg-white hover:bg-rose-50 text-rose-600 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Xóa</span>
+                      </button>
+                    )}
 
                     {selectedRoleStats.changedCount > 0 && (
                       <button
@@ -767,8 +970,8 @@ export default function PermissionsPage() {
                         {savingMatrix
                           ? 'Đang lưu...'
                           : selectedRoleStats.changedCount > 0
-                          ? `Lưu Phân quyền Vai trò (${selectedRoleStats.changedCount})`
-                          : 'Lưu Phân quyền Vai trò'}
+                          ? `Lưu Phân quyền (${selectedRoleStats.changedCount})`
+                          : 'Lưu Phân quyền'}
                       </span>
                     </button>
                   </div>
@@ -778,13 +981,13 @@ export default function PermissionsPage() {
                     <span>
                       {canEditRoles
                         ? `Chỉ CEO mới được sửa vai trò ${selectedRoleMeta.shortName}`
-                        : 'Chế độ Xem tra cứu (Read-only)'}
+                        : 'Chế độ Xem tra cứu'}
                     </span>
                   </div>
                 )}
               </div>
 
-              {/* Scope Breakdown Mini-Cards for Selected Role */}
+              {/* Scope Breakdown Mini-Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-slate-100">
                 <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-200/80 flex items-center justify-between">
                   <div>
@@ -827,7 +1030,7 @@ export default function PermissionsPage() {
                     <span className="text-[11px] font-bold text-slate-700 block">
                       Không cấp (—)
                     </span>
-                    <span className="text-[10px] text-slate-400">Chặn HTTP 403</span>
+                    <span className="text-[10px] text-slate-400">Chặn truy cập</span>
                   </div>
                   <span className="text-lg font-extrabold text-slate-700">
                     {selectedRoleStats.noneCount}
@@ -843,7 +1046,7 @@ export default function PermissionsPage() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Tìm tên quyền, mã quyền (vd: payroll.lock, leave.approve)..."
+                    placeholder="Tìm theo tên quyền hạn..."
                     className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   />
                 </div>
@@ -870,8 +1073,8 @@ export default function PermissionsPage() {
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs font-semibold text-slate-700"
                   >
                     <option value="ALL">Mọi trạng thái quyền</option>
-                    <option value="GRANTED">Đang được cấp quyền ({selectedRoleStats.granted})</option>
-                    <option value="DENIED">Không cấp quyền ({selectedRoleStats.noneCount})</option>
+                    <option value="GRANTED">Đang bật ({selectedRoleStats.granted})</option>
+                    <option value="DENIED">Đang tắt ({selectedRoleStats.noneCount})</option>
                   </select>
                 </div>
               </div>
@@ -919,41 +1122,35 @@ export default function PermissionsPage() {
                     <div className="divide-y divide-slate-100">
                       {mod.permissions.map((perm) => {
                         const currentScope =
-                          draftMatrix[perm.key]?.[selectedRoleKey] || 'none';
+                          draftMatrix[perm.key]?.[selectedRoleMeta.key] || 'none';
                         const savedScope =
-                          savedMatrix[perm.key]?.[selectedRoleKey] || 'none';
+                          savedMatrix[perm.key]?.[selectedRoleMeta.key] || 'none';
                         const isModified = currentScope !== savedScope;
                         const isCeoLocked =
-                          selectedRoleKey === 'CEO' && CEO_LOCKED_PERMISSIONS.has(perm.key);
+                          selectedRoleMeta.key === 'CEO' && CEO_LOCKED_PERMISSIONS.has(perm.key);
 
                         return (
                           <div
                             key={perm.key}
-                            className={`px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+                            className={`px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
                               isModified ? 'bg-amber-50/40' : 'hover:bg-slate-50/80'
                             }`}
                           >
-                            <div className="space-y-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-xs font-bold text-slate-900">
-                                  {perm.label}
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <span className="text-xs font-bold text-slate-800">
+                                {perm.label}
+                              </span>
+                              {isCeoLocked && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 text-[10px] font-bold">
+                                  <Lock className="w-3 h-3" />
+                                  Cốt lõi
                                 </span>
-                                <code className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200/80 font-mono text-[11px] font-bold text-slate-700">
-                                  {perm.key}
-                                </code>
-                                {isCeoLocked && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 text-[10px] font-bold">
-                                    <Lock className="w-3 h-3" />
-                                    Quyền gốc CEO
-                                  </span>
-                                )}
-                                {isModified && (
-                                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
-                                    Đã chỉnh sửa
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[11px] text-slate-500 font-mono">{perm.desc}</p>
+                              )}
+                              {isModified && (
+                                <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
+                                  Đã đổi
+                                </span>
+                              )}
                             </div>
 
                             {/* 4-Scope Segmented Control */}
@@ -968,13 +1165,12 @@ export default function PermissionsPage() {
                                     disabled={disabled}
                                     onClick={() =>
                                       handleSetPermissionScope(
-                                        selectedRoleKey,
+                                        selectedRoleMeta.key,
                                         perm.key,
                                         opt.value
                                       )
                                     }
-                                    title={`${opt.label} (${opt.shortLabel})`}
-                                    className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-extrabold transition-all ${
+                                    className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold transition-all ${
                                       isActive ? opt.activeClass : opt.idleClass
                                     } ${
                                       disabled
@@ -982,9 +1178,7 @@ export default function PermissionsPage() {
                                         : 'cursor-pointer'
                                     }`}
                                   >
-                                    {opt.shortLabel === '—'
-                                      ? 'Tắt (—)'
-                                      : `${opt.shortLabel} • ${opt.label}`}
+                                    {opt.label}
                                   </button>
                                 );
                               })}
@@ -1002,7 +1196,7 @@ export default function PermissionsPage() {
       )}
 
       {/* =====================================================================
-          TAB 2: MA TRẬN SO SÁNH TỔNG THỂ 6 VAI TRÒ (64 QUYỀN × 6 VAI TRÒ)
+          TAB 2: MA TRẬN PHÂN QUYỀN TỔNG THỂ
          ===================================================================== */}
       {activeTab === 'matrix' && (
         <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs space-y-4">
@@ -1014,7 +1208,7 @@ export default function PermissionsPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Tìm theo mã quyền hoặc nghiệp vụ (vd: payroll.lock, leave.approve)..."
+                  placeholder="Tìm kiếm quyền hạn..."
                   className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 />
               </div>
@@ -1035,7 +1229,7 @@ export default function PermissionsPage() {
 
             {/* Scope Legend */}
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-slate-500 font-semibold mr-1">Chú giải phạm vi:</span>
+              <span className="text-slate-500 font-semibold mr-1">Chú giải:</span>
               {['ALL', 'DEPT', 'SELF'].map((k) => {
                 const sc = SCOPE_META[k];
                 return (
@@ -1058,10 +1252,8 @@ export default function PermissionsPage() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-900 text-white text-[11px] font-bold uppercase tracking-wider">
-                  <th className="py-3.5 px-4 min-w-[280px]">
-                    Mã Quyền (Permission Key) & Nghiệp vụ
-                  </th>
-                  {RBAC_ROLES.map((r) => (
+                  <th className="py-3.5 px-4 min-w-[260px]">Danh mục Quyền hạn Nghiệp vụ</th>
+                  {rolesList.map((r) => (
                     <th
                       key={r.key}
                       onClick={() => {
@@ -1070,7 +1262,7 @@ export default function PermissionsPage() {
                       }}
                       title={`Nhấn để thiết lập chi tiết vai trò ${r.name}`}
                       className={`py-3.5 px-3 text-center cursor-pointer transition-colors ${
-                        selectedRoleKey === r.key ? 'bg-blue-700' : 'hover:bg-slate-800'
+                        selectedRoleMeta.key === r.key ? 'bg-blue-700' : 'hover:bg-slate-800'
                       }`}
                     >
                       <div className="font-extrabold">{r.shortName}</div>
@@ -1085,7 +1277,7 @@ export default function PermissionsPage() {
                 {filteredModules.map((mod) => (
                   <React.Fragment key={mod.id}>
                     <tr className="bg-slate-100/90">
-                      <td colSpan={7} className="py-2.5 px-4">
+                      <td colSpan={rolesList.length + 1} className="py-2.5 px-4">
                         <div className="flex items-center justify-between">
                           <div>
                             <span className="font-extrabold text-slate-900 text-xs">
@@ -1105,18 +1297,12 @@ export default function PermissionsPage() {
                     {mod.permissions.map((perm) => (
                       <tr key={perm.key} className="hover:bg-slate-50/80 transition-colors">
                         <td className="py-3 px-4">
-                          <div className="flex items-center gap-2">
-                            <code className="px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-mono text-[11px] font-bold border border-slate-200/80">
-                              {perm.key}
-                            </code>
-                            <span className="font-bold text-slate-900">{perm.label}</span>
-                          </div>
-                          <p className="text-[11px] text-slate-500 mt-1">{perm.desc}</p>
+                          <span className="font-bold text-slate-900">{perm.label}</span>
                         </td>
 
-                        {RBAC_ROLES.map((r) => {
+                        {rolesList.map((r) => {
                           const scopeVal = draftMatrix[perm.key]?.[r.key] || null;
-                          const isHighlighted = selectedRoleKey === r.key;
+                          const isHighlighted = selectedRoleMeta.key === r.key;
                           if (!scopeVal) {
                             return (
                               <td
@@ -1157,7 +1343,7 @@ export default function PermissionsPage() {
       )}
 
       {/* =====================================================================
-          TAB 3: THÁP PHÂN CẤP VAI TRÒ & LUỒNG PHÊ DUYỆT
+          TAB 3: PHÂN CẤP & NHẬT KÝ THAY ĐỔI
          ===================================================================== */}
       {activeTab === 'hierarchy' && (
         <div className="space-y-6">
@@ -1170,77 +1356,36 @@ export default function PermissionsPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900">
-                    Tháp Phân cấp Quyền hạn theo Vai trò (Role Hierarchy)
+                    Cấu trúc Phân cấp theo Vai trò
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Mọi nhân sự tự động thừa hưởng quyền từ Vai trò chức danh được gán
+                    Nhân sự được gán vai trò nào sẽ tự động nhận bộ quyền của vai trò đó
                   </p>
                 </div>
               </div>
 
-              <div className="space-y-3 pt-2">
-                <div className="p-4 rounded-xl bg-purple-50/60 border border-purple-200/80">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-purple-950 text-xs">
-                      Cấp 1 — Tổng Giám Đốc (`CEO`)
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-purple-200/70 text-purple-900 text-[10px] font-extrabold">
-                      Phạm vi: Toàn công ty (ALL)
-                    </span>
-                  </div>
-                  <p className="text-xs text-purple-900/80 mt-1.5">
-                    Nắm giữ toàn bộ quyền điều hành chiến lược, phê duyệt cuối cùng đơn từ của cấp
-                    Quản lý/HRD, xem toàn bộ bảng lương, đánh giá 9-Box và cấu hình phân quyền cho
-                    mọi vai trò.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-200/80">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-blue-950 text-xs">
-                      Cấp 2A — Giám Đốc Nhân Sự (`HR_DIRECTOR`)
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-blue-200/70 text-blue-900 text-[10px] font-extrabold">
-                      Phạm vi: Toàn công ty (ALL)
+              <div className="space-y-2.5 pt-1">
+                {rolesList.map((r) => (
+                  <div
+                    key={r.key}
+                    className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-start justify-between gap-3"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${r.badgeClass}`}
+                        >
+                          {r.badge}
+                        </span>
+                        <span className="font-bold text-slate-900 text-xs">{r.name}</span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-1">{r.summary}</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-700 shrink-0">
+                      {roleStatsMap[r.key]?.granted || 0}/{TOTAL_PERMISSIONS_COUNT} quyền
                     </span>
                   </div>
-                  <p className="text-xs text-blue-900/80 mt-1.5">
-                    Quản trị toàn diện nghiệp vụ HR (Tuyển dụng, Hợp đồng, Chấm công, Phê chuẩn nghỉ
-                    phép bước 2, Tính & Chốt lương, 9-Box/PIP) và được phép tùy chỉnh quyền của các
-                    vai trò cấp dưới (`LINE_MANAGER`, `EMPLOYEE`, `KIOSK`).
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-emerald-50/60 border border-emerald-200/80">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-emerald-950 text-xs">
-                      Cấp 2B — Trưởng Phòng Ban (`LINE_MANAGER`)
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-emerald-200/70 text-emerald-900 text-[10px] font-extrabold">
-                      Phạm vi: Theo phòng ban (DEPT)
-                    </span>
-                  </div>
-                  <p className="text-xs text-emerald-900/80 mt-1.5">
-                    Chỉ truy cập dữ liệu, giao việc Kanban, chấm điểm năng lực và duyệt đơn bước 1
-                    đối với nhân sự thuộc đúng phòng ban mình phụ trách. Không thể xem lương của
-                    nhân viên khác.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200/80">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-amber-950 text-xs">
-                      Cấp 3 — Nhân Viên Chính Thức (`EMPLOYEE`)
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-amber-200/70 text-amber-900 text-[10px] font-extrabold">
-                      Phạm vi: Cá nhân (SELF)
-                    </span>
-                  </div>
-                  <p className="text-xs text-amber-900/80 mt-1.5">
-                    Tự phục vụ trên Cổng Nhân Viên (ESS): chấm công, gửi đơn phép/OT/giải trình, xem
-                    phiếu lương của riêng mình và cập nhật tiến độ công việc được giao.
-                  </p>
-                </div>
+                ))}
               </div>
             </div>
 
@@ -1252,10 +1397,10 @@ export default function PermissionsPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900">
-                    Luồng Phê duyệt Đa cấp Theo Vai trò (Role Workflow)
+                    Luồng Phê duyệt Đa cấp Theo Vai trò
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Hệ thống tự động định tuyến người duyệt dựa trên Vai trò của người tạo đơn
+                    Tự động định tuyến người duyệt dựa trên vai trò của người gửi đơn
                   </p>
                 </div>
               </div>
@@ -1263,34 +1408,34 @@ export default function PermissionsPage() {
               <div className="space-y-3 pt-2">
                 <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200/80 space-y-2">
                   <div className="text-xs font-extrabold text-emerald-950">
-                    Luồng A: Khi vai trò Nhân viên (`EMPLOYEE`) gửi đơn
+                    Luồng A: Đơn từ của Nhân viên (`EMPLOYEE`)
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-700">
                     <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200">
-                      1. Vai trò `EMPLOYEE`
+                      1. Nhân viên
                     </span>
                     <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
                     <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      2. Vai trò `LINE_MANAGER` (`DEPT`)
+                      2. Trưởng phòng (`DEPT`)
                     </span>
                     <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
                     <span className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 border border-blue-200">
-                      3. Vai trò `HR_DIRECTOR` (`ALL`)
+                      3. Giám đốc Nhân sự (`ALL`)
                     </span>
                   </div>
                 </div>
 
                 <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-200/80 space-y-2">
                   <div className="text-xs font-extrabold text-amber-950">
-                    Luồng B: Khi vai trò Quản lý (`LINE_MANAGER` / `HR_DIRECTOR`) gửi đơn
+                    Luồng B: Đơn từ của Cấp Quản lý (`LINE_MANAGER` / `HR_DIRECTOR`)
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-700">
                     <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200">
-                      1. Vai trò `LINE_MANAGER` / `HR_DIRECTOR`
+                      1. Trưởng phòng / HRD
                     </span>
                     <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
                     <span className="px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 border border-purple-200">
-                      2. Vai trò `CEO` phê duyệt trực tiếp
+                      2. Tổng Giám Đốc (`CEO`) phê duyệt trực tiếp
                     </span>
                   </div>
                 </div>
@@ -1301,10 +1446,9 @@ export default function PermissionsPage() {
                     <span>Kiểm soát Phạm vi Trợ lý AI Copilot theo Vai trò</span>
                   </div>
                   <p className="text-xs text-indigo-900/80">
-                    Trợ lý AI HR tự động đọc cấu hình vai trò của người hỏi: Vai trò `EMPLOYEE` chỉ
-                    được AI trả lời số liệu phép/công/lương của bản thân (`SELF`); vai trò
-                    `LINE_MANAGER` được hỏi thống kê phòng ban (`DEPT`); chỉ vai trò `CEO` và
-                    `HR_DIRECTOR` mới được hỏi tổng hợp toàn công ty (`ALL`).
+                    Trợ lý AI HR tự động áp dụng phạm vi dữ liệu theo vai trò người hỏi: Cá nhân
+                    (`SELF`) cho Nhân viên, Phòng ban (`DEPT`) cho Trưởng phòng và Toàn công ty
+                    (`ALL`) cho Ban Giám Đốc.
                   </p>
                 </div>
               </div>
@@ -1318,7 +1462,7 @@ export default function PermissionsPage() {
                 <div className="flex items-center gap-2.5">
                   <History className="w-4 h-4 text-indigo-600" />
                   <h3 className="text-sm font-extrabold text-slate-900">
-                    Lịch sử Kiểm toán Thay đổi Phân quyền Vai trò
+                    Nhật ký Thay đổi Vai trò & Phân quyền
                   </h3>
                 </div>
                 <button
@@ -1338,16 +1482,15 @@ export default function PermissionsPage() {
                       <th className="py-3 px-4">Thời gian</th>
                       <th className="py-3 px-4">Người thực hiện</th>
                       <th className="py-3 px-4">Sự kiện</th>
-                      <th className="py-3 px-4">Vai trò được cập nhật</th>
-                      <th className="py-3 px-4 text-right">Chi tiết JSON</th>
+                      <th className="py-3 px-4">Vai trò</th>
+                      <th className="py-3 px-4 text-right">Chi tiết</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {auditLogs.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-slate-500">
-                          Chưa có lịch sử chỉnh sửa cấu hình vai trò nào. Hãy thử chỉnh sửa quyền của
-                          1 vai trò ở Tab 1 và nhấn "Lưu Phân quyền Vai trò".
+                          Chưa có lịch sử thay đổi vai trò nào.
                         </td>
                       </tr>
                     ) : (
@@ -1365,7 +1508,7 @@ export default function PermissionsPage() {
                             </span>
                           </td>
                           <td className="py-3 px-4 font-bold text-slate-800">
-                            {ROLE_MAP[log.recordId]?.name || log.recordId}
+                            {roleMap[log.recordId]?.name || log.recordId}
                           </td>
                           <td className="py-3 px-4 text-right">
                             <button
@@ -1387,14 +1530,287 @@ export default function PermissionsPage() {
         </div>
       )}
 
-      {/* JSON Diff Modal */}
+      {/* =====================================================================
+          MODAL 1: TẠO MỚI HOẶC CHỈNH SỬA VAI TRÒ (CREATE / EDIT ROLE MODAL)
+         ===================================================================== */}
+      {roleModalMode && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center">
+                  {roleModalMode === 'create' ? (
+                    <Plus className="w-4 h-4" />
+                  ) : (
+                    <Pencil className="w-4 h-4" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    {roleModalMode === 'create'
+                      ? 'Thêm Vai Trò Mới'
+                      : `Chỉnh sửa Vai Trò: ${roleForm.name}`}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {roleModalMode === 'create'
+                      ? 'Khởi tạo vai trò mới và thiết lập bộ quyền hạn tương ứng'
+                      : 'Cập nhật tên hiển thị, cấp bậc, màu nhận diện và phạm vi mặc định'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setRoleModalMode(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitRoleModal} className="p-6 space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Tên Vai trò <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={roleForm.name}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setRoleForm((p) => ({
+                        ...p,
+                        name: val,
+                        code:
+                          roleModalMode === 'create' && (!p.code || p.code === toRoleCodeSlug(p.name))
+                            ? toRoleCodeSlug(val)
+                            : p.code,
+                      }));
+                    }}
+                    placeholder="vd: Kế toán Tiền lương"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 font-semibold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Mã Định danh (Role Code)
+                  </label>
+                  <input
+                    type="text"
+                    disabled={roleModalMode === 'edit'}
+                    value={roleForm.code}
+                    onChange={(e) =>
+                      setRoleForm((p) => ({ ...p, code: toRoleCodeSlug(e.target.value) }))
+                    }
+                    placeholder="vd: PAYROLL_ACCOUNTANT"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 font-mono font-bold disabled:opacity-60"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Tên ngắn gọn (Hiển thị trên cột Ma trận)
+                  </label>
+                  <input
+                    type="text"
+                    value={roleForm.shortName}
+                    onChange={(e) => setRoleForm((p) => ({ ...p, shortName: e.target.value }))}
+                    placeholder="vd: Kế toán Lương"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Cấp bậc Vai trò
+                  </label>
+                  <select
+                    value={roleForm.level}
+                    onChange={(e) => setRoleForm((p) => ({ ...p, level: e.target.value }))}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 font-semibold"
+                  >
+                    <option value="Cấp 1">Cấp 1 — Lãnh đạo Tối cao</option>
+                    <option value="Cấp 2A">Cấp 2A — Quản trị Khối</option>
+                    <option value="Cấp 2B">Cấp 2B — Trưởng Bộ phận</option>
+                    <option value="Chuyên trách">Chuyên trách — Nghiệp vụ</option>
+                    <option value="Cấp 3">Cấp 3 — Nhân viên</option>
+                    <option value="QTHT">QTHT — Quản trị Kỹ thuật</option>
+                    <option value="Kiosk">Thiết bị — Kiosk</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1.5">
+                    Phạm vi Dữ liệu Mặc định
+                  </label>
+                  <select
+                    value={roleForm.defaultScope}
+                    onChange={(e) =>
+                      setRoleForm((p) => ({ ...p, defaultScope: e.target.value }))
+                    }
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 font-semibold"
+                  >
+                    <option value="Toàn công ty (ALL)">Toàn công ty (ALL)</option>
+                    <option value="Theo phòng ban (DEPT)">Theo phòng ban (DEPT)</option>
+                    <option value="Cá nhân (SELF)">Cá nhân (SELF)</option>
+                  </select>
+                </div>
+
+                {roleModalMode === 'create' && (
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1.5">
+                      Sao chép Bộ quyền Mẫu từ Vai trò
+                    </label>
+                    <select
+                      value={roleForm.templateRoleCode}
+                      onChange={(e) =>
+                        setRoleForm((p) => ({ ...p, templateRoleCode: e.target.value }))
+                      }
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 font-semibold"
+                    >
+                      <option value="">-- Khởi tạo trống (0 quyền) --</option>
+                      {rolesList.map((r) => (
+                        <option key={r.key} value={r.key}>
+                          Sao chép từ: {r.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1.5">
+                  Màu sắc Nhận diện Vai trò
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  {COLOR_THEME_OPTIONS.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      onClick={() => setRoleForm((p) => ({ ...p, colorTheme: c.key }))}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        roleForm.colorTheme === c.key
+                          ? `${c.badge} ring-2 ring-slate-900/15`
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`w-2.5 h-2.5 rounded-full ${c.dot}`} />
+                      <span>{c.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1.5">
+                  Mô tả Chức năng & Trách nhiệm của Vai trò
+                </label>
+                <textarea
+                  rows={3}
+                  value={roleForm.summary}
+                  onChange={(e) => setRoleForm((p) => ({ ...p, summary: e.target.value }))}
+                  placeholder="Mô tả ngắn gọn quyền hạn và phạm vi công việc của vai trò này..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setRoleModalMode(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
+                >
+                  Hủy bỏ
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingMatrix}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {savingMatrix
+                    ? 'Đang lưu...'
+                    : roleModalMode === 'create'
+                    ? 'Tạo Vai trò'
+                    : 'Lưu Thay đổi'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 2: XÁC NHẬN XÓA VAI TRÒ (DELETE ROLE CONFIRMATION)
+         ===================================================================== */}
+      {deleteTargetRole && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Xác nhận Xóa Vai trò
+                  </h3>
+                  <p className="text-xs text-slate-500">{deleteTargetRole.name}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDeleteTargetRole(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Bạn có chắc chắn muốn xóa vai trò{' '}
+              <strong className="text-slate-900">
+                {deleteTargetRole.name} ({deleteTargetRole.key})
+              </strong>{' '}
+              khỏi danh mục phân quyền? Bạn luôn có thể nhấn nút <strong>"Khôi phục gốc"</strong>{' '}
+              trên thanh công cụ nếu muốn lấy lại bộ vai trò mặc định ban đầu.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTargetRole(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50 cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                disabled={savingMatrix}
+                onClick={handleConfirmDeleteRole}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {savingMatrix ? 'Đang xóa...' : 'Xác nhận Xóa Vai trò'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 3: CHI TIẾT JSON DIFF
+         ===================================================================== */}
       {selectedAuditItem && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-3xl w-full overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div>
                 <h3 className="text-sm font-extrabold text-slate-900">
-                  Chi tiết Thay đổi Phân quyền Vai trò #{selectedAuditItem.id}
+                  Chi tiết Thay đổi Vai trò #{selectedAuditItem.id}
                 </h3>
                 <p className="text-xs text-slate-500">
                   Vai trò: {selectedAuditItem.recordId} • Thực hiện bởi:{' '}
@@ -1413,22 +1829,22 @@ export default function PermissionsPage() {
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[70vh] overflow-y-auto">
               <div>
                 <div className="text-xs font-bold text-rose-700 mb-2">
-                  Cấu hình Quyền Trước khi lưu (oldValues)
+                  Dữ liệu Trước khi lưu (oldValues)
                 </div>
                 <pre className="p-3.5 rounded-xl bg-slate-900 text-rose-300 font-mono text-[11px] overflow-x-auto">
                   {selectedAuditItem.oldValues
                     ? JSON.stringify(selectedAuditItem.oldValues, null, 2)
-                    : '// Mặc định gốc'}
+                    : '// Không có dữ liệu cũ'}
                 </pre>
               </div>
               <div>
                 <div className="text-xs font-bold text-emerald-700 mb-2">
-                  Cấu hình Quyền Sau khi lưu (newValues)
+                  Dữ liệu Sau khi lưu (newValues)
                 </div>
                 <pre className="p-3.5 rounded-xl bg-slate-900 text-emerald-300 font-mono text-[11px] overflow-x-auto">
                   {selectedAuditItem.newValues
                     ? JSON.stringify(selectedAuditItem.newValues, null, 2)
-                    : '// Không có dữ liệu'}
+                    : '// Không có dữ liệu mới'}
                 </pre>
               </div>
             </div>

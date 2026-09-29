@@ -37,6 +37,19 @@ router.get(
   })
 );
 
+router.post(
+  '/rbac-roles',
+  requirePermission('settings.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await service.createRbacRole(req.user, req.body, req);
+    res.status(201).json({
+      success: true,
+      message: 'Đã tạo vai trò mới thành công',
+      data,
+    });
+  })
+);
+
 router.put(
   '/rbac-roles',
   requirePermission('settings.manage'),
@@ -45,6 +58,32 @@ router.put(
     res.json({
       success: true,
       message: 'Đã lưu cấu hình phân quyền theo vai trò thành công',
+      data,
+    });
+  })
+);
+
+router.patch(
+  '/rbac-roles/:roleCode',
+  requirePermission('settings.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await service.updateRbacRoleInfo(req.user, req.params.roleCode, req.body, req);
+    res.json({
+      success: true,
+      message: 'Đã cập nhật thông tin vai trò thành công',
+      data,
+    });
+  })
+);
+
+router.delete(
+  '/rbac-roles/:roleCode',
+  requirePermission('settings.manage'),
+  asyncHandler(async (req, res) => {
+    const data = await service.deleteRbacRole(req.user, req.params.roleCode, req);
+    res.json({
+      success: true,
+      message: 'Đã xóa vai trò thành công',
       data,
     });
   })
