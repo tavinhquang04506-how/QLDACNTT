@@ -48,7 +48,7 @@ export default function Sidebar() {
 
   const leaveBadge = pendingLeavesCount > 0 ? String(pendingLeavesCount) : undefined;
 
-  // Role-Specific Navigation Menus
+  // Role-Specific Navigation Menus (Trang phân quyền chỉ hiển thị cho ADMIN và CEO)
   const getMenuItems = () => {
     switch (currentRole.key) {
       case 'CEO':
@@ -73,7 +73,6 @@ export default function Sidebar() {
           { name: 'Thẩm duyệt nghỉ phép', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
           { name: 'Xử lý tiền lương và quyết toán', path: '/payroll', icon: Wallet },
           { name: 'Phân tích hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
-          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
           { name: 'Cài đặt hệ thống', path: '/settings', icon: Settings },
         ];
@@ -86,7 +85,6 @@ export default function Sidebar() {
           { name: 'Duyệt phép phòng ban', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Đánh giá hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
-          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
         ];
       case 'ADMIN':
@@ -104,7 +102,6 @@ export default function Sidebar() {
           { name: 'Đơn nghỉ phép của tôi', path: '/leaves', icon: CalendarDays },
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Hồ sơ nhân sự', path: '/directory', icon: Users },
-          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
         ];
     }
   };

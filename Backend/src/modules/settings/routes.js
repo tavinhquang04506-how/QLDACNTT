@@ -2,10 +2,19 @@ const express = require('express');
 const asyncHandler = require('../../utils/asyncHandler');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../policies');
+const { forbidden } = require('../../utils/AppError');
 const service = require('./service');
 
 const router = express.Router();
 router.use(authenticate);
+
+function requireCeoOrAdmin(req, _res, next) {
+  const roleCode = req.user?.roleCode || req.user?.role;
+  if (roleCode === 'CEO' || roleCode === 'ADMIN') {
+    return next();
+  }
+  return next(forbidden('Chỉ Tổng Giám Đốc (CEO) và Quản Trị Hệ Thống (ADMIN) mới có quyền truy cập phân quyền'));
+}
 
 router.get(
   '/',
@@ -30,7 +39,7 @@ router.get(
 
 router.get(
   '/rbac-roles',
-  requirePermission('settings.read'),
+  requireCeoOrAdmin,
   asyncHandler(async (_req, res) => {
     const data = await service.getRbacRoleMatrix();
     res.json({ success: true, data });
@@ -39,7 +48,7 @@ router.get(
 
 router.post(
   '/rbac-roles',
-  requirePermission('settings.manage'),
+  requireCeoOrAdmin,
   asyncHandler(async (req, res) => {
     const data = await service.createRbacRole(req.user, req.body, req);
     res.status(201).json({
@@ -52,7 +61,7 @@ router.post(
 
 router.put(
   '/rbac-roles',
-  requirePermission('settings.manage'),
+  requireCeoOrAdmin,
   asyncHandler(async (req, res) => {
     const data = await service.updateRbacRoleMatrix(req.user, req.body, req);
     res.json({
@@ -65,7 +74,7 @@ router.put(
 
 router.patch(
   '/rbac-roles/:roleCode',
-  requirePermission('settings.manage'),
+  requireCeoOrAdmin,
   asyncHandler(async (req, res) => {
     const data = await service.updateRbacRoleInfo(req.user, req.params.roleCode, req.body, req);
     res.json({
@@ -78,7 +87,7 @@ router.patch(
 
 router.delete(
   '/rbac-roles/:roleCode',
-  requirePermission('settings.manage'),
+  requireCeoOrAdmin,
   asyncHandler(async (req, res) => {
     const data = await service.deleteRbacRole(req.user, req.params.roleCode, req);
     res.json({
@@ -91,7 +100,7 @@ router.delete(
 
 router.post(
   '/rbac-roles/reset',
-  requirePermission('settings.manage'),
+  requireCeoOrAdmin,
   asyncHandler(async (req, res) => {
     const data = await service.resetRbacRoleMatrix(req.user, req.body, req);
     res.json({

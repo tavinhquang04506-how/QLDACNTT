@@ -51,7 +51,9 @@ export default function App() {
             <Route path="/leaves" element={<LeaveManagementPage />} />
             <Route path="/payroll" element={<PayrollPage />} />
             <Route path="/ai-analytics" element={<AiAnalyticsPage />} />
-            <Route path="/permissions" element={<PermissionsPage />} />
+            <Route element={<ProtectedRoute allowedRoles={['CEO', 'ADMIN']} />}>
+              <Route path="/permissions" element={<PermissionsPage />} />
+            </Route>
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>
