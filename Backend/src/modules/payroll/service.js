@@ -16,6 +16,14 @@ function parseIsoDate(iso) {
 const DEFAULT_ALLOWANCES = 1_500_000; // phụ cấp ăn trưa + xăng xe
 const OT_MONTHLY_LIMIT = 40;
 const LOCKED = ['DA_CHOT', 'DA_CHUYEN_KHOAN'];
+const MANUAL_ADJUSTMENT_FIELDS = [
+  'bonus',
+  'note',
+  'allowances',
+  'actualWorkDays',
+  'baseSalary',
+  'otHours',
+];
 
 const SEVERITY_ORDER = { Cao: 0, 'Trung bình': 1, Thấp: 2 };
 
@@ -100,7 +108,7 @@ async function collectPayrollSources(executor, period, { lockEmployees = false }
   const start = `${period}-01`;
 
   const empRes = await executor.query(
-    `SELECT id, base_salary, bank_account, bank_name, status,
+    `SELECT id, full_name, base_salary, bank_account, bank_name, status,
             joined_date::text AS joined_date,
             termination_date::text AS termination_date
        FROM employees
@@ -185,6 +193,7 @@ async function collectPayrollSources(executor, period, { lockEmployees = false }
 
     const item = {
       id: emp.id,
+      full_name: emp.full_name || emp.id,
       base,
       bank_account: emp.bank_account || null,
       bank_name: emp.bank_name || null,
@@ -237,6 +246,27 @@ async function collectPayrollSources(executor, period, { lockEmployees = false }
   };
 }
 
+function resolveAdjustmentConflictDecision(options = {}, reqBody = {}, empId, field) {
+  const map = options?.adjustmentResolutions || reqBody?.adjustmentResolutions || null;
+  if (map && typeof map === 'object') {
+    const empEntry = map[empId];
+    if (typeof empEntry === 'string' && (empEntry === 'USE_SOURCE' || empEntry === 'KEEP_MANUAL')) {
+      return empEntry;
+    }
+    if (empEntry && typeof empEntry === 'object') {
+      const fieldEntry = empEntry[field];
+      if (fieldEntry === 'USE_SOURCE' || fieldEntry === 'KEEP_MANUAL') {
+        return fieldEntry;
+      }
+    }
+  }
+  const globalDecision = options?.conflictResolution || reqBody?.conflictResolution || null;
+  if (globalDecision === 'USE_SOURCE' || globalDecision === 'KEEP_MANUAL') {
+    return globalDecision;
+  }
+  return null;
+}
+
 async function findPeriod(executor, id, { lock = false } = {}) {
   const { rows } = await executor.query(`SELECT * FROM payroll_periods WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [id]);
   if (!rows[0]) throw notFound('Không tìm thấy kỳ lương');
@@ -249,8 +279,19 @@ async function listPeriods() {
 
 const getPeriod = (id) => findPeriod(db, id);
 
-/** Draft payroll for every employee paid in `period` ('YYYY-MM'). A locked or transferred period is never touched. */
-async function calculate(actor, period, req) {
+/**
+ * Draft payroll for every employee paid in `period` ('YYYY-MM'). A locked or transferred period is never touched.
+ *
+ * R18 + R21:
+ * - Preserves all 6 HR manual adjustment fields (`bonus`, `note`, `allowances`, `actualWorkDays`, `baseSalary`, `otHours`),
+ *   including explicit `0` values, across single or multiple recalculations.
+ * - Detects when a source-backed field (`actualWorkDays`, `baseSalary`, `otHours`, `allowances`) that HR manually overrode
+ *   has changed in the underlying source since HR's edit. Never silently drops the adjustment and never silently picks the old
+ *   value: rejects with `409 ADJUSTMENT_SOURCE_CONFLICT` unless HR provides an explicit reconciliation decision
+ *   (`USE_SOURCE` or `KEEP_MANUAL`).
+ * - Audits `before_adjustments`, `after_adjustments`, and `reconciled_conflicts` in `audit_logs`.
+ */
+async function calculate(actor, period, req, options = {}) {
   return db.withTransaction(async (client) => {
     await client.query('INSERT INTO payroll_periods (period) VALUES ($1) ON CONFLICT (period) DO NOTHING', [period]);
     const periodRow = (await client.query('SELECT * FROM payroll_periods WHERE period = $1 FOR UPDATE', [period])).rows[0];
@@ -258,9 +299,8 @@ async function calculate(actor, period, req) {
       throw new AppError(409, 'PERIOD_LOCKED', `Kỳ lương ${period} đã được chốt, không thể tính lại`);
     }
 
-    // R18: Preserve HR manual adjustments (bonus, note, custom allowances) from existing draft payslips before recalculation
     const existingSlipsRes = await client.query(
-      'SELECT employee_id, bonus, allowances, note FROM payslips WHERE period_id = $1',
+      'SELECT employee_id, base_salary, actual_work_days, ot_hours, allowances, bonus, note FROM payslips WHERE period_id = $1',
       [periodRow.id]
     );
     const existingSlipsByEmp = new Map((existingSlipsRes?.rows || []).map((r) => [r.employee_id, r]));
@@ -269,26 +309,172 @@ async function calculate(actor, period, req) {
         ? periodRow.policy_snapshot.manual_adjustments
         : {};
 
+    const sourceData = await collectPayrollSources(client, period, { lockEmployees: true });
+
+    const beforeAdjustments = {};
     const preservedAdjustments = {};
-    for (const [empId, slip] of existingSlipsByEmp.entries()) {
-      const prevAdj = prevManualAdjustments[empId] || {};
-      const bonusNum = prevAdj.bonus !== undefined ? Number(prevAdj.bonus) : Number(slip.bonus || 0);
-      const noteVal = prevAdj.note !== undefined ? prevAdj.note : (slip.note || null);
-      const hasCustomAllowances = prevAdj.allowances !== undefined;
-      if (bonusNum !== 0 || noteVal || hasCustomAllowances) {
-        preservedAdjustments[empId] = {
-          bonus: bonusNum,
-          note: noteVal,
-          ...(hasCustomAllowances ? { allowances: Number(prevAdj.allowances) } : {}),
-          updated_by: prevAdj.updated_by || null,
-          updated_at: prevAdj.updated_at || null,
-        };
+    const unresolvedConflicts = [];
+    const reconciledConflicts = [];
+
+    const allCandidateEmpIds = new Set([
+      ...existingSlipsByEmp.keys(),
+      ...Object.keys(prevManualAdjustments),
+    ]);
+
+    for (const empId of allCandidateEmpIds) {
+      const slip = existingSlipsByEmp.get(empId);
+      const rawPrevAdj = prevManualAdjustments[empId] ? { ...prevManualAdjustments[empId] } : {};
+
+      if (slip) {
+        if (rawPrevAdj.bonus === undefined && Number(slip.bonus || 0) !== 0) {
+          rawPrevAdj.bonus = Number(slip.bonus);
+        }
+        if (rawPrevAdj.note === undefined && slip.note !== null && slip.note !== undefined && String(slip.note) !== '') {
+          rawPrevAdj.note = slip.note;
+        }
       }
+
+      const hasAnyField = MANUAL_ADJUSTMENT_FIELDS.some((f) => rawPrevAdj[f] !== undefined);
+      if (!hasAnyField) continue;
+
+      beforeAdjustments[empId] = JSON.parse(JSON.stringify(rawPrevAdj));
+
+      const empSrc = sourceData.employeeSourceMap.get(empId);
+      if (!empSrc) {
+        // Employee is no longer eligible in this period
+        continue;
+      }
+
+      const prevBaseline =
+        rawPrevAdj.baseline_source && typeof rawPrevAdj.baseline_source === 'object'
+          ? { ...rawPrevAdj.baseline_source }
+          : {};
+      const nextAdj = {
+        updated_by: rawPrevAdj.updated_by || null,
+        updated_at: rawPrevAdj.updated_at || null,
+      };
+      const nextBaseline = { ...prevBaseline };
+
+      // Pure manual fields (bonus, note)
+      if (rawPrevAdj.bonus !== undefined) {
+        nextAdj.bonus = Number(rawPrevAdj.bonus);
+      }
+      if (rawPrevAdj.note !== undefined) {
+        nextAdj.note = rawPrevAdj.note;
+      }
+
+      // Source-backed fields with conflict detection (actualWorkDays, baseSalary, otHours, allowances)
+      const sourceFieldChecks = [
+        {
+          field: 'actualWorkDays',
+          baselineKey: 'actualWorkDays',
+          currentSourceValue: Number(empSrc.effectiveWorkDays),
+          fallbackBaseline: slip ? Number(slip.actual_work_days) : Number(rawPrevAdj.actualWorkDays),
+        },
+        {
+          field: 'baseSalary',
+          baselineKey: 'baseSalary',
+          currentSourceValue: Number(empSrc.base),
+          fallbackBaseline: slip ? Number(slip.base_salary) : Number(rawPrevAdj.baseSalary),
+        },
+        {
+          field: 'otHours',
+          baselineKey: 'otHours',
+          currentSourceValue: Number(empSrc.otHours),
+          fallbackBaseline: slip ? Number(slip.ot_hours) : Number(rawPrevAdj.otHours),
+        },
+        {
+          field: 'allowances',
+          baselineKey: 'defaultAllowances',
+          currentSourceValue: Number(sourceData.corePolicy.default_allowances),
+          fallbackBaseline:
+            prevBaseline.defaultAllowances !== undefined
+              ? Number(prevBaseline.defaultAllowances)
+              : Number(sourceData.corePolicy.default_allowances),
+        },
+      ];
+
+      for (const chk of sourceFieldChecks) {
+        if (rawPrevAdj[chk.field] === undefined) continue;
+        const manualVal = Number(rawPrevAdj[chk.field]);
+        const prevSourceVal =
+          prevBaseline[chk.baselineKey] !== undefined
+            ? Number(prevBaseline[chk.baselineKey])
+            : chk.fallbackBaseline;
+        const curSourceVal = chk.currentSourceValue;
+
+        const sourceChangedSinceEdit = Math.abs(curSourceVal - prevSourceVal) > 0.001;
+        const manualDiffersFromNewSource = Math.abs(manualVal - curSourceVal) > 0.001;
+
+        if (sourceChangedSinceEdit && manualDiffersFromNewSource) {
+          const decision = resolveAdjustmentConflictDecision(options, req?.body, empId, chk.field);
+          if (!decision) {
+            unresolvedConflicts.push({
+              employee_id: empId,
+              full_name: empSrc.full_name || empId,
+              field: chk.field,
+              manualValue: manualVal,
+              previousSourceValue: prevSourceVal,
+              currentSourceValue: curSourceVal,
+              message: `Điều chỉnh thủ công "${chk.field}" (${manualVal}) của nhân sự ${empId} mâu thuẫn với dữ liệu nguồn mới (${prevSourceVal} -> ${curSourceVal}). Vui lòng chọn đối soát KEEP_MANUAL hoặc USE_SOURCE.`,
+            });
+            continue;
+          }
+
+          if (decision === 'USE_SOURCE') {
+            delete nextBaseline[chk.baselineKey];
+            reconciledConflicts.push({
+              employee_id: empId,
+              field: chk.field,
+              manualValue: manualVal,
+              previousSourceValue: prevSourceVal,
+              currentSourceValue: curSourceVal,
+              decision: 'USE_SOURCE',
+              appliedValue: curSourceVal,
+              reconciled_by: actor?.employeeId || actor?.userId || null,
+              reconciled_at: new Date().toISOString(),
+            });
+          } else if (decision === 'KEEP_MANUAL') {
+            nextAdj[chk.field] = manualVal;
+            nextBaseline[chk.baselineKey] = curSourceVal;
+            reconciledConflicts.push({
+              employee_id: empId,
+              field: chk.field,
+              manualValue: manualVal,
+              previousSourceValue: prevSourceVal,
+              currentSourceValue: curSourceVal,
+              decision: 'KEEP_MANUAL',
+              appliedValue: manualVal,
+              reconciled_by: actor?.employeeId || actor?.userId || null,
+              reconciled_at: new Date().toISOString(),
+            });
+          }
+        } else {
+          // No source conflict: preserve the HR manual adjustment (including 0)
+          nextAdj[chk.field] = manualVal;
+          nextBaseline[chk.baselineKey] = curSourceVal;
+        }
+      }
+
+      if (MANUAL_ADJUSTMENT_FIELDS.some((f) => nextAdj[f] !== undefined)) {
+        if (Object.keys(nextBaseline).length > 0) {
+          nextAdj.baseline_source = nextBaseline;
+        }
+        preservedAdjustments[empId] = nextAdj;
+      }
+    }
+
+    if (unresolvedConflicts.length > 0) {
+      throw new AppError(
+        409,
+        'ADJUSTMENT_SOURCE_CONFLICT',
+        `Phát hiện ${unresolvedConflicts.length} điều chỉnh thủ công của HR mâu thuẫn với dữ liệu nguồn mới thay đổi. Vui lòng chọn đối soát (KEEP_MANUAL hoặc USE_SOURCE) trước khi tính lại.`,
+        unresolvedConflicts
+      );
     }
 
     await client.query('DELETE FROM payslips WHERE period_id = $1', [periodRow.id]);
 
-    const sourceData = await collectPayrollSources(client, period, { lockEmployees: true });
     const policySnapshot = {
       ...sourceData.corePolicy,
       source_fingerprint: sourceData.sourceFingerprint,
@@ -298,17 +484,20 @@ async function calculate(actor, period, req) {
 
     const totals = { net: 0, bhxh: 0, tax: 0, ot: 0 };
     for (const empSrc of sourceData.employeeSources) {
-      const base = empSrc.base;
-      const workDays = empSrc.rawWorkDays;
-      const otHours = empSrc.otHours;
       const empAdj = preservedAdjustments[empSrc.id] || {};
-      const bonus = Number(empAdj.bonus || 0);
-      const note = empAdj.note ?? null;
-      // R02 / F09 + R14: Never fabricate 22 workdays when attendance logs are missing.
+      const base = empAdj.baseSalary !== undefined ? Number(empAdj.baseSalary) : empSrc.base;
+      const workDays = empAdj.actualWorkDays !== undefined ? Number(empAdj.actualWorkDays) : empSrc.rawWorkDays;
+      const otHours = empAdj.otHours !== undefined ? Number(empAdj.otHours) : empSrc.otHours;
+      const bonus = empAdj.bonus !== undefined ? Number(empAdj.bonus) : 0;
+      const note = empAdj.note !== undefined ? empAdj.note : null;
+
+      // R02 / F09 + R21: Never fabricate 22 workdays when attendance logs are missing; preserve explicit HR allowances (including 0).
       const defaultAllowancesForWork = workDays === 0 && otHours === 0 ? 0 : policySnapshot.default_allowances;
       const rawAllowances =
-        empAdj.allowances !== undefined && (workDays > 0 || otHours > 0)
-          ? Number(empAdj.allowances)
+        empAdj.allowances !== undefined
+          ? workDays === 0 && otHours === 0 && bonus === 0
+            ? 0
+            : Number(empAdj.allowances)
           : defaultAllowancesForWork;
 
       const p = computePayslip({
@@ -373,13 +562,19 @@ async function calculate(actor, period, req) {
       table: 'payroll_periods',
       recordId: periodRow.id,
       req,
+      oldValues: {
+        before_adjustments: beforeAdjustments,
+      },
       newValues: {
         period,
         headcount: sourceData.employeeSources.length,
         total_net: totals.net,
         source_fingerprint: sourceData.sourceFingerprint,
+        before_adjustments: beforeAdjustments,
+        after_adjustments: preservedAdjustments,
         preserved_adjustments_count: Object.keys(preservedAdjustments).length,
         preserved_adjustments: preservedAdjustments,
+        reconciled_conflicts: reconciledConflicts,
         policy_snapshot: policySnapshot,
       },
     });
@@ -391,6 +586,8 @@ async function calculate(actor, period, req) {
       totalBhxh: totals.bhxh,
       totalTax: totals.tax,
       totalOtHours: totals.ot,
+      preservedAdjustments,
+      reconciledConflicts,
       policySnapshot,
     };
   });
@@ -452,8 +649,8 @@ async function queryPeriodAnomalyRows(executor, periodRow) {
 }
 
 /**
- * R18: Detect whether any payroll source (attendance, approved paid leave, salary-affecting employee data,
- * or effective payroll policy) has changed since `calculate()` ran for `periodRow`.
+ * R18 + R21: Detect whether any payroll source (attendance, approved paid leave, salary-affecting employee data,
+ * or effective payroll policy) has changed since `calculate()` / `updatePayslip()` ran for `periodRow`.
  */
 async function detectStalePayroll(executor, periodRow, anomalyRows = null, { lockEmployees = false } = {}) {
   if (!periodRow || periodRow.status !== 'DU_THAO') return [];
@@ -467,8 +664,14 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
   // 1. Direct row-level comparison on anomalyRows (also catches service-level mock executors)
   for (const r of rows) {
     const empAdj = manualAdjustments[r.employee_id] || {};
+    const baseline = empAdj.baseline_source || {};
     const paidSignals = Number(r.att_days || 0) - Number(r.absent_days || 0);
-    if (paidSignals > 0 && Number(r.actual_work_days || 0) === 0 && empAdj.actualWorkDays === undefined) {
+    const expectedWorkDays =
+      empAdj.actualWorkDays !== undefined && baseline.actualWorkDays !== undefined
+        ? Number(baseline.actualWorkDays)
+        : Number(r.actual_work_days || 0);
+
+    if (paidSignals > 0 && expectedWorkDays === 0 && (empAdj.actualWorkDays === undefined || baseline.actualWorkDays !== undefined)) {
       staleItems.push({
         type: 'PAYROLL_STALE',
         reason: 'WORKDAYS_CHANGED',
@@ -478,14 +681,18 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
         full_name: r.full_name || r.employee_id,
         message: 'Dữ liệu chấm công hoặc nghỉ phép hưởng lương đã phát sinh sau khi tính lương (phiếu lương đang là 0 công). Cần tính lại bảng lương.',
         metric_value: paidSignals,
-        limit: Number(r.actual_work_days || 0),
+        limit: expectedWorkDays,
       });
     }
+    const expectedBase =
+      empAdj.baseSalary !== undefined && baseline.baseSalary !== undefined
+        ? Number(baseline.baseSalary)
+        : Number(r.base_salary);
     if (
       r.live_base_salary !== undefined &&
       r.base_salary !== undefined &&
-      Number(r.live_base_salary) !== Number(r.base_salary) &&
-      empAdj.baseSalary === undefined
+      Number(r.live_base_salary) !== expectedBase &&
+      (empAdj.baseSalary === undefined || baseline.baseSalary !== undefined)
     ) {
       staleItems.push({
         type: 'PAYROLL_STALE',
@@ -494,16 +701,20 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
         category: 'stale',
         employee_id: r.employee_id,
         full_name: r.full_name || r.employee_id,
-        message: `Lương cơ bản hiện tại (${Number(r.live_base_salary).toLocaleString('vi-VN')}đ) đã thay đổi so với phiếu lương dự thảo (${Number(r.base_salary).toLocaleString('vi-VN')}đ). Cần tính lại bảng lương.`,
+        message: `Lương cơ bản hiện tại (${Number(r.live_base_salary).toLocaleString('vi-VN')}đ) đã thay đổi so với nguồn lúc tính/điều chỉnh (${expectedBase.toLocaleString('vi-VN')}đ). Cần tính lại bảng lương.`,
         metric_value: Number(r.live_base_salary),
-        limit: Number(r.base_salary),
+        limit: expectedBase,
       });
     }
+    const expectedOt =
+      empAdj.otHours !== undefined && baseline.otHours !== undefined
+        ? Number(baseline.otHours)
+        : Number(r.ot_hours);
     if (
       r.live_ot_hours !== undefined &&
       r.ot_hours !== undefined &&
-      Number(r.live_ot_hours) !== Number(r.ot_hours) &&
-      empAdj.otHours === undefined
+      Number(r.live_ot_hours) !== expectedOt &&
+      (empAdj.otHours === undefined || baseline.otHours !== undefined)
     ) {
       staleItems.push({
         type: 'PAYROLL_STALE',
@@ -512,9 +723,9 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
         category: 'stale',
         employee_id: r.employee_id,
         full_name: r.full_name || r.employee_id,
-        message: `Số giờ OT chấm công thực tế (${Number(r.live_ot_hours)}h) đã thay đổi so với phiếu lương dự thảo (${Number(r.ot_hours)}h). Cần tính lại bảng lương.`,
+        message: `Số giờ OT chấm công thực tế (${Number(r.live_ot_hours)}h) đã thay đổi so với nguồn lúc tính/điều chỉnh (${expectedOt}h). Cần tính lại bảng lương.`,
         metric_value: Number(r.live_ot_hours),
-        limit: Number(r.ot_hours),
+        limit: expectedOt,
       });
     }
   }
@@ -561,6 +772,7 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
 
     for (const r of rows) {
       const empAdj = manualAdjustments[r.employee_id] || {};
+      const baseline = empAdj.baseline_source || {};
       const liveEmp = liveSources.employeeSourceMap.get(r.employee_id);
       if (!liveEmp) {
         staleItems.push({
@@ -577,9 +789,14 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
         continue;
       }
 
+      const expectedWorkDays =
+        empAdj.actualWorkDays !== undefined && baseline.actualWorkDays !== undefined
+          ? Number(baseline.actualWorkDays)
+          : Number(r.actual_work_days || 0);
+
       if (
-        empAdj.actualWorkDays === undefined &&
-        Math.abs(Number(liveEmp.effectiveWorkDays) - Number(r.actual_work_days || 0)) > 0.001 &&
+        (empAdj.actualWorkDays === undefined || baseline.actualWorkDays !== undefined) &&
+        Math.abs(Number(liveEmp.effectiveWorkDays) - expectedWorkDays) > 0.001 &&
         !staleItems.some((s) => s.employee_id === r.employee_id && s.reason === 'WORKDAYS_CHANGED')
       ) {
         staleItems.push({
@@ -589,9 +806,9 @@ async function detectStalePayroll(executor, periodRow, anomalyRows = null, { loc
           category: 'stale',
           employee_id: r.employee_id,
           full_name: r.full_name || r.employee_id,
-          message: `Ngày công hưởng lương thực tế (${liveEmp.effectiveWorkDays} ngày) đã thay đổi so với phiếu lương dự thảo (${Number(r.actual_work_days)} ngày). Cần tính lại bảng lương.`,
+          message: `Ngày công hưởng lương thực tế (${liveEmp.effectiveWorkDays} ngày) đã thay đổi so với nguồn lúc tính/điều chỉnh (${expectedWorkDays} ngày). Cần tính lại bảng lương.`,
           metric_value: liveEmp.effectiveWorkDays,
-          limit: Number(r.actual_work_days || 0),
+          limit: expectedWorkDays,
         });
       }
     }
@@ -753,7 +970,11 @@ const PAYSLIP_SQL = `
     JOIN employees e ON ps.employee_id = e.id
     LEFT JOIN departments d ON e.department_id = d.id`;
 
-/** Employees (and managers) only ever see their own payslips, and only once the period is locked. */
+/**
+ * Employees (and managers) only ever see their own payslips, and only once the period is locked.
+ * R22: Deterministic multi-page ordering (`pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC`)
+ * ensures 501+ payslip pagination never skips or duplicates rows across page boundaries.
+ */
 async function listPayslips(user, query, scope) {
   const { page, limit, offset } = parsePagination(query, { defaultLimit: 100, maxLimit: 500 });
   const params = [];
@@ -769,7 +990,7 @@ async function listPayslips(user, query, scope) {
   const total = parseInt((await db.query(
     `SELECT COUNT(*) FROM payslips ps JOIN payroll_periods pp ON pp.id = ps.period_id JOIN employees e ON e.id = ps.employee_id ${clause}`, params)).rows[0].count, 10);
   const { rows } = await db.query(
-    `${PAYSLIP_SQL} ${clause} ORDER BY pp.period DESC, e.full_name LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    `${PAYSLIP_SQL} ${clause} ORDER BY pp.period DESC, e.full_name ASC, ps.employee_id ASC, ps.id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   );
   return { data: rows, pagination: paginationMeta(total, page, limit) };
@@ -811,6 +1032,8 @@ async function updatePayslip(actor, id, body, req) {
     const existing = rows[0];
 
     const policy = await resolvePeriodPolicy(client, period);
+    const liveSources = await collectPayrollSources(client, period.period, { lockEmployees: false });
+    const liveEmp = liveSources.employeeSourceMap.get(existing.employee_id);
 
     const base = body.baseSalary !== undefined ? Number(body.baseSalary) : Number(existing.base_salary);
     const workDays = body.actualWorkDays !== undefined ? Number(body.actualWorkDays) : Number(existing.actual_work_days);
@@ -864,13 +1087,32 @@ async function updatePayslip(actor, id, body, req) {
       ]
     )).rows[0];
 
-    // Record manual adjustment metadata inside policy_snapshot so recalculation preserves HR adjustments
+    // R21: Record manual adjustment metadata + baseline source values inside policy_snapshot
     const prevSnapshot =
       period.policy_snapshot && typeof period.policy_snapshot === 'object'
         ? period.policy_snapshot
         : policy;
     const manualAdjustments = { ...(prevSnapshot.manual_adjustments || {}) };
     const prevEmpAdj = manualAdjustments[existing.employee_id] || {};
+    const prevBaseline =
+      prevEmpAdj.baseline_source && typeof prevEmpAdj.baseline_source === 'object'
+        ? prevEmpAdj.baseline_source
+        : {};
+    const nextBaseline = {
+      ...prevBaseline,
+      ...(body.actualWorkDays !== undefined
+        ? { actualWorkDays: liveEmp ? Number(liveEmp.effectiveWorkDays) : Number(existing.actual_work_days) }
+        : {}),
+      ...(body.baseSalary !== undefined
+        ? { baseSalary: liveEmp ? Number(liveEmp.base) : Number(existing.base_salary) }
+        : {}),
+      ...(body.otHours !== undefined
+        ? { otHours: liveEmp ? Number(liveEmp.otHours) : Number(existing.ot_hours) }
+        : {}),
+      ...(body.allowances !== undefined
+        ? { defaultAllowances: Number(policy.default_allowances) }
+        : {}),
+    };
     manualAdjustments[existing.employee_id] = {
       ...prevEmpAdj,
       ...(body.bonus !== undefined ? { bonus: Number(body.bonus) } : {}),
@@ -879,6 +1121,7 @@ async function updatePayslip(actor, id, body, req) {
       ...(body.actualWorkDays !== undefined ? { actualWorkDays: Number(p.workDays) } : {}),
       ...(body.baseSalary !== undefined ? { baseSalary: Number(base) } : {}),
       ...(body.otHours !== undefined ? { otHours: Number(otHours) } : {}),
+      baseline_source: nextBaseline,
       updated_by: actor?.employeeId || actor?.userId || null,
       updated_at: new Date().toISOString(),
     };
@@ -911,9 +1154,30 @@ async function updatePayslip(actor, id, body, req) {
     );
 
     await writeAudit(client, {
-      user: actor, action: 'UPDATE_PAYSLIP', table: 'payslips', recordId: id, req,
-      oldValues: { net_salary: existing.net_salary, bonus: existing.bonus, actual_work_days: existing.actual_work_days, allowances: existing.allowances },
-      newValues: { net_salary: updated.net_salary, bonus: updated.bonus, actual_work_days: updated.actual_work_days, allowances: updated.allowances, note: updated.note },
+      user: actor,
+      action: 'UPDATE_PAYSLIP',
+      table: 'payslips',
+      recordId: id,
+      req,
+      oldValues: {
+        base_salary: Number(existing.base_salary),
+        actual_work_days: Number(existing.actual_work_days),
+        ot_hours: Number(existing.ot_hours),
+        allowances: Number(existing.allowances),
+        bonus: Number(existing.bonus || 0),
+        note: existing.note ?? null,
+        net_salary: Number(existing.net_salary),
+      },
+      newValues: {
+        base_salary: Number(updated.base_salary),
+        actual_work_days: Number(updated.actual_work_days),
+        ot_hours: Number(updated.ot_hours),
+        allowances: Number(updated.allowances),
+        bonus: Number(updated.bonus || 0),
+        note: updated.note ?? null,
+        net_salary: Number(updated.net_salary),
+        manual_adjustments: manualAdjustments[existing.employee_id],
+      },
     });
 
     return updated;

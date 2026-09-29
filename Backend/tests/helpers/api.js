@@ -1,4 +1,10 @@
+process.env.NODE_ENV = 'test';
 const request = require('supertest');
+const config = require('../../src/config/env');
+const { assertTestDatabaseName, assertSafeTestDatabase } = require('../../src/utils/testDbGuard');
+
+assertTestDatabaseName(config.db.database, 'helpers/api.js startup');
+
 const app = require('../../src/app');
 const db = require('../../src/config/db');
 
@@ -10,8 +16,17 @@ const ACCOUNTS = {
 };
 
 const tokens = {};
+let verifiedLiveDbOnce = false;
+
+async function ensureLiveTestDbVerified(contextLabel) {
+  if (!verifiedLiveDbOnce) {
+    await assertSafeTestDatabase(db, contextLabel);
+    verifiedLiveDbOnce = true;
+  }
+}
 
 async function tokenFor(role) {
+  await ensureLiveTestDbVerified(`helpers/api.tokenFor(${role})`);
   if (!tokens[role]) {
     const res = await request(app).post('/api/auth/login').send(ACCOUNTS[role]);
     if (res.status !== 200 || !res.body.token) {
@@ -33,6 +48,7 @@ async function claimsFor(role) {
  * call(null, 'post', '/api/auth/login', {...})   -> anonymous
  */
 async function call(role, method, url, body) {
+  await ensureLiveTestDbVerified(`helpers/api.call(${method.toUpperCase()} ${url})`);
   let req = request(app)[method](url);
   if (role) req = req.set('Authorization', `Bearer ${await tokenFor(role)}`);
   return body === undefined ? req : req.send(body);
@@ -40,6 +56,7 @@ async function call(role, method, url, body) {
 
 /** Log in a throwaway user (see helpers/users.js) and return its tokens. */
 async function loginUser(u) {
+  await ensureLiveTestDbVerified('helpers/api.loginUser');
   const res = await request(app).post('/api/auth/login').send({ email: u.email, password: u.password });
   if (res.status !== 200) throw new Error(`loginUser failed: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body;
@@ -47,6 +64,7 @@ async function loginUser(u) {
 
 /** Same as call() but authenticated with an explicit access token. */
 function callWith(token, method, url, body) {
+  assertTestDatabaseName(config.db.database, `helpers/api.callWith(${method.toUpperCase()} ${url})`);
   const req = request(app)[method](url).set('Authorization', `Bearer ${token}`);
   return body === undefined ? req : req.send(body);
 }
