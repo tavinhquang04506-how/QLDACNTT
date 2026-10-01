@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # ------------------------------------------------------------
+  # 1. Database: PostgreSQL 16 Alpine
+  # ------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexus_hrms}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_secure_pass_2026}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - nexus-db-data:/var/lib/postgresql/data
+      - ./database/docker-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-nexus_hrms}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - nexus-network
+
+  # ------------------------------------------------------------
+  # 2. Backend: Node.js 20 Express API
+  # ------------------------------------------------------------
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: nexus-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-nexus_hrms}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-nexus_secure_pass_2026}
+      JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_nexus_docker_2026_change_in_production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
+      APP_TIMEZONE: Asia/Ho_Chi_Minh
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost,http://127.0.0.1
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - nexus-network
+
+  # ------------------------------------------------------------
+  # 3. Frontend: Nginx 1.27 Alpine (SPA & Reverse Proxy)
+  # ------------------------------------------------------------
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    container_name: nexus-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - nexus-network
+
+# ------------------------------------------------------------
+# Networks & Persistent Volumes
+# ------------------------------------------------------------
+networks:
+  nexus-network:
+    name: nexus-network
+    driver: bridge
+
+volumes:
+  nexus-db-data:
+    name: nexus-db-data
