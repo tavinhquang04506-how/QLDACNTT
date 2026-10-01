@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Roboto', Arial, sans-serif;
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    line-height: 1.5;
+  }
+
+  body {
+    background-color: #F8FAFC;
+    color: #0F172A;
+    font-family: 'Roboto', Arial, sans-serif;
+    letter-spacing: 0.005em;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Headings typography standard - Chuẩn hiển thị YouTube tiếng Việt sắc nét, thoáng đãng */
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Roboto', Arial, sans-serif;
+    letter-spacing: -0.005em;
+    line-height: 1.35;
+    font-weight: 600;
+  }
+
+  /* Bảng biểu hành chính, biểu mẫu và ô nhập liệu - Chuẩn Roboto YouTube, không dính chữ, dấu tiếng Việt sắc nét */
+  table, input, select, textarea, .font-admin {
+    font-family: 'Roboto', Arial, sans-serif;
+    letter-spacing: 0.005em;
+    line-height: 1.5;
+  }
+
+  /* Tối ưu hiển thị chữ nhỏ và nhãn phụ tiếng Việt không bị dính nét, dãn dòng tự nhiên */
+  .text-xs, .text-\[10px\], .text-\[11px\], .text-sm {
+    letter-spacing: 0.01em;
+    line-height: 1.45;
+  }
+}
+
+/* Apple-style thin smooth scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+  transition: background 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Material symbols alignment */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* Apple Glassmorphism utility */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.glass-dropdown {
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.1), 0 8px 10px -6px rgba(15, 23, 42, 0.05);
+}
+
+/* Apple micro-interaction smooth transitions */
+button, a, input, select, textarea {
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Card hover lift effect */
+.apple-card-hover {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease;
+}
+.apple-card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px -10px rgba(15, 23, 42, 0.08);
+}
+
+/* Microsoft Enterprise & Modern Card Style */
+.ms-card {
+  background-color: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.03), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ms-card:hover {
+  border-color: rgba(203, 213, 225, 1);
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.06), 0 8px 10px -6px rgba(15, 23, 42, 0.03);
+}
+
+.ms-btn-primary {
+  background-color: #004AC6;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: 0.5rem;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ms-btn-primary:hover {
+  background-color: #003da6;
+  box-shadow: 0 4px 6px -1px rgba(0, 74, 198, 0.2);
+}
+
+/* Print optimization for A4 documents (Payslip, Contracts, Reports) */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #payslip-printable-document,
+  #payslip-printable-document * {
+    visibility: visible;
+  }
+  #payslip-printable-document {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 10mm;
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+    color: #0f172a !important;
+  }
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+}
