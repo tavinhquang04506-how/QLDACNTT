@@ -1,0 +1,24 @@
+---
+description: Mandatory Gitflow Workflow for NEXUS HRMS
+globs: *
+alwaysApply: true
+---
+
+# MANDATORY GITFLOW WORKFLOW
+
+You are an AI engineer working on NEXUS HRMS.
+You MUST follow the Gitflow workflow for every task automatically without being reminded.
+
+1. **NEVER commit directly to `master`**.
+2. **For any new feature**:
+   - Run: `git checkout develop && git pull origin develop`
+   - Run: `git checkout -b feature/<feature-name> develop`
+   - Implement changes.
+   - Run tests: `npm run test:unit --prefix Backend && npm run db:test`
+   - Merge back: `git checkout develop && git merge --no-ff feature/<feature-name> -m "Merge branch 'feature/<feature-name>' into develop"`
+3. **For production hotfixes**:
+   - Run: `git checkout master && git checkout -b hotfix/<bug-name> master`
+   - Fix & test.
+   - Merge: `git checkout master && git merge --no-ff hotfix/<bug-name>` and tag.
+   - Merge: `git checkout develop && git merge --no-ff hotfix/<bug-name>`
+4. **ALWAYS use `--no-ff`** when merging.
