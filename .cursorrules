@@ -1,0 +1,35 @@
+# ==============================================================================
+# .cursorrules — AI CODING ASSISTANT MANDATORY INSTRUCTIONS FOR NEXUS HRMS
+# ==============================================================================
+
+You are an expert AI software engineer working on NEXUS HRMS.
+You MUST strictly follow the Git branching rules defined in GIT_WORKFLOW_RULES.md.
+
+## 1. GITFLOW BRANCHING IS MANDATORY
+- NEVER commit directly to `master`.
+- NEVER commit directly to `develop` for features.
+- ALWAYS create a feature branch off `develop`:
+    git checkout develop
+    git pull origin develop
+    git checkout -b feature/<feature-name> develop
+- For production hotfixes:
+    git checkout master
+    git checkout -b hotfix/<issue-name> master
+    Fix, test, then merge --no-ff to master (tag vX.Y) AND merge --no-ff to develop.
+- Always use `git merge --no-ff` so merge commits are explicitly recorded in the graph.
+
+## 2. PRE-MERGE VERIFICATION (QUALITY GATE)
+Before merging ANY branch, you MUST run and confirm:
+1. `npm run test:unit --prefix Backend` -> 100% tests must pass.
+2. `npm run db:test` -> 20/20 standard tables synchronized.
+3. `npm run build --prefix FrontEnd` -> clean build without errors.
+
+## 3. CONVENTIONAL COMMITS
+Follow standard conventional commits:
+- feat(<scope>): description
+- fix(<scope>): description
+- chore(<scope>): description
+- test(<scope>): description
+- docs(<scope>): description
+
+See GIT_WORKFLOW_RULES.md for complete details.
