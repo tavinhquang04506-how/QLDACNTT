@@ -54,7 +54,7 @@ Toàn bộ raw stdout/stderr và mã thoát (`[EXIT_CODE=...]`) được lưu ng
 
 ---
 
-### 3.1. Trích dẫn nguyên văn `01-db-test.log` (`npm run db:test`)
+### 3.1. Trích dẫn nguyên văn 01-db-test.log (npm run db:test)
 ```text
 > nexus-hrms-monorepo@1.0.0 db:test
 > npm run db:test --prefix Backend
@@ -63,50 +63,49 @@ Toàn bộ raw stdout/stderr và mã thoát (`[EXIT_CODE=...]`) được lưu ng
 > nexus-hrms-backend@1.0.0 db:test
 > node scripts/test-db.js
 
-🔌 Connecting to PostgreSQL...
-   Host: 127.0.0.1:5432
-   Database: nexus_hrms
-   User: postgres
+╔════════════════════════════════════════════════════════════╗
+║   🐘 NEXUS HRMS — PostgreSQL Connection & Schema Test      ║
+╚════════════════════════════════════════════════════════════╝
+📡 Host:      127.0.0.1:5432
+📦 Database:  nexus_hrms
+👤 User:      postgres
+────────────────────────────────────────────────────────────
+✅ [OK] Kết nối PostgreSQL thành công (27ms)
 
-✅ Connected successfully!
-   Server time: 2026-10-20 22:28:11.615229+07
-   PostgreSQL: PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit
+ℹ️  DB Version:   PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit
+ℹ️  Server Time:  Tue Oct 20 2026 22:49:08 GMT+0700 (Giờ Đông Dương)
 
-📋 Tables in database (31):
-   1. attendance_appeals (0 rows)
-   2. attendance_logs (99 rows)
-   3. audit_logs (112 rows)
-   4. company_notices (4 rows)
-   5. contracts (50 rows)
-   6. departments (5 rows)
-   7. employees (50 rows)
-   8. handbook_docs (0 rows)
-   9. leave_balances (50 rows)
-   10. leave_requests (8 rows)
-   11. leave_types (6 rows)
-   12. medical_claims (0 rows)
-   13. notification_reads (4 rows)
-   14. notifications (54 rows)
-   15. ot_requests (0 rows)
-   16. payroll_periods (2 rows)
-   17. payslips (100 rows)
-   18. performance_reviews (0 rows)
-   19. pip_plans (0 rows)
-   20. positions (8 rows)
-   21. projects (4 rows)
-   22. refresh_tokens (44 rows)
-   23. roles (6 rows)
-   24. schema_migrations (1 rows)
-   25. squad_members (0 rows)
-   26. squad_messages (0 rows)
-   27. squads (0 rows)
-   28. task_logs (0 rows)
-   29. tasks (8 rows)
-   30. user_roles (50 rows)
-   31. users (50 rows)
+📊 Tìm thấy tổng cộng: 31 base tables và 2 views trong public schema.
+📖 Đã load danh sách 20 bảng chuẩn từ: C:\Users\tavin\Downloads\QLDACNTT\database\schema.sql
 
-🎉 Database verification complete!
+📋 Chi tiết 20 bảng chuẩn trong database/schema.sql:
+   1. [✓ OK]    roles
+   2. [✓ OK]    departments
+   3. [✓ OK]    positions
+   4. [✓ OK]    employees
+   5. [✓ OK]    users
+   6. [✓ OK]    user_roles
+   7. [✓ OK]    attendance_logs
+   8. [✓ OK]    leave_types
+   9. [✓ OK]    leave_requests
+  10. [✓ OK]    leave_balances
+  11. [✓ OK]    payroll_periods
+  12. [✓ OK]    payslips
+  13. [✓ OK]    projects
+  14. [✓ OK]    tasks
+  15. [✓ OK]    task_logs
+  16. [✓ OK]    squads
+  17. [✓ OK]    squad_members
+  18. [✓ OK]    squad_messages
+  19. [✓ OK]    audit_logs
+  20. [✓ OK]    notifications
 
+👁️  Views hỗ trợ: v_employee_public, v_today_attendance
+
+────────────────────────────────────────────────────────────
+📈 Kết quả: 20/20 bảng chuẩn đã sẵn sàng (100%)
+🎉 TRẠNG THÁI: TẤT CẢ 20 BẢNG CHUẨN ĐỀU ĐÃ ĐỒNG BỘ VÀ KHỚP 100%!
+────────────────────────────────────────────────────────────
 [EXIT_CODE=0]
 ```
 
