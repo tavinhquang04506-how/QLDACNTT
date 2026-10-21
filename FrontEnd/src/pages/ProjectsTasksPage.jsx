@@ -38,6 +38,12 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import SquadChatDrawer from '../components/chat/SquadChatDrawer';
+import {
+  mapServerTask,
+  mapServerTaskList,
+  computeProjectsTasksMetrics,
+  buildCreateProjectPayload,
+} from '../utils/projectsTasksState';
 
 export default function ProjectsTasksPage() {
   const { currentRole, user } = useAuth();
@@ -93,92 +99,126 @@ export default function ProjectsTasksPage() {
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadCount, setReloadCount] = useState(0);
   const [selectedProjectId, setSelectedProjectId] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAssigneeId, setSelectedAssigneeId] = useState(isEmployee ? (currentRole?.id || 'ALL') : 'ALL');
   const [viewMode, setViewMode] = useState('kanban'); // 'kanban' | 'table'
 
-  // Map raw task from API to standard task model
-  const mapTask = (t, prjName) => ({
-    id: t.id || `TSK-${Math.floor(Math.random() * 1000)}`,
-    projectId: t.project_id,
-    projectName: prjName || 'Dự án',
-    title: t.title || 'Nhiệm vụ',
-    description: t.description || 'Hoàn thành theo tiêu chuẩn kỹ thuật sprint.',
-    assigneeId: t.assignee_id || '',
-    assigneeName: t.assignee_name || (t.assignee_id ? `Nhân viên (${t.assignee_id})` : 'Chưa phân công'),
-    assigneeRole: t.assignee_role || 'Nhân sự',
-    assigneeAvatar: t.assignee_avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
-    creator: t.creator_name ? `${t.creator_name} (Quản lý)` : (currentRole?.name ? `${currentRole.name} (Quản lý)` : 'Quản lý dự án'),
-    deadline: t.deadline ? new Date(t.deadline).toLocaleDateString('vi-VN') : new Date().toLocaleDateString('vi-VN'),
-    priority: t.priority || 'Trung bình',
-    stage: t.stage || 'todo',
-    progress: t.progress || 0,
-    kpiWeight: t.kpi_weight || 20,
-    submissionNote: t.deliverable_note || '',
-    logs: [
-      {
-        time: new Date(t.created_at || Date.now()).toLocaleDateString('vi-VN') + ' 09:00',
-        author: t.creator_name || currentRole?.name || 'Quản lý',
-        note: 'Nhiệm vụ được đồng bộ trực tiếp từ CSDL PostgreSQL.',
-      },
-    ],
-  });
+  // Map raw task from API to standard task model (returns null when server task id is missing)
+  const mapTask = (t, prjName) => mapServerTask(t, prjName, currentRole?.name || '');
 
-  // Fetch real projects and employees from PostgreSQL via API
+  // Fetch real projects, employees, and departments from PostgreSQL via API
   useEffect(() => {
     let isMounted = true;
     async function fetchProjectsAndEmployees() {
+      setIsLoading(true);
+      setLoadError('');
       try {
-        const [projRes, empRes] = await Promise.all([
-          projectService.getAll().catch(() => null),
-          employeeService.getAll().catch(() => null),
+        const [projOutcome, empOutcome, deptOutcome] = await Promise.allSettled([
+          projectService.getAll(),
+          employeeService.getAll(),
+          employeeService.getDepartments ? employeeService.getDepartments() : Promise.resolve(null),
         ]);
 
-        if (empRes?.success && Array.isArray(empRes.data) && isMounted) {
+        if (!isMounted) return;
+
+        if (projOutcome.status === 'rejected' || !projOutcome.value?.success || !Array.isArray(projOutcome.value?.data)) {
+          const reason =
+            projOutcome.status === 'rejected'
+              ? projOutcome.reason?.message
+              : projOutcome.value?.message;
+          setLoadError(reason || 'Không thể tải dữ liệu dự án từ máy chủ. Vui lòng kiểm tra kết nối và thử lại.');
+          setProjects([]);
+          setTasks([]);
+          setMembers([]);
+          setIsLoading(false);
+          return;
+        }
+
+        const projRes = projOutcome.value;
+        const empRes = empOutcome.status === 'fulfilled' ? empOutcome.value : null;
+        const deptRes = deptOutcome.status === 'fulfilled' ? deptOutcome.value : null;
+
+        if (empRes?.success && Array.isArray(empRes.data)) {
           const mappedMembers = empRes.data.map(e => ({
             id: e.id,
             name: e.full_name || e.name || 'Nhân viên',
-            role: e.job_title || e.role || 'Kỹ sư Phần mềm',
+            role: e.job_title || e.role || 'Nhân sự',
+            departmentId: e.department_id || '',
+            departmentName: e.department_name || '',
             avatar: e.avatar_url || e.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
             activeTasks: 0,
             workload: 0,
             kpiCapacity: 100,
           }));
           setMembers(mappedMembers);
+        } else {
+          setMembers([]);
         }
 
-        if (projRes?.success && Array.isArray(projRes.data) && isMounted) {
-          const apiProjects = projRes.data.map((p) => ({
-            id: p.id,
-            code: p.code,
-            name: p.name,
-            department: p.department_name || 'Phòng Phát triển Phần mềm',
-            manager: p.manager_name || currentRole?.name || 'Quản lý dự án',
-            managerAvatar: p.manager_avatar,
-            startDate: p.start_date ? new Date(p.start_date).toLocaleDateString('vi-VN') : '-',
-            endDate: p.end_date ? new Date(p.end_date).toLocaleDateString('vi-VN') : '-',
-            progress: p.progress || 0,
-            status: p.status || 'in_progress',
-            priority: p.priority || 'Cao',
-            budgetHours: p.budget_hours || 0,
-            usedHours: p.used_hours || 0,
-            description: p.description || '',
-          }));
-          setProjects(apiProjects);
+        const apiProjects = projRes.data.map((p) => ({
+          id: p.id,
+          code: p.code,
+          name: p.name,
+          departmentId: p.department_id || '',
+          department: p.department_name || p.department_id || 'Chưa gắn phòng ban',
+          manager: p.manager_name || currentRole?.name || 'Quản lý dự án',
+          managerAvatar: p.manager_avatar,
+          startDate: p.start_date ? new Date(p.start_date).toLocaleDateString('vi-VN') : '-',
+          endDate: p.end_date ? new Date(p.end_date).toLocaleDateString('vi-VN') : '-',
+          progress: Number(p.progress) || 0,
+          status: p.status || 'in_progress',
+          priority: p.priority || 'Cao',
+          budgetHours: Number(p.budget_hours) || 0,
+          usedHours: Number(p.used_hours) || 0,
+          description: p.description || '',
+        }));
+        setProjects(apiProjects);
+
+        if (deptRes?.success && Array.isArray(deptRes.data) && deptRes.data.length > 0) {
+          setDepartments(deptRes.data);
+        } else {
+          const derivedMap = new Map();
+          if (empRes?.success && Array.isArray(empRes.data)) {
+            empRes.data.forEach((e) => {
+              if (e.department_id && !derivedMap.has(e.department_id)) {
+                derivedMap.set(e.department_id, { id: e.department_id, name: e.department_name || e.department_id });
+              }
+            });
+          }
+          projRes.data.forEach((p) => {
+            if (p.department_id && !derivedMap.has(p.department_id)) {
+              derivedMap.set(p.department_id, { id: p.department_id, name: p.department_name || p.department_id });
+            }
+          });
+          setDepartments(Array.from(derivedMap.values()));
         }
       } catch (err) {
-        console.warn('Backend projects API notice:', err);
+        if (isMounted) {
+          setLoadError(err?.message || 'Không thể tải dữ liệu dự án từ máy chủ.');
+          setProjects([]);
+          setTasks([]);
+          setMembers([]);
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
     }
     fetchProjectsAndEmployees();
     return () => { isMounted = false; };
-  }, [currentRole.key]);
+  }, [currentRole.key, reloadCount]);
 
   // Reactive task loading when projects or selectedProjectId change
   useEffect(() => {
     let isMounted = true;
-    if (projects.length === 0) return;
+    if (projects.length === 0) {
+      setTasks([]);
+      return;
+    }
 
     async function fetchTasks() {
       try {
@@ -190,7 +230,8 @@ export default function ProjectsTasksPage() {
           const allTasks = [];
           results.forEach((res, idx) => {
             if (res?.success && Array.isArray(res.data)) {
-              res.data.forEach(t => allTasks.push(mapTask(t, projects[idx]?.name)));
+              const mapped = mapServerTaskList(res.data, projects[idx]?.name, currentRole?.name || '');
+              allTasks.push(...mapped);
             }
           });
           setTasks(allTasks);
@@ -198,7 +239,7 @@ export default function ProjectsTasksPage() {
           const res = await projectService.getTasks(selectedProjectId).catch(() => null);
           if (res?.success && Array.isArray(res.data) && isMounted) {
             const currentPrj = projects.find(p => p.id === selectedProjectId);
-            setTasks(res.data.map(t => mapTask(t, currentPrj?.name)));
+            setTasks(mapServerTaskList(res.data, currentPrj?.name, currentRole?.name || ''));
           }
         }
       } catch (err) {
@@ -220,7 +261,8 @@ export default function ProjectsTasksPage() {
   const [newProject, setNewProject] = useState({
     name: '',
     code: `PRJ-2026-0${projects.length + 1}`,
-    department: 'Phòng Phát triển Phần mềm',
+    departmentId: user?.departmentId || '',
+    department: '',
     manager: currentRole.name || 'Quản lý dự án',
     startDate: '15/09/2026',
     endDate: '30/11/2026',
@@ -275,44 +317,40 @@ export default function ProjectsTasksPage() {
   const completedTasksCount = doneTasks.length;
   const overallRate = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
 
-  // Dynamic Project & HR Metrics
-  const completedProjects = projects.filter((p) => p.status === 'completed');
-  const runningProjects = projects.filter((p) => p.status !== 'completed');
-  const totalBudgetHours = projects.reduce((acc, p) => acc + (Number(p.budgetHours) || 0), 0) || 1200;
-  const totalUsedHours = projects.reduce((acc, p) => acc + (Number(p.usedHours) || 0), 0);
-  const budgetPercentage = totalBudgetHours > 0 ? ((totalUsedHours / totalBudgetHours) * 100).toFixed(1) : '0.0';
-  const avgPlanProgress = projects.length > 0 
-    ? (projects.reduce((acc, p) => acc + (Number(p.progress) || 0), 0) / projects.length).toFixed(1) 
-    : '0.0';
-  const atRiskProjects = projects.filter((p) => p.status === 'at_risk' || (p.priority === 'Cao' && Number(p.progress) < 50));
-
-  // Dynamic HRD Workload & Burnout
-  const assignedEmpIds = new Set(tasks.map((t) => t.assigneeId));
-  const totalTeamCount = members.length > 0 ? members.length : 20;
-  const allocationRate = totalTeamCount > 0 ? ((assignedEmpIds.size / totalTeamCount) * 100).toFixed(1) : '90.0';
-  const memberTaskCounts = {};
-  tasks.filter((t) => t.stage !== 'done').forEach((t) => { 
-    if (t.assigneeName) {
-      memberTaskCounts[t.assigneeName] = (memberTaskCounts[t.assigneeName] || 0) + 1;
-    }
-  });
-  const overloadedMembers = Object.entries(memberTaskCounts).filter(([_, count]) => count >= 3);
+  // R28: Real Project & HR Metrics (no 1200h, 20 members, or 90.0% sample fallbacks)
+  const {
+    completedProjects,
+    runningProjects,
+    totalBudgetHours,
+    totalUsedHours,
+    budgetPercentage,
+    avgPlanProgress,
+    atRiskProjects,
+    assignedEmpIds,
+    totalTeamCount,
+    allocationRate,
+    memberTaskCounts,
+    overloadedMembers,
+  } = computeProjectsTasksMetrics({ projects, tasks, members });
 
   // Handlers
   const handleCreateProject = async (e) => {
     e.preventDefault();
-    if (!newProject.name.trim()) return;
+    const built = buildCreateProjectPayload({
+      newProject: {
+        ...newProject,
+        departmentId: newProject.departmentId || user?.departmentId || departments[0]?.id || '',
+      },
+      user,
+      isLineManager,
+    });
+    if (!built.ok) {
+      alert(built.error);
+      return;
+    }
 
     try {
-      const payload = {
-        name: newProject.name.trim(),
-        code: newProject.code?.trim() || undefined,
-        priority: newProject.priority || 'Cao',
-        description: newProject.description || '',
-        budget_hours: Number(newProject.budgetHours) || 240,
-      };
-      if (user?.departmentId) payload.department_id = user.departmentId;
-      else if (!isLineManager) payload.department_id = 'DEPT-IT';
+      const { payload } = built;
 
       const res = await projectService.createProject(payload);
       if (!res?.success || !res?.data) {
@@ -321,20 +359,22 @@ export default function ProjectsTasksPage() {
       }
 
       const p = res.data;
+      const selectedDeptObj = departments.find((d) => d.id === payload.department_id);
       const created = {
         id: p.id,
         code: p.code || newProject.code,
         name: p.name || newProject.name,
-        department: p.department_name || newProject.department,
+        departmentId: p.department_id || payload.department_id || '',
+        department: p.department_name || selectedDeptObj?.name || newProject.department || 'Chưa gắn phòng ban',
         manager: p.manager_name || currentRole.name || 'Quản lý dự án',
         managerAvatar: p.manager_avatar,
         startDate: p.start_date ? new Date(p.start_date).toLocaleDateString('vi-VN') : newProject.startDate,
         endDate: p.end_date ? new Date(p.end_date).toLocaleDateString('vi-VN') : newProject.endDate,
-        progress: p.progress || 0,
+        progress: Number(p.progress) || 0,
         status: p.status || 'in_progress',
         priority: p.priority || newProject.priority,
         budgetHours: p.budget_hours ?? newProject.budgetHours,
-        usedHours: p.used_hours || 0,
+        usedHours: Number(p.used_hours) || 0,
         description: p.description || newProject.description,
       };
 
@@ -356,7 +396,8 @@ export default function ProjectsTasksPage() {
       setNewProject({
         name: '',
         code: `PRJ-2026-0${projects.length + 2}`,
-        department: 'Phòng Phát triển Phần mềm',
+        departmentId: user?.departmentId || departments[0]?.id || '',
+        department: '',
         manager: currentRole.name || 'Quản lý dự án',
         startDate: '15/09/2026',
         endDate: '30/11/2026',
@@ -645,6 +686,31 @@ export default function ProjectsTasksPage() {
           </div>
         </div>
       </div>
+
+      {loadError && (
+        <div
+          data-testid="projects-load-error-banner"
+          className="rounded-2xl border border-rose-200 bg-rose-50 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-rose-800 shadow-2xs"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-extrabold uppercase tracking-wider text-rose-700">
+                Lỗi tải dữ liệu dự án & nhiệm vụ
+              </p>
+              <p className="text-xs font-medium text-rose-800 mt-0.5">{loadError}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="projects-retry-btn"
+            onClick={() => setReloadCount((c) => c + 1)}
+            className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors cursor-pointer shrink-0"
+          >
+            Thử tải lại
+          </button>
+        </div>
+      )}
 
       {/* 2. Key Metrics Overview (Phân Biệt Cụ Thể Theo Từng Vai Trò) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1314,7 +1380,11 @@ export default function ProjectsTasksPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900">Khởi Tạo Dự Án Mới</h3>
-                  <p className="text-xs text-slate-500">Phòng Phát triển Phần mềm • Phụ trách bởi Trưởng phòng</p>
+                  <p className="text-xs text-slate-500">
+                    {user?.departmentId
+                      ? `Phòng ban: ${user.departmentId} • Phụ trách bởi ${currentRole.name || 'Trưởng phòng'}`
+                      : 'Chọn phòng ban phụ trách và thiết lập mục tiêu dự án'}
+                  </p>
                 </div>
               </div>
               <button
@@ -1337,6 +1407,36 @@ export default function ProjectsTasksPage() {
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none text-xs"
                 />
               </div>
+
+              {!user?.departmentId && (
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Phòng Ban Phụ Trách *</label>
+                  <select
+                    required
+                    data-testid="create-project-department-select"
+                    value={newProject.departmentId || departments[0]?.id || ''}
+                    onChange={(e) => {
+                      const deptObj = departments.find((d) => d.id === e.target.value);
+                      setNewProject({
+                        ...newProject,
+                        departmentId: e.target.value,
+                        department: deptObj?.name || e.target.value,
+                      });
+                    }}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 text-xs bg-white font-semibold"
+                  >
+                    {departments.length === 0 ? (
+                      <option value="">-- Chưa tải được danh sách phòng ban --</option>
+                    ) : (
+                      departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({d.id})
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

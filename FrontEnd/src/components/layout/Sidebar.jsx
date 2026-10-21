@@ -57,7 +57,7 @@ export default function Sidebar() {
           { name: 'Hồ sơ nhân sự', path: '/directory', icon: Users },
           { name: 'Giám sát chấm công', path: '/attendance', icon: Clock },
           { name: 'Phê duyệt nghỉ phép', path: '/leaves', icon: CalendarDays, badge: leaveBadge },
-          { name: 'Phê duyệt quỹ lương', path: '/payroll', icon: Wallet },
+          { name: 'Quản trị bảng lương & quyết toán', path: '/payroll', icon: Wallet },
           { name: 'Phân tích hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
           { name: 'Cài đặt hệ thống', path: '/settings', icon: Settings },

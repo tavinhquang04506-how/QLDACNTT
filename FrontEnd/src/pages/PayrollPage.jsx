@@ -94,24 +94,30 @@ export default function PayrollPage() {
   // Tab for CEO and HRD: 'company' | 'personal'
   const [adminTab, setAdminTab] = useState('company');
 
+  const canManageCompanyPayroll = roleKey === 'CEO' || roleKey === 'HR_DIRECTOR';
+  const canViewPersonalPayslip =
+    roleKey === 'EMPLOYEE' || roleKey === 'LINE_MANAGER' || canManageCompanyPayroll;
+
   const getPeriodCode = (periodStr) => parsePeriodCode(periodStr);
 
   useEffect(() => {
     let isMounted = true;
     async function fetchPayroll() {
       try {
-        // Fetch personal payslip for current user
-        payrollService.getMyPayslips().then(res => {
-          if (res?.success && Array.isArray(res.data) && isMounted) {
-            setMyPayslipsList(res.data);
-            if (res.data.length > 0) {
-              setMyPayslip(res.data[0]);
+        // Fetch personal payslip only for roles linked to an employee profile
+        if (canViewPersonalPayslip) {
+          payrollService.getMyPayslips().then(res => {
+            if (res?.success && Array.isArray(res.data) && isMounted) {
+              setMyPayslipsList(res.data);
+              if (res.data.length > 0) {
+                setMyPayslip(res.data[0]);
+              }
             }
-          }
-        }).catch(console.warn);
+          }).catch(console.warn);
+        }
 
-        // Fetch company-level data for non-employee roles
-        if (roleKey !== 'EMPLOYEE') {
+        // R30: Only call company-level payroll APIs for roles granted payroll.periods / payroll.payslips.all
+        if (canManageCompanyPayroll) {
           const [periodsRes, empRes] = await Promise.all([
             payrollService.getPeriods().catch(() => null),
             employeeService.getAll().catch(() => null),
@@ -130,21 +136,14 @@ export default function PayrollPage() {
             }
           }
           if (empRes?.success && Array.isArray(empRes.data) && isMounted) {
-            let emps = empRes.data;
-            if (roleKey === 'LINE_MANAGER') {
-              emps = emps.filter(e =>
-                (e.department_name && (e.department_name.includes('Kỹ thuật') || e.department_name.includes('Phần mềm'))) ||
-                e.department_id === 'DEPT-IT'
-              );
-            }
-            const mapped = emps.map(e => ({
+            const mapped = empRes.data.map(e => ({
               id: e.id,
               name: e.full_name || e.name,
-              department: e.department_name || e.department || 'Kỹ thuật Phần mềm',
+              department: e.department_name || e.department || 'Chưa gắn phòng ban',
               role: e.job_title || e.role || 'Nhân viên',
-              contractSalary: Number(e.base_salary || 20000000),
+              contractSalary: Number(e.base_salary ?? 0),
               avatar: e.avatar_url || e.avatar,
-              kpiScore: Number(e.kpi_score ?? 95),
+              kpiScore: e.kpi_score != null ? Number(e.kpi_score) : null,
             }));
             setEmployees(mapped);
           }
@@ -163,7 +162,7 @@ export default function PayrollPage() {
       isMounted = false;
       window.removeEventListener('nexus:payroll-locked', handleLocked);
     };
-  }, [roleKey]);
+  }, [roleKey, canManageCompanyPayroll, canViewPersonalPayslip]);
 
   const currentPeriodCode = getPeriodCode(selectedPeriod);
   // R20: Strictly match currentPeriodCode — NEVER fall back to apiPeriods[0]
@@ -188,7 +187,7 @@ export default function PayrollPage() {
     setPeriodError('');
     setExportError('');
 
-    if (roleKey === 'EMPLOYEE') {
+    if (!canManageCompanyPayroll) {
       setPeriodLoading(false);
       return () => { isMounted = false; };
     }
@@ -211,13 +210,7 @@ export default function PayrollPage() {
         if (anomaliesRes && anomaliesRes.success === false) {
           throw new Error(anomaliesRes.message || 'Không thể tải danh sách đối soát bất thường của kỳ lương.');
         }
-        let slips = Array.isArray(allSlipsRes?.data) ? allSlipsRes.data : [];
-        if (roleKey === 'LINE_MANAGER') {
-          slips = slips.filter(sl =>
-            (sl.department_name && (sl.department_name.includes('Kỹ thuật') || sl.department_name.includes('Phần mềm'))) ||
-            sl.department_id === 'DEPT-IT'
-          );
-        }
+        const slips = Array.isArray(allSlipsRes?.data) ? allSlipsRes.data : [];
         const anomalyList = Array.isArray(anomaliesRes)
           ? anomaliesRes
           : Array.isArray(anomaliesRes?.data)
@@ -228,7 +221,7 @@ export default function PayrollPage() {
         setAnomalies(anomalyList);
         setLoadedPeriodCode(targetPeriodCode);
         setLoadedPeriodId(targetPeriodId);
-        setLoadedExpectedTotal(roleKey === 'LINE_MANAGER' ? slips.length : Number(allSlipsRes.total ?? slips.length));
+        setLoadedExpectedTotal(Number(allSlipsRes.total ?? slips.length));
         setLoadedSnapshotToken(allSlipsRes?.snapshotToken || null);
         setPeriodLoading(false);
         setPeriodError('');
@@ -814,7 +807,7 @@ export default function PayrollPage() {
   };
 
   // ==========================================
-  // VIEW FOR EMPLOYEE & LINE MANAGER: IDENTICAL PERSONAL PAYSLIP
+  // VIEW FOR EMPLOYEE & LINE MANAGER: PERSONAL PAYSLIP ONLY
   // ==========================================
   if (roleKey === 'EMPLOYEE' || roleKey === 'LINE_MANAGER') {
     return (
@@ -824,11 +817,33 @@ export default function PayrollPage() {
     );
   }
 
+  // R30: Roles without company payroll or personal payslip permission (e.g., ADMIN, KIOSK)
+  if (!canManageCompanyPayroll) {
+    return (
+      <div className="w-full min-h-full p-6 flex items-center justify-center">
+        <div
+          data-testid="payroll-role-restricted"
+          className="max-w-lg w-full bg-white rounded-2xl border border-slate-200 p-6 text-center space-y-3 shadow-2xs"
+        >
+          <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+            <ShieldCheck className="w-6 h-6" />
+          </div>
+          <h2 className="text-base font-extrabold text-slate-900">
+            Vai trò hiện tại không thuộc phạm vi nghiệp vụ Bảng lương
+          </h2>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Tài khoản <span className="font-bold text-slate-800">{currentRole?.name || roleKey}</span> chỉ thực hiện quản trị kỹ thuật hệ thống và không được phép truy cập dữ liệu lương cá nhân hoặc bảng lương công ty theo chính sách phân quyền RBAC.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // ==========================================
   // VIEW FOR CEO & HR DIRECTOR: ADMIN VIEW + PERSONAL TAB SWITCHER
   // ==========================================
   const isCeo = roleKey === 'CEO';
-  const pageTitle = isCeo ? 'Phê Duyệt Quỹ Lương Toàn Công Ty' : 'Xử Lý Tiền Lương Và Quyết Toán';
+  const pageTitle = isCeo ? 'Quản Trị Bảng Lương & Quyết Toán Toàn Công Ty' : 'Xử Lý Tiền Lương Và Quyết Toán';
 
   return (
     <div className="w-full min-h-full p-6 space-y-6">
