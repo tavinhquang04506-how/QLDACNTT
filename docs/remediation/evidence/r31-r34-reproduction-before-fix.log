@@ -1,0 +1,7 @@
+=== [R31-R34 REPRODUCTION BEFORE FIX START] ===
+TIMESTAMP=2026-10-21T14:41:52.650Z
+[R31 BEFORE FIX] Manager moved DEPT-IT -> DEPT-SALES on POST /api/ai/copilot: historySent=true (expected false after fix)
+[R32 BEFORE FIX] Model skipped tool for leave balance question: {"answer":"Bß║ín c├▓n 99 ng├áy ph├⌐p.","sources":[],"toolsUsed":[],"success":true}
+[R33 BEFORE FIX] mapServerTask(kpi_weight=0): kpiWeight=20 (expected 0), viewer1Author="Tr╞░ß╗ƒng ph├▓ng IT", viewer2Author="Nh├ón vi├¬n B", fabricatedNote="Nhiß╗çm vß╗Ñ ─æ╞░ß╗úc ─æß╗ông bß╗Ö trß╗▒c tiß║┐p tß╗½ CSDL PostgreSQL."
+[R34 BEFORE FIX] UAT_MATRIX KIOSK row: | **`KIOSK` (Thiß║┐t bß╗ï chß║Ñm c├┤ng)** | `KIOSK` (`role = 'KIOSK'`) | Chß║Ñm c├┤ng `/api/attendance/check-in` & `/check-out` (k├¿m ng╞░ß╗íng FaceID & GPS `R01`); thß╗¡ truy cß║¡p `/api/payroll/*`, `/api/settings`, `/api/ai/chat` | Chß╗ë ─æ╞░ß╗úc ph├⌐p gß╗ìi API chß║Ñm c├┤ng Kiosk; bß╗ï chß║╖n `403` tr├¬n to├án bß╗Ö API l╞░╞íng, c├ái ─æß║╖t, nh├ón sß╗▒ v├á AI Copilot | **PASS** ΓÇö ─Éß║ít 100% c├íc kiß╗âm thß╗¡ chß║╖n quyß╗ün `403` | `Backend/tests/api/r24-r26-review-fixes.test.js`, `Backend/tests/api/ai-copilot-grounding.test.js` |
+=== [R31-R34 REPRODUCTION BEFORE FIX END] ===

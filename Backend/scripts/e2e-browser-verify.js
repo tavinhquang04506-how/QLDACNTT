@@ -1454,7 +1454,139 @@ async function main() {
       '[ASSERT 8 (R27+R28+R30) PASS] R27NetNeutralSwapBlocked=true, R28TasksErrorRetryAndZeroFallback=true, R30LineManagerZeroPeriodsCalls=true, R30AdminRestrictedGuard=true'
     );
 
-    console.log('=== [ALL R14-R30 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    // =========================================================================
+    // SCENARIO 9 (R33): Real Task History UI E2E (GET /api/tasks/:id/logs, kpiWeight=0, empty/error/retry/real logs)
+    // =========================================================================
+    console.log('--- Running Scenario 9: R33 Real Task History & KPI=0 UI E2E ---');
+    const tasksServiceBackend = require('../src/modules/tasks/service');
+    const r33Prj = await projectsServiceBackend.create(
+      { userId: mgrR30Acc.user.id, employeeId: mgrR30Acc.emp.id, roleCode: 'LINE_MANAGER' },
+      {
+        name: 'Dự Án Kiểm Thử Lịch Sử R33',
+        code: 'PRJ-R33-E2E',
+        department_id: 'DEPT-SALES',
+        priority: 'Cao',
+        budget_hours: 120,
+      },
+      null
+    );
+    const r33Task = await tasksServiceBackend.create(
+      { userId: mgrR30Acc.user.id, employeeId: mgrR30Acc.emp.id, roleCode: 'LINE_MANAGER' },
+      r33Prj.id,
+      {
+        title: 'Task E2E R33 Trọng Số KPI = 0',
+        description: 'Kiểm chứng lịch sử thật từ GET /api/tasks/:id/logs',
+        assigneeId: mgrR30Acc.emp.id,
+        priority: 'Cao',
+        kpiWeight: 0,
+      },
+      null
+    );
+
+    try {
+      await loginViaUi(cdp, mgrR30Acc.user.email, mgrR30Acc.password);
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/tasks`, 2200);
+
+      await cdp.eval(`(() => {
+        const spans = Array.from(document.querySelectorAll('span')).filter((s) => s.innerText.trim() === '${r33Task.id}');
+        const card = spans[0]?.closest('div.bg-white');
+        const btn = card?.querySelector('button');
+        if (btn) btn.click();
+      })()`);
+      await new Promise((r) => setTimeout(r, 900));
+
+      await cdp.waitForSelector('[data-testid="task-logs-section"]');
+      const initialModalState = await cdp.eval(`({
+        kpiText: document.querySelector('[data-testid="task-detail-kpi-weight"]')?.innerText || '',
+        hasEmptyLogs: Boolean(document.querySelector('[data-testid="task-logs-empty"]')),
+        sectionText: document.querySelector('[data-testid="task-logs-section"]')?.innerText || '',
+      })`);
+      assert.equal(initialModalState.kpiText, '0%', 'R33: Task with kpi_weight=0 must display 0%, never 20%');
+      assert.equal(initialModalState.hasEmptyLogs, true, 'R33: Newly created task with 0 DB logs must show empty state');
+      assert.equal(
+        initialModalState.sectionText.includes('Nhiệm vụ được đồng bộ trực tiếp từ CSDL PostgreSQL'),
+        false,
+        'R33: Must never display fabricated sync log entry'
+      );
+
+      // Simulate GET /api/tasks/:id/logs failure and trigger retry
+      const origTaskLogs = tasksServiceBackend.logs.bind(tasksServiceBackend);
+      let failTaskLogsOnce = true;
+      tasksServiceBackend.logs = async (...args) => {
+        if (failTaskLogsOnce) {
+          const err = new Error('Lỗi kết nối khi tải lịch sử nhiệm vụ (R33 E2E)');
+          err.status = 500;
+          throw err;
+        }
+        return origTaskLogs(...args);
+      };
+
+      try {
+        await cdp.eval(`(() => {
+          const closeBtn = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes('Hủy Bỏ') || b.innerText.includes('Đóng Cửa Sổ'));
+          if (closeBtn) closeBtn.click();
+        })()`);
+        await new Promise((r) => setTimeout(r, 400));
+
+        await cdp.eval(`(() => {
+          const spans = Array.from(document.querySelectorAll('span')).filter((s) => s.innerText.trim() === '${r33Task.id}');
+          const card = spans[0]?.closest('div.bg-white');
+          const btn = card?.querySelector('button');
+          if (btn) btn.click();
+        })()`);
+        await new Promise((r) => setTimeout(r, 900));
+
+        await cdp.waitForSelector('[data-testid="task-logs-error"]');
+
+        await tasksServiceBackend.moveTask(
+          { userId: mgrR30Acc.user.id, employeeId: mgrR30Acc.emp.id, roleCode: 'LINE_MANAGER' },
+          r33Task.id,
+          'in_progress',
+          'Bắt đầu thực hiện nhiệm vụ trên server',
+          null
+        );
+        await tasksServiceBackend.update(
+          { userId: mgrR30Acc.user.id, employeeId: mgrR30Acc.emp.id, roleCode: 'LINE_MANAGER' },
+          r33Task.id,
+          { progress: 45, deliverableNote: 'Báo cáo tiến độ thực tế 45%' },
+          null
+        );
+
+        failTaskLogsOnce = false;
+        await cdp.click('[data-testid="task-logs-retry-btn"]', 1000);
+        await cdp.waitForSelector('[data-testid="task-logs-list"]');
+
+        const loadedLogsState = await cdp.eval(`({
+          itemCount: document.querySelectorAll('[data-testid="task-log-item"]').length,
+          authors: Array.from(document.querySelectorAll('[data-testid="task-log-author"]')).map((e) => e.innerText),
+          notes: Array.from(document.querySelectorAll('[data-testid="task-log-note"]')).map((e) => e.innerText),
+        })`);
+        assert.equal(loadedLogsState.itemCount, 2, 'R33: Must render both STAGE_CHANGE and PROGRESS_UPDATE logs from DB');
+        assert.ok(
+          loadedLogsState.authors.every((a) => a === mgrR30Acc.emp.full_name),
+          'R33: Log author must match DB actor_name'
+        );
+        assert.ok(
+          loadedLogsState.notes.some((n) => n.includes('Bắt đầu thực hiện nhiệm vụ trên server')),
+          'R33: Stage change note from DB must be rendered'
+        );
+        assert.ok(
+          loadedLogsState.notes.some((n) => n.includes('Báo cáo tiến độ thực tế 45%')),
+          'R33: Progress update note from DB must be rendered'
+        );
+      } finally {
+        tasksServiceBackend.logs = origTaskLogs;
+      }
+    } finally {
+      await db.query('DELETE FROM tasks WHERE id = $1', [r33Task.id]).catch(() => {});
+      await db.query('DELETE FROM projects WHERE id = $1', [r33Prj.id]).catch(() => {});
+    }
+
+    console.log(
+      '[ASSERT 9 (R33) PASS] KpiZeroPreservedInDom=true, EmptyLogsNoFabricated0900=true, LogsErrorRetryRecovered=true, RealServerTaskLogsRendered=true'
+    );
+
+    console.log('=== [ALL R14-R34 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
     await assertSafeTestDatabase(db, { context: 'e2e-browser-verify.finally' });
     await db.query("DELETE FROM attendance_logs WHERE work_date >= '2028-01-01' AND work_date < '2029-01-01'").catch(() => {});
