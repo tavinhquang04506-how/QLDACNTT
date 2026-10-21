@@ -20,6 +20,28 @@ export default function KioskGateModal({ isOpen, onClose, payload }) {
   const navigate = useNavigate();
   const [kioskCode, setKioskCode] = useState('------');
   const [expiresIn, setExpiresIn] = useState(20);
+  const [qrInput, setQrInput] = useState('');
+  const [qrPunchMsg, setQrPunchMsg] = useState('');
+  const [qrPunchErr, setQrPunchErr] = useState('');
+  const [isPunchingQr, setIsPunchingQr] = useState(false);
+
+  const handleQrPunch = async (e) => {
+    e.preventDefault();
+    if (!qrInput.trim()) return;
+    setQrPunchMsg('');
+    setQrPunchErr('');
+    setIsPunchingQr(true);
+    try {
+      const res = await attendanceService.kioskPunch(qrInput.trim());
+      setQrPunchMsg(res?.message || `Quét QR thành công (${res?.action || 'CHECK_IN'})`);
+      setQrInput('');
+      window.dispatchEvent(new CustomEvent('nexus:attendance-updated'));
+    } catch (err) {
+      setQrPunchErr(err?.message || 'Mã QR không hợp lệ hoặc đã được sử dụng.');
+    } finally {
+      setIsPunchingQr(false);
+    }
+  };
 
   const fetchCode = async () => {
     try {
@@ -96,9 +118,43 @@ export default function KioskGateModal({ isOpen, onClose, payload }) {
           </div>
 
           <p className="text-[11px] text-slate-500 mt-4 max-w-sm">
-            Nhân viên nhập 6 số này vào màn hình chấm công trên máy cá nhân để ghi nhận Vào / Ra ca làm việc.
+            Chế độ 1 (Mã Kiosk + GPS): Nhân viên nhập 6 số này vào màn hình chấm công cá nhân kèm định vị GPS.
           </p>
         </div>
+
+        {/* Chế độ 2: Quét mã QR Nhân viên (POST /api/attendance/kiosk/punch) */}
+        <form onSubmit={handleQrPunch} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2.5 text-xs">
+          <div className="font-bold text-slate-800 flex items-center justify-between">
+            <span>Chế độ 2 (Quét QR Nhân Viên tại Kiosk — Dành cho KIOSK / HR):</span>
+            <span className="text-[10px] font-mono text-slate-500">/api/attendance/kiosk/punch</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={qrInput}
+              onChange={(e) => setQrInput(e.target.value)}
+              placeholder="Quét hoặc dán chuỗi QR Token của nhân viên..."
+              className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <button
+              type="submit"
+              disabled={isPunchingQr || !qrInput.trim()}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold px-4 py-2 rounded-xl text-xs transition cursor-pointer shrink-0"
+            >
+              {isPunchingQr ? 'Đang quét...' : 'Xác Thực QR'}
+            </button>
+          </div>
+          {qrPunchMsg && (
+            <div className="text-emerald-700 font-semibold text-[11px] bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg">
+              ✓ {qrPunchMsg}
+            </div>
+          )}
+          {qrPunchErr && (
+            <div className="text-rose-700 font-semibold text-[11px] bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-lg">
+              ⚠️ {qrPunchErr}
+            </div>
+          )}
+        </form>
 
         {/* Actions */}
         <div className="flex items-center justify-between pt-2">

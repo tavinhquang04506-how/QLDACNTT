@@ -13,8 +13,8 @@ const DEFAULT_SETTINGS = {
   employee_bhxh_rate: 10.5,
   employer_bhxh_rate: 21.5,
   gps_radius_meters: 250,
-  office_lat: 10.762622,
-  office_lng: 106.660172,
+  office_lat: 10.77,
+  office_lng: 106.7,
   office_name: 'Tòa nhà NEXUS Tower',
   face_confidence_threshold: 98,
 };

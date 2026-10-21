@@ -70,13 +70,41 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
     }
   }, [availableHandovers, handoverPerson]);
 
-  const s = new Date(startDate);
-  const end = new Date(endDate);
-  const diffDays = Math.max(1, Math.round((end - s) / (1000 * 60 * 60 * 24)) + 1);
+  const computeWorkingDays = (fromIso, toIso) => {
+    if (!fromIso || !toIso) return 0;
+    const from = new Date(`${fromIso}T00:00:00Z`);
+    const to = new Date(`${toIso}T00:00:00Z`);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) return 0;
+    let count = 0;
+    for (let d = new Date(from); d <= to; d = new Date(d.getTime() + 86400000)) {
+      const dow = d.getUTCDay();
+      if (dow !== 0 && dow !== 6) count += 1;
+    }
+    return count;
+  };
+
+  const workingDaysCount = computeWorkingDays(startDate, endDate);
+  const diffDays = shiftType === 'morning' || shiftType === 'afternoon'
+    ? (workingDaysCount === 1 ? 0.5 : workingDaysCount)
+    : workingDaysCount;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+
+    if (endDate < startDate) {
+      setErrorMsg('Ngày kết thúc không được nhỏ hơn ngày bắt đầu.');
+      return;
+    }
+    if (workingDaysCount <= 0) {
+      setErrorMsg('Khoảng thời gian đã chọn chỉ rơi vào ngày nghỉ cuối tuần (Thứ 7 / Chủ Nhật), không phát sinh ngày phép làm việc.');
+      return;
+    }
+    if ((shiftType === 'morning' || shiftType === 'afternoon') && startDate !== endDate) {
+      setErrorMsg('Nghỉ nửa ngày (0.5 ngày) chỉ áp dụng khi Từ ngày và Đến ngày là cùng một ngày làm việc.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     const typeMapping = {
