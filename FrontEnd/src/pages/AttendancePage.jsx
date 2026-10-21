@@ -28,11 +28,25 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { generateCSVContent, downloadFile } from '../utils/fileExportUtils';
+import settingsService from '../services/settingsService';
 
-// Chế độ phát triển & test: Tọa độ văn phòng công ty đồng bộ động theo GPS thiết bị của người dùng
-const TEST_DEFAULT_LAT = 10.8416;
-const TEST_DEFAULT_LNG = 106.7845;
-const OFFICE_NAME = 'Văn phòng công ty (Đồng bộ GPS thiết bị)';
+const DEFAULT_OFFICE_LAT = 10.77;
+const DEFAULT_OFFICE_LNG = 106.7;
+const DEFAULT_OFFICE_NAME = 'Tòa nhà NEXUS Tower';
+
+function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
 
 export default function AttendancePage() {
   const navigate = useNavigate();
@@ -45,12 +59,25 @@ export default function AttendancePage() {
   const [codeDigits, setCodeDigits] = useState(['', '', '', '', '', '']);
   const inputRefs = useRef([]);
 
-  // Trạng thái GPS (chế độ test: vị trí công ty tự động nhận theo GPS hiện tại của người dùng)
-  const [coords, setCoords] = useState({ lat: TEST_DEFAULT_LAT, lng: TEST_DEFAULT_LNG, accuracy: 10 });
-  const [distance, setDistance] = useState(0); // 0 mét - luôn hợp lệ trong sảnh
-  const [geoZone, setGeoZone] = useState('GREEN'); // 'GREEN' (<=300m), 'YELLOW' (300-1000m), 'RED' (>1000m)
+  // Cấu hình văn phòng từ /api/settings
+  const [officeConfig, setOfficeConfig] = useState({
+    lat: DEFAULT_OFFICE_LAT,
+    lng: DEFAULT_OFFICE_LNG,
+    radiusGreen: 250,
+    name: DEFAULT_OFFICE_NAME,
+  });
+
+  // Trạng thái GPS thực hoặc Demo có chủ đích
+  const [coords, setCoords] = useState({ lat: DEFAULT_OFFICE_LAT, lng: DEFAULT_OFFICE_LNG, accuracy: 10 });
+  const [distance, setDistance] = useState(0);
+  const [geoZone, setGeoZone] = useState('GREEN'); // 'GREEN', 'YELLOW', 'RED'
   const [isLocating, setIsLocating] = useState(false);
-  const [geoMessage, setGeoMessage] = useState('Trong khuôn viên văn phòng công ty (Hợp lệ)');
+  const [isDemoGps, setIsDemoGps] = useState(true);
+  const [geoMessage, setGeoMessage] = useState('Chế độ Demo GPS: Tọa độ văn phòng trung tâm (Hợp lệ)');
+
+  // QR cá nhân cho Kiosk QR Punch (F07)
+  const [myQrData, setMyQrData] = useState(null);
+  const [isLoadingQr, setIsLoadingQr] = useState(false);
 
   // Trạng thái submit & logs
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -73,15 +100,44 @@ export default function AttendancePage() {
     return () => clearInterval(timer);
   }, []);
 
-  // Lấy vị trí GPS từ trình duyệt (chế độ test: lấy vị trí công ty theo vị trí của người dùng)
-  const refreshLocation = () => {
+  const evaluateGps = (userLat, userLng, acc = 10, cfg = officeConfig, demo = false) => {
+    const dist = calculateHaversineDistance(userLat, userLng, cfg.lat, cfg.lng);
+    const radiusGreen = Number(cfg.radiusGreen) || 250;
+    const radiusYellow = Math.max(radiusGreen * 4, 1000);
+    const effective = Math.max(0, dist - Math.min(Math.max(Number(acc) || 0, 0), 100));
+
+    setCoords({ lat: userLat, lng: userLng, accuracy: acc });
+    setDistance(dist);
+    setIsDemoGps(demo);
+
+    if (effective <= radiusGreen) {
+      setGeoZone('GREEN');
+      setGeoMessage(
+        demo
+          ? `[Demo GPS] Tọa độ văn phòng ${cfg.name} (${dist}m — Hợp lệ)`
+          : `Trong khuôn viên ${cfg.name} (Cách tâm ${dist}m — Hợp lệ)`
+      );
+    } else if (effective <= radiusYellow) {
+      setGeoZone('YELLOW');
+      setGeoMessage(`Trong bán kính mở rộng văn phòng (Cách tâm ${dist}m — Hợp lệ kèm sai số GPS)`);
+    } else {
+      setGeoZone('RED');
+      setGeoMessage(`Ngoài phạm vi chấm công (Cách văn phòng ${dist}m > bán kính cho phép ${radiusGreen}m)`);
+    }
+  };
+
+  const applyDemoOfficeGps = (cfg = officeConfig) => {
+    setPunchError(null);
+    evaluateGps(cfg.lat, cfg.lng, 10, cfg, true);
+  };
+
+  // Lấy vị trí GPS thực từ trình duyệt
+  const refreshLocation = (cfg = officeConfig) => {
     setIsLocating(true);
     setPunchError(null);
     if (!navigator.geolocation) {
       setIsLocating(false);
-      setDistance(0);
-      setGeoZone('GREEN');
-      setGeoMessage('Trong khuôn viên văn phòng công ty (Hợp lệ)');
+      applyDemoOfficeGps(cfg);
       return;
     }
 
@@ -90,27 +146,52 @@ export default function AttendancePage() {
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
         const acc = Math.round(pos.coords.accuracy || 10);
-        setCoords({ lat: userLat, lng: userLng, accuracy: acc });
-
-        // Chế độ phát triển & test: Tọa độ công ty tự động lấy theo vị trí người dùng
-        setDistance(0);
-        setGeoZone('GREEN');
-        setGeoMessage('Trong khuôn viên văn phòng công ty (Hợp lệ)');
+        evaluateGps(userLat, userLng, acc, cfg, false);
         setIsLocating(false);
       },
-      (err) => {
-        console.warn('Geolocation warning, using test location fallback:', err.message);
-        setDistance(0);
-        setGeoZone('GREEN');
-        setGeoMessage('Trong khuôn viên văn phòng công ty (Hợp lệ)');
+      () => {
         setIsLocating(false);
+        applyDemoOfficeGps(cfg);
       },
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
     );
   };
 
+  const handleFetchMyQr = async () => {
+    setIsLoadingQr(true);
+    try {
+      const res = await attendanceService.getMyQr();
+      const data = res?.data || res;
+      if (data?.qrToken) {
+        setMyQrData(data);
+      }
+    } catch (err) {
+      setPunchError(err?.message || 'Không thể tạo mã QR cá nhân.');
+    } finally {
+      setIsLoadingQr(false);
+    }
+  };
+
   useEffect(() => {
-    refreshLocation();
+    let isMounted = true;
+    settingsService.getSettings()
+      .then((res) => {
+        const d = res?.data || res;
+        if (isMounted && d) {
+          const cfg = {
+            lat: Number.isFinite(Number(d.office_lat)) ? Number(d.office_lat) : DEFAULT_OFFICE_LAT,
+            lng: Number.isFinite(Number(d.office_lng)) ? Number(d.office_lng) : DEFAULT_OFFICE_LNG,
+            radiusGreen: Number(d.gps_radius_meters) || 250,
+            name: d.office_name || DEFAULT_OFFICE_NAME,
+          };
+          setOfficeConfig(cfg);
+          applyDemoOfficeGps(cfg);
+        }
+      })
+      .catch(() => {
+        if (isMounted) applyDemoOfficeGps(officeConfig);
+      });
+    return () => { isMounted = false; };
   }, []);
 
   // Tải dữ liệu chấm công hôm nay & danh sách lịch sử
@@ -207,7 +288,7 @@ export default function AttendancePage() {
         code: fullCode,
         gpsLat: coords.lat,
         gpsLng: coords.lng,
-        address: OFFICE_NAME,
+        address: officeConfig.name,
         accuracy: coords.accuracy
       });
 
@@ -253,8 +334,8 @@ export default function AttendancePage() {
     checkout: todayData?.check_out_time
       ? new Date(todayData.check_out_time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : (todayData?.check_in_time ? 'Đang làm việc...' : 'Chưa ghi nhận'),
-    checkinAddress: todayData?.check_in_address || (todayData?.check_in_time ? OFFICE_NAME : null),
-    checkoutAddress: todayData?.check_out_address || (todayData?.check_out_time ? OFFICE_NAME : null),
+    checkinAddress: todayData?.check_in_address || (todayData?.check_in_time ? officeConfig.name : null),
+    checkoutAddress: todayData?.check_out_address || (todayData?.check_out_time ? officeConfig.name : null),
   };
 
   const formatLogTime = (isoString) => {
@@ -284,29 +365,18 @@ export default function AttendancePage() {
         dataToExport = [todayData];
       }
       
-      const rows = dataToExport.length > 0 ? dataToExport.map((l) => [
+      const rows = dataToExport.map((l) => [
         l.employee_id || currentRole?.id || '',
         l.employee_name || l.full_name || currentRole?.name || '',
         l.department_name || currentRole?.department || '',
-        l.work_date ? new Date(l.work_date).toLocaleDateString('vi-VN') : new Date().toLocaleDateString('vi-VN'),
+        l.work_date ? new Date(l.work_date).toLocaleDateString('vi-VN') : '',
         l.check_in_time ? formatDisplayTime(l.check_in_time) : (l.checkin || '--:--'),
         l.check_out_time ? formatDisplayTime(l.check_out_time) : (l.checkout || '--:--'),
-        l.work_hours || '8.0',
-        l.late_minutes || '0',
-        l.check_in_address || l.address || OFFICE_NAME,
-        l.status === 'DUNG_GIO' ? 'Đúng giờ' : (l.status === 'DI_MUON' ? `Đi trễ ${l.late_minutes || 0}p` : (l.status || 'Hợp lệ')),
-      ]) : [[
-        currentRole?.id || '',
-        currentRole?.name || '',
-        currentRole?.department || '',
-        new Date().toLocaleDateString('vi-VN'),
-        shiftInfo?.checkin || '--:--',
-        shiftInfo?.checkout || '--:--',
-        '8.0',
-        '0',
-        OFFICE_NAME,
-        'Hợp lệ'
-      ]];
+        l.work_hours ?? 0,
+        l.late_minutes ?? 0,
+        l.check_in_address || l.address || officeConfig.name,
+        l.status === 'DUNG_GIO' ? 'Đúng giờ' : (l.status === 'DI_MUON' ? `Đi trễ ${l.late_minutes ?? 0}p` : (l.status || 'Chưa ghi nhận')),
+      ]);
 
       const csv = generateCSVContent(headers, rows);
       downloadFile(`Bang_Tong_Hop_Cham_Cong_NEXUS_${new Date().toISOString().split('T')[0]}.csv`, csv);
@@ -515,24 +585,64 @@ export default function AttendancePage() {
                     </div>
 
                     <div className="text-[11px] text-slate-600 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                      <span className="font-semibold">{OFFICE_NAME}</span>
+                      <span className="font-semibold">{officeConfig.name}</span>
                       <span>• Tọa độ: {coords.lat.toFixed(4)}°N, {coords.lng.toFixed(4)}°E</span>
+                      <span>• Bán kính chuẩn: {officeConfig.radiusGreen}m</span>
                     </div>
                   </div>
                 </div>
 
-                {/* Refresh GPS Button */}
-                <button
-                  type="button"
-                  onClick={refreshLocation}
-                  disabled={isLocating}
-                  className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer shrink-0 disabled:opacity-50"
-                  title="Đo lại tọa độ GPS hiện tại"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLocating ? 'animate-spin' : ''}`} />
-                  <span>{isLocating ? 'Đang đo...' : 'Lấy lại vị trí'}</span>
-                </button>
+                {/* Refresh GPS & Demo GPS Buttons */}
+                <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => refreshLocation(officeConfig)}
+                    disabled={isLocating}
+                    className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer shrink-0 disabled:opacity-50"
+                    title="Đo lại tọa độ GPS thực từ thiết bị"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLocating ? 'animate-spin' : ''}`} />
+                    <span>{isLocating ? 'Đang đo...' : 'Đo GPS Thiết Bị'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyDemoOfficeGps(officeConfig)}
+                    className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 shadow-2xs transition-all cursor-pointer shrink-0"
+                    title="Sử dụng tọa độ văn phòng cấu hình (Chế độ Demo/Test)"
+                  >
+                    <Navigation className="w-3.5 h-3.5" />
+                    <span>Demo GPS Văn Phòng</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleFetchMyQr}
+                    disabled={isLoadingQr}
+                    className="bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 shadow-2xs transition-all cursor-pointer shrink-0"
+                    title="Tạo mã QR cá nhân để quét tại Kiosk cổng (F07)"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>{isLoadingQr ? 'Đang tạo QR...' : 'Mã QR Cá Nhân'}</span>
+                  </button>
+                </div>
               </div>
+
+              {myQrData?.qrToken && (
+                <div className="mt-3 p-3 bg-white border border-emerald-200 rounded-xl text-[11px] space-y-1">
+                  <div className="flex items-center justify-between font-bold text-emerald-800">
+                    <span>Mã QR Chấm Công Cá Nhân (Hiệu lực {myQrData.expiresIn || 60}s — Dùng 1 lần tại Kiosk):</span>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(myQrData.qrToken)}
+                      className="text-blue-600 hover:underline cursor-pointer"
+                    >
+                      Sao chép mã QR Token
+                    </button>
+                  </div>
+                  <div className="font-mono text-[10px] text-slate-600 break-all bg-slate-50 p-2 rounded border border-slate-200">
+                    {myQrData.qrToken}
+                  </div>
+                </div>
+              )}
 
               {geoZone === 'YELLOW' && (
                 <div className="mt-2.5 pt-2 border-t border-amber-200 text-[11px] text-amber-800 flex items-center gap-1.5">
@@ -687,7 +797,7 @@ export default function AttendancePage() {
                     </div>
                     <div className="pl-3.5 text-[11px] text-slate-500 flex items-start gap-1">
                       <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                      <span>{shiftInfo.checkinAddress || OFFICE_NAME}</span>
+                      <span>{shiftInfo.checkinAddress || officeConfig.name}</span>
                     </div>
                   </div>
 
@@ -703,7 +813,7 @@ export default function AttendancePage() {
                     {todayData.check_out_time && (
                       <div className="pl-3.5 text-[11px] text-slate-500 flex items-start gap-1">
                         <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                        <span>{shiftInfo.checkoutAddress || OFFICE_NAME}</span>
+                        <span>{shiftInfo.checkoutAddress || officeConfig.name}</span>
                       </div>
                     )}
                   </div>

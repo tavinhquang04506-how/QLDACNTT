@@ -8,6 +8,7 @@ const { signQrToken, verifyQrToken, consumeQrToken, QR_TTL_SECONDS } = require('
 
 const { getCurrentKioskCode, validateKioskCode } = require('./kioskCode');
 const { validateLocation, OFFICE_LOCATION } = require('./gpsValidator');
+const settingsService = require('../settings/service');
 
 const NOT_LINKED = 'Tài khoản chưa được liên kết với hồ sơ nhân viên';
 const requireEmployee = (user) => {
@@ -44,7 +45,7 @@ async function insertCheckIn(executor, employeeId, method, gps = {}) {
       method || 'code_gps', 
       gps.gpsLat ?? null, 
       gps.gpsLng ?? null, 
-      gps.address ?? (gps.gpsLat ? OFFICE_LOCATION.name : null),
+      gps.address ?? (gps.gpsLat != null ? OFFICE_LOCATION.name : null),
       gps.distance ?? null
     ]
   );
@@ -52,7 +53,11 @@ async function insertCheckIn(executor, employeeId, method, gps = {}) {
 }
 
 function getKioskCode() {
-  return getCurrentKioskCode();
+  return {
+    ...getCurrentKioskCode(),
+    mode: 'TOTP_6_DIGIT',
+    qrPunchEndpoint: '/api/attendance/kiosk/punch',
+  };
 }
 
 async function checkIn(user, body) {
@@ -66,10 +71,18 @@ async function checkIn(user, body) {
     }
   }
 
-  // 2. Kiểm tra GPS Geofencing (3 vùng thông minh)
+  // 2. Kiểm tra GPS Geofencing (3 vùng thông minh, đọc bán kính & tọa độ từ system_settings)
   let loc = { valid: true, distance: null, message: null };
   if (body.gpsLat != null && body.gpsLng != null) {
-    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy);
+    const sys = await settingsService.getSettings(db);
+    const radiusGreen = Number(sys.gps_radius_meters) || OFFICE_LOCATION.radiusGreen;
+    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy, {
+      officeLat: sys.office_lat,
+      officeLng: sys.office_lng,
+      officeName: sys.office_name,
+      radiusGreen,
+      radiusYellow: Math.max(radiusGreen * 4, 1000),
+    });
     if (!loc.valid) {
       throw badRequest(loc.message);
     }
@@ -78,7 +91,7 @@ async function checkIn(user, body) {
   const row = await insertCheckIn(db, employeeId, body.method || 'code_gps', {
     ...body,
     distance: loc.distance,
-    address: body.address || (body.gpsLat ? loc.office : null)
+    address: body.address || (body.gpsLat != null ? loc.office : null)
   });
   if (!row) throw conflict('Bạn đã check-in hôm nay rồi');
   return { 
@@ -102,7 +115,15 @@ async function checkOut(user, body) {
   // 2. Kiểm tra GPS Geofencing
   let loc = { valid: true, distance: null, message: null };
   if (body.gpsLat != null && body.gpsLng != null) {
-    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy);
+    const sys = await settingsService.getSettings(db);
+    const radiusGreen = Number(sys.gps_radius_meters) || OFFICE_LOCATION.radiusGreen;
+    loc = validateLocation(body.gpsLat, body.gpsLng, body.accuracy, {
+      officeLat: sys.office_lat,
+      officeLng: sys.office_lng,
+      officeName: sys.office_name,
+      radiusGreen,
+      radiusYellow: Math.max(radiusGreen * 4, 1000),
+    });
     if (!loc.valid) {
       throw badRequest(loc.message);
     }
@@ -122,7 +143,7 @@ async function checkOut(user, body) {
       body.method || 'code_gps',
       body.gpsLat ?? null,
       body.gpsLng ?? null,
-      body.address || (body.gpsLat ? loc.office : null)
+      body.address || (body.gpsLat != null ? loc.office : null)
     ]
   );
   if (rows[0]) return { row: rows[0], message: hoursMessage(rows[0]), location: loc };
