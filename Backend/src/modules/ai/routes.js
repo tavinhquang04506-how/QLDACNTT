@@ -2,7 +2,12 @@
 // routes.js — AI Module Router (Grounded Gemini + Scoped Read-Only Tools)
 // ============================================
 const express = require('express');
-const { runCopilot, getHrKnowledgeBase, getPublishedKnowledgeSnapshot } = require('./service');
+const {
+  runCopilot,
+  resolveActorScopeFromDb,
+  getHrKnowledgeBase,
+  getPublishedKnowledgeSnapshot,
+} = require('./service');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../policies');
 
@@ -14,11 +19,15 @@ router.use(authenticate);
 router.post('/copilot', requirePermission('ai.copilot'), async (req, res, next) => {
   try {
     const { message, conversationId, context } = req.body || {};
-    const actor = {
+
+    // R31: Always resolve authoritative actor scope (userId, employeeId, roleCode, departmentId)
+    // directly from PostgreSQL on every request, ignoring any client body/context fields.
+    const actor = await resolveActorScopeFromDb({
       userId: req.user.userId,
       employeeId: req.user.employeeId || null,
       roleCode: req.user.roleCode,
-    };
+      departmentId: req.user.departmentId || null,
+    });
 
     const testOptions =
       process.env.NODE_ENV === 'test' && req.app?.locals?.aiTestOptions

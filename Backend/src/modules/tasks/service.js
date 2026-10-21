@@ -143,6 +143,22 @@ async function update(actor, id, body, req) {
     }
     await client.query(`UPDATE tasks SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $1`, params);
     if (body.progress !== undefined) await recalcProjectProgress(client, task.project_id);
+
+    // R33: Record real progress/deliverable updates in task_logs so history reflects server-side events
+    const noteParts = [];
+    if (body.progress !== undefined && Number(body.progress) !== Number(task.progress)) {
+      noteParts.push(`Tiến độ ${task.progress}% → ${body.progress}%`);
+    }
+    if (body.deliverableNote !== undefined && body.deliverableNote !== null && String(body.deliverableNote).trim()) {
+      noteParts.push(String(body.deliverableNote).trim());
+    }
+    if (noteParts.length > 0) {
+      await client.query(
+        `INSERT INTO task_logs (task_id, actor_id, action, from_stage, to_stage, note) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, actor.employeeId ?? null, 'PROGRESS_UPDATE', task.stage, task.stage, noteParts.join(' — ')]
+      );
+    }
+
     await writeAudit(client, {
       user: actor, action: 'UPDATE_TASK', table: 'tasks', recordId: id, req,
       oldValues: { title: task.title, assignee_id: task.assignee_id, progress: task.progress }, newValues: body,
@@ -189,6 +205,17 @@ async function moveTask(actor, id, toStage, note, req) {
       await client.query(
         `INSERT INTO task_logs (task_id, actor_id, action, from_stage, to_stage, note) VALUES ($1, $2, $3, $4, $5, $6)`,
         [id, actor.employeeId ?? null, toStage === 'done' ? 'REVIEW_ACCEPTED' : 'REVIEW_REJECTED', task.stage, toStage, note ?? null]
+      );
+    } else if (note && String(note).trim()) {
+      await client.query(
+        `UPDATE task_logs
+            SET note = $2
+          WHERE id = (
+            SELECT id FROM task_logs
+             WHERE task_id = $1 AND action = 'STAGE_CHANGE'
+             ORDER BY id DESC LIMIT 1
+          )`,
+        [id, String(note).trim()]
       );
     }
     await recalcProjectProgress(client, task.project_id);
