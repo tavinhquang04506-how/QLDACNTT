@@ -3,6 +3,11 @@ const { z } = require('zod');
 const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Kỳ lương phải có dạng YYYY-MM');
 const numericId = z.string().regex(/^\d{1,18}$/, 'Mã không hợp lệ');
 const resolutionAction = z.enum(['USE_SOURCE', 'KEEP_MANUAL']);
+const fieldResolutionObject = z.object({
+  action: resolutionAction,
+  expectedCurrentSourceValue: z.number().optional(),
+});
+const fieldResolutionEntry = z.union([resolutionAction, fieldResolutionObject]);
 
 const calculateBody = z.object({
   period: z.string({ required_error: 'Thiếu kỳ lương' }).pipe(period),
@@ -10,8 +15,11 @@ const calculateBody = z.object({
   adjustmentResolutions: z
     .record(
       z.string(),
-      z.union([resolutionAction, z.record(z.string(), resolutionAction)])
+      z.union([fieldResolutionEntry, z.record(z.string(), fieldResolutionEntry)])
     )
+    .optional(),
+  expectedSourceValues: z
+    .record(z.string(), z.record(z.string(), z.number()))
     .optional(),
 });
 const idParam = z.object({ id: numericId });

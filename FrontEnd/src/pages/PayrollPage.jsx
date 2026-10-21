@@ -31,7 +31,10 @@ import {
   Check,
   CalendarDays,
   User,
-  Layers
+  Layers,
+  RefreshCw,
+  X,
+  Loader2
 } from 'lucide-react';
 import { normalizePayslip, formatVND, formatDateVN } from '../utils/dataAdapters';
 import { generateCSVContent, downloadFile } from '../utils/fileExportUtils';
@@ -41,6 +44,13 @@ import {
   resolveSelectedPeriodObj,
   buildPeriodSelectOptions,
   computePeriodViewState,
+  ADJUSTMENT_FIELD_LABELS,
+  formatConflictFieldValue,
+  getConflictItemKey,
+  extractConflictsFromError,
+  areAllConflictsResolved,
+  buildConflictResolutionPayload,
+  reconcileConflictModalState,
 } from '../utils/payrollPeriodState';
 
 export default function PayrollPage() {
@@ -53,22 +63,31 @@ export default function PayrollPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('all');
   const [showNumbers, setShowNumbers] = useState(false);
-  const [isCeoApproved, setIsCeoApproved] = useState(false);
   const [apiPayslips, setApiPayslips] = useState([]);
   const [apiPeriods, setApiPeriods] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [myPayslip, setMyPayslip] = useState(null);
   const [myPayslipsList, setMyPayslipsList] = useState([]);
   const [anomalies, setAnomalies] = useState([]);
-  // R20/R22 period state tracking
+  // R20/R22/R26 period state tracking
   const [periodLoading, setPeriodLoading] = useState(false);
   const [periodError, setPeriodError] = useState('');
   const [loadedPeriodCode, setLoadedPeriodCode] = useState(null);
   const [loadedPeriodId, setLoadedPeriodId] = useState(null);
   const [loadedExpectedTotal, setLoadedExpectedTotal] = useState(null);
+  const [loadedSnapshotToken, setLoadedSnapshotToken] = useState(null);
   const [reloadTrigger, setReloadTrigger] = useState(0);
   const [calculatingPeriod, setCalculatingPeriod] = useState(false);
   const [exportError, setExportError] = useState('');
+  const [reconcileSuccessBanner, setReconcileSuccessBanner] = useState('');
+  // R24 Adjustment Source Conflict Reconciliation state
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [conflictItems, setConflictItems] = useState([]);
+  const [conflictDecisions, setConflictDecisions] = useState({});
+  const [conflictModalError, setConflictModalError] = useState('');
+  const [conflictStaleNotice, setConflictStaleNotice] = useState('');
+  const [conflictSubmitting, setConflictSubmitting] = useState(false);
+
   const hasInitializedPeriodRef = useRef(false);
   const requestSeqRef = useRef(0);
 
@@ -165,9 +184,9 @@ export default function PayrollPage() {
     setLoadedPeriodCode(null);
     setLoadedPeriodId(null);
     setLoadedExpectedTotal(null);
+    setLoadedSnapshotToken(null);
     setPeriodError('');
     setExportError('');
-    setIsCeoApproved(false);
 
     if (roleKey === 'EMPLOYEE') {
       setPeriodLoading(false);
@@ -210,6 +229,7 @@ export default function PayrollPage() {
         setLoadedPeriodCode(targetPeriodCode);
         setLoadedPeriodId(targetPeriodId);
         setLoadedExpectedTotal(roleKey === 'LINE_MANAGER' ? slips.length : Number(allSlipsRes.total ?? slips.length));
+        setLoadedSnapshotToken(allSlipsRes?.snapshotToken || null);
         setPeriodLoading(false);
         setPeriodError('');
       })
@@ -220,6 +240,7 @@ export default function PayrollPage() {
         setLoadedPeriodCode(null);
         setLoadedPeriodId(null);
         setLoadedExpectedTotal(null);
+        setLoadedSnapshotToken(null);
         setPeriodLoading(false);
         setPeriodError(err?.message || 'Không thể tải dữ liệu kỳ lương từ máy chủ.');
       });
@@ -230,6 +251,7 @@ export default function PayrollPage() {
   const handleCalculateSelectedPeriod = async () => {
     setCalculatingPeriod(true);
     setPeriodError('');
+    setReconcileSuccessBanner('');
     try {
       const periodCode = getPeriodCode(selectedPeriod);
       const calcRes = await payrollService.calculate(periodCode);
@@ -240,37 +262,95 @@ export default function PayrollPage() {
       if (periodsRes?.success && Array.isArray(periodsRes.data)) {
         setApiPeriods(periodsRes.data);
       }
+      setReconcileSuccessBanner(`Đã tính toán và đồng bộ bảng lương kỳ ${periodCode} thành công (trạng thái: Dự thảo).`);
       setReloadTrigger((v) => v + 1);
     } catch (e) {
-      setPeriodError(e?.message || 'Lỗi khi khởi tạo / tính toán bảng lương.');
+      const incomingConflicts = extractConflictsFromError(e);
+      if ((e?.status === 409 || e?.code === 'ADJUSTMENT_SOURCE_CONFLICT') && incomingConflicts.length > 0) {
+        const reconciled = reconcileConflictModalState([], {}, incomingConflicts);
+        setConflictItems(reconciled.conflictItems);
+        setConflictDecisions(reconciled.decisions);
+        setConflictModalError('');
+        setConflictStaleNotice('');
+        setConflictModalOpen(true);
+      } else {
+        setPeriodError(e?.message || 'Lỗi khi khởi tạo / tính toán bảng lương.');
+      }
     } finally {
       setCalculatingPeriod(false);
     }
   };
 
-  const handleCeoApprove = async () => {
+  const handleSelectConflictDecision = (empId, field, action) => {
+    const key = `${empId}::${field}`;
+    setConflictDecisions((prev) => ({
+      ...prev,
+      [key]: action,
+    }));
+    setConflictModalError('');
+  };
+
+  const handleCancelConflictModal = () => {
+    if (conflictSubmitting) return;
+    setConflictModalOpen(false);
+    setConflictItems([]);
+    setConflictDecisions({});
+    setConflictModalError('');
+    setConflictStaleNotice('');
+  };
+
+  const handleSubmitConflictResolutions = async () => {
+    if (!areAllConflictsResolved(conflictItems, conflictDecisions)) {
+      setConflictModalError(
+        'Vui lòng chọn phương án xử lý ("Giữ điều chỉnh" hoặc "Dùng dữ liệu nguồn") cho tất cả các mục xung đột trước khi xác nhận.'
+      );
+      return;
+    }
+    setConflictSubmitting(true);
+    setConflictModalError('');
+    setConflictStaleNotice('');
     try {
       const periodCode = getPeriodCode(selectedPeriod);
-      const calcRes = await payrollService.calculate(periodCode);
+      const payload = buildConflictResolutionPayload(conflictItems, conflictDecisions);
+      const calcRes = await payrollService.calculate(periodCode, payload);
       if (!calcRes?.success) {
-        throw new Error(calcRes?.message || 'Không thể tính và phê duyệt bảng lương');
+        throw new Error(calcRes?.message || 'Không thể tính lại bảng lương với quyết định đối soát.');
       }
-      setIsCeoApproved(true);
+      setConflictModalOpen(false);
+      setConflictItems([]);
+      setConflictDecisions({});
+      setConflictModalError('');
+      setConflictStaleNotice('');
       const periodsRes = await payrollService.getPeriods().catch(() => null);
       if (periodsRes?.success && Array.isArray(periodsRes.data)) {
         setApiPeriods(periodsRes.data);
       }
+      setReconcileSuccessBanner(
+        `Đã đối soát xung đột điều chỉnh thủ công và tính lại bảng lương kỳ ${periodCode} thành công!`
+      );
       setReloadTrigger((v) => v + 1);
-      try {
-        confetti({
-          particleCount: 70,
-          spread: 70,
-          origin: { y: 0.6 }
-        });
-      } catch (e) { }
     } catch (e) {
-      setIsCeoApproved(false);
-      alert(e?.message || 'Lỗi khi tính toán / phê duyệt bảng lương.');
+      const incomingConflicts = extractConflictsFromError(e);
+      const isStaleRejected =
+        Boolean(e?.details?.staleDecisionRejected || e?.response?.data?.details?.staleDecisionRejected) ||
+        incomingConflicts.some((c) => Boolean(c.staleDecisionRejected));
+      if ((e?.status === 409 || e?.code === 'ADJUSTMENT_SOURCE_CONFLICT') && incomingConflicts.length > 0) {
+        const reconciled = reconcileConflictModalState(conflictItems, conflictDecisions, incomingConflicts);
+        setConflictItems(reconciled.conflictItems);
+        setConflictDecisions(reconciled.decisions);
+        if (isStaleRejected || reconciled.invalidatedKeys.length > 0) {
+          setConflictStaleNotice(
+            'Dữ liệu nguồn tính lương vừa thay đổi thêm trong lúc bạn đang đối soát. Hệ thống đã cập nhật giá trị nguồn mới nhất và yêu cầu bạn chọn lại phương án cho mục vừa thay đổi.'
+          );
+        }
+        setConflictModalError(
+          e?.message || 'Phát hiện xung đột mới giữa dữ liệu nguồn và giá trị điều chỉnh tay. Vui lòng kiểm tra và xác nhận lại.'
+        );
+      } else {
+        setConflictModalError(e?.message || 'Lỗi máy chủ khi gửi quyết định đối soát điều chỉnh lương.');
+      }
+    } finally {
+      setConflictSubmitting(false);
     }
   };
 
@@ -297,7 +377,6 @@ export default function PayrollPage() {
         periodError,
         apiPayslips,
         anomalies,
-        isCeoApproved,
       }),
     [
       currentPeriodCode,
@@ -309,7 +388,6 @@ export default function PayrollPage() {
       periodError,
       apiPayslips,
       anomalies,
-      isCeoApproved,
     ]
   );
 
@@ -331,12 +409,12 @@ export default function PayrollPage() {
       return;
     }
     try {
-      // R22: Ensure all pages of the selected period are present before generating CSV
-      let exportSlips = periodPayslips;
-      if (loadedExpectedTotal != null && exportSlips.length !== Number(loadedExpectedTotal)) {
-        const refreshed = await payrollService.getAllPayslipsForPeriod(currentPeriodCode, 500);
-        exportSlips = refreshed.data || [];
-      }
+      // R22 & R26: Re-fetch/verify all pages of the selected period with duplicate key, metadata, and snapshot consistency checks
+      const verified = await payrollService.getAllPayslipsForPeriod(currentPeriodCode, 500, {
+        expectedSnapshotToken: loadedSnapshotToken,
+        expectedTotalNet: totalNet,
+      });
+      const exportSlips = verified.data || [];
       if (loadedExpectedTotal != null && exportSlips.length !== Number(loadedExpectedTotal)) {
         throw new Error(
           `Số lượng phiếu lương kết xuất (${exportSlips.length}) không khớp tổng số bản ghi kỳ ${currentPeriodCode} (${loadedExpectedTotal}).`
@@ -461,6 +539,23 @@ export default function PayrollPage() {
     const totalDeductions = Number(currentSlip?.total_deductions ?? 0);
     const workDays = currentSlip?.actual_work_days ?? 0;
     const netSalaryNum = Number(currentSlip?.net_salary ?? 0);
+    const slipStatus = currentSlip?.status || 'CHUA_PHAT_HANH';
+    const personalStatusLabel =
+      slipStatus === 'DA_CHUYEN_KHOAN'
+        ? 'Đã Quyết Toán & Chuyển Khoản'
+        : slipStatus === 'DA_CHOT'
+        ? 'Đã Chốt Sổ Lương'
+        : slipStatus === 'DU_THAO'
+        ? 'Bản Dự Thảo (Chưa Khóa Sổ)'
+        : 'Chưa Phát Hành';
+    const personalStatusSubtext =
+      slipStatus === 'DA_CHUYEN_KHOAN'
+        ? 'Đã chi trả chuyển khoản'
+        : slipStatus === 'DA_CHOT'
+        ? 'Đã chốt sổ (chờ chi trả)'
+        : slipStatus === 'DU_THAO'
+        ? 'Đang ở trạng thái dự thảo'
+        : 'Chưa phát hành cho kỳ này';
 
     return (
       <div className="space-y-6">
@@ -470,9 +565,16 @@ export default function PayrollPage() {
             <h2 className="text-xl font-bold text-slate-900 font-display">
               Phiếu Lương Điện Tử Cá Nhân
             </h2>
-            <span className="text-xs font-bold px-3 py-0.5 rounded-full border flex items-center gap-1 bg-emerald-50 text-emerald-700 border-emerald-200">
+            <span
+              data-testid="personal-payslip-status-badge"
+              className={`text-xs font-bold px-3 py-0.5 rounded-full border flex items-center gap-1 ${
+                slipStatus === 'DA_CHUYEN_KHOAN' || slipStatus === 'DA_CHOT'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-amber-50 text-amber-800 border-amber-200'
+              }`}
+            >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              Đã Quyết Toán & Chuyển Khoản
+              {personalStatusLabel}
             </span>
           </div>
 
@@ -566,18 +668,18 @@ export default function PayrollPage() {
                 {currentRole?.title} - {currentRole?.department}
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Kỳ chi trả: <strong className="text-slate-700">{selectedPeriod}</strong> • Trạng thái: <strong className="text-emerald-600">Đã chi trả chuyển khoản VCB</strong>
+                Kỳ chi trả: <strong className="text-slate-700">{selectedPeriod}</strong> • Trạng thái: <strong className="text-emerald-600">{personalStatusSubtext}</strong>
               </p>
             </div>
           </div>
 
           <div className="bg-gradient-to-br from-blue-50 to-indigo-50/50 p-4 rounded-xl border border-blue-100 flex flex-col items-start md:items-end">
-            <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">Thực nhận chuyển khoản</span>
+            <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">Thực nhận (Net)</span>
             <div className="text-2xl md:text-3xl font-bold font-mono text-blue-700 mt-0.5">
               {showNumbers ? `${netSalaryNum.toLocaleString('vi-VN')} ₫` : '•••••••• ₫'}
             </div>
             <span className="text-[11px] text-slate-500 font-medium flex items-center gap-1 mt-1">
-              <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" /> Đã quyết toán vào tài khoản
+              <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" /> {personalStatusLabel}
             </span>
           </div>
         </div>
@@ -785,18 +887,18 @@ export default function PayrollPage() {
                       ? 'bg-rose-50 text-rose-700 border-rose-200'
                       : !isPeriodExists
                       ? 'bg-amber-50 text-amber-800 border-amber-200'
-                      : isCeoApproved && isPeriodDataReady
+                      : isPeriodLocked
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       : 'bg-blue-50 text-blue-700 border-blue-200'
                   }`}
                 >
-                  {isCeoApproved && isPeriodDataReady ? <Check className="w-3 h-3" /> : null}
+                  {isPeriodLocked ? <Check className="w-3 h-3" /> : null}
                   {payrollStatus}
                 </span>
               </div>
             </div>
 
-            {/* Tailored Buttons for CEO vs HRD */}
+            {/* Unified Operational Controls for HR Director & CEO (R25: No fake approval buttons) */}
             <div className="flex items-center gap-2 flex-wrap shrink-0">
               {/* Period selector */}
               <select
@@ -812,122 +914,94 @@ export default function PayrollPage() {
                 ))}
               </select>
 
-              {isCeo ? (
-                /* CEO Actions */
-                <>
-                  <button
-                    type="button"
-                    data-testid="ceo-approve-payroll-btn"
-                    disabled={periodLoading || calculatingPeriod}
-                    onClick={handleCeoApprove}
-                    className={`text-xs font-bold px-4 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${isCeoApproved && isPeriodDataReady
-                        ? 'bg-emerald-600 text-white shadow-emerald-500/20'
-                        : 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-500/20'
-                      }`}
-                  >
-                    <Crown className="w-4 h-4" />
-                    <span>{isCeoApproved && isPeriodDataReady ? 'Đã phê duyệt chi trả' : 'Phê duyệt chi trả toàn công ty'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-bank-transfer-modal-btn"
-                    disabled={!canActOnPeriod}
-                    onClick={() => {
-                      if (!canActOnPeriod || !currentPeriodObj?.id) return;
-                      openModal('modal7B', {
-                        periodId: currentPeriodObj.id,
-                        periodCode: currentPeriodCode,
-                        expectedTotal: loadedExpectedTotal,
-                        slips: periodPayslips,
-                        employees,
-                        totalNet,
-                        period: selectedPeriod,
-                      });
-                    }}
-                    className="bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <span>Xuất file Ngân hàng VCB</span>
-                  </button>
-                </>
-              ) : (
-                /* HR Director Actions */
-                <>
-                  <button
-                    type="button"
-                    onClick={() => openModal('modal5B')}
-                    className="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-bold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
-                    title="Rà soát đối soát chi tiết bảng chấm công 30 ngày của nhân sự toàn công ty"
-                  >
-                    <CalendarDays className="w-4 h-4 text-indigo-600" />
-                    <span>Bảng Công Tháng (Đối soát)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-anomalies-modal-btn"
-                    disabled={!canActOnPeriod}
-                    onClick={() => {
-                      if (!canActOnPeriod || !currentPeriodObj?.id) return;
-                      openModal('modal7A', {
-                        periodId: currentPeriodObj.id,
-                        periodName: selectedPeriod,
-                        anomalies: safeAnomalies,
-                      });
-                    }}
-                    className={`${safeAnomalies.length > 0 ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800' : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-800'} disabled:opacity-50 disabled:cursor-not-allowed border text-xs font-bold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0`}
-                  >
-                    {safeAnomalies.length > 0 ? <AlertTriangle className="w-4 h-4 text-amber-600" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
-                    <span>{safeAnomalies.length > 0 ? `Đối soát (${safeAnomalies.length} bất thường)` : 'Đối soát hợp lệ'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-bank-transfer-modal-btn"
-                    disabled={!canActOnPeriod}
-                    onClick={() => {
-                      if (!canActOnPeriod || !currentPeriodObj?.id) return;
-                      openModal('modal7B', {
-                        periodId: currentPeriodObj.id,
-                        periodCode: currentPeriodCode,
-                        expectedTotal: loadedExpectedTotal,
-                        slips: periodPayslips,
-                        employees,
-                        totalNet,
-                        period: selectedPeriod,
-                      });
-                    }}
-                    className="bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <span>Xuất file Ngân hàng VCB</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-payroll-lock-modal-btn"
-                    disabled={!canActOnPeriod || isPeriodLocked}
-                    onClick={() => {
-                      if (!canActOnPeriod || !currentPeriodObj?.id || isPeriodLocked) return;
-                      openModal('modal7C', {
-                        periodId: currentPeriodObj.id,
-                        periodCode: currentPeriodCode,
-                        slips: periodPayslips,
-                        employees,
-                        totalNet,
-                        period: selectedPeriod,
-                        employeesCount: periodPayslips.length,
-                        anomalies: safeAnomalies,
-                      });
-                    }}
-                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shrink-0"
-                  >
-                    <Lock className="w-4 h-4" />
-                    <span>Chốt sổ và Khóa kỳ lương</span>
-                  </button>
-                </>
+              {isPeriodExists && !isPeriodLocked && (
+                <button
+                  type="button"
+                  data-testid="recalculate-payroll-btn"
+                  disabled={periodLoading || calculatingPeriod}
+                  onClick={handleCalculateSelectedPeriod}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shrink-0"
+                  title="Tính lại bảng lương kỳ dự thảo từ dữ liệu chấm công, nghỉ phép, nhân sự và chính sách mới nhất"
+                >
+                  <RefreshCw className={`w-4 h-4 ${calculatingPeriod ? 'animate-spin' : ''}`} />
+                  <span>{calculatingPeriod ? 'Đang tính lại...' : 'Tính lại bảng lương (Dự thảo)'}</span>
+                </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => openModal('modal5B')}
+                className="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-bold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                title="Rà soát đối soát chi tiết bảng chấm công 30 ngày của nhân sự toàn công ty"
+              >
+                <CalendarDays className="w-4 h-4 text-indigo-600" />
+                <span>Bảng Công Tháng (Đối soát)</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="open-anomalies-modal-btn"
+                disabled={!canActOnPeriod}
+                onClick={() => {
+                  if (!canActOnPeriod || !currentPeriodObj?.id) return;
+                  openModal('modal7A', {
+                    periodId: currentPeriodObj.id,
+                    periodName: selectedPeriod,
+                    anomalies: safeAnomalies,
+                  });
+                }}
+                className={`${safeAnomalies.length > 0 ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800' : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-800'} disabled:opacity-50 disabled:cursor-not-allowed border text-xs font-bold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0`}
+              >
+                {safeAnomalies.length > 0 ? <AlertTriangle className="w-4 h-4 text-amber-600" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
+                <span>{safeAnomalies.length > 0 ? `Đối soát (${safeAnomalies.length} bất thường)` : 'Đối soát hợp lệ'}</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="open-bank-transfer-modal-btn"
+                disabled={!canActOnPeriod}
+                onClick={() => {
+                  if (!canActOnPeriod || !currentPeriodObj?.id) return;
+                  openModal('modal7B', {
+                    periodId: currentPeriodObj.id,
+                    periodCode: currentPeriodCode,
+                    expectedTotal: loadedExpectedTotal,
+                    expectedSnapshotToken: loadedSnapshotToken,
+                    expectedTotalNet: totalNet,
+                    slips: periodPayslips,
+                    employees,
+                    totalNet,
+                    period: selectedPeriod,
+                  });
+                }}
+                className="bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                <span>Xuất file Ngân hàng VCB</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="open-payroll-lock-modal-btn"
+                disabled={!canActOnPeriod || isPeriodLocked}
+                onClick={() => {
+                  if (!canActOnPeriod || !currentPeriodObj?.id || isPeriodLocked) return;
+                  openModal('modal7C', {
+                    periodId: currentPeriodObj.id,
+                    periodCode: currentPeriodCode,
+                    slips: periodPayslips,
+                    employees,
+                    totalNet,
+                    period: selectedPeriod,
+                    employeesCount: periodPayslips.length,
+                    anomalies: safeAnomalies,
+                  });
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shrink-0"
+              >
+                <Lock className="w-4 h-4" />
+                <span>Chốt sổ và Khóa kỳ lương</span>
+              </button>
 
               <button
                 type="button"
@@ -941,6 +1015,22 @@ export default function PayrollPage() {
               </button>
             </div>
           </div>
+
+          {reconcileSuccessBanner && (
+            <div
+              data-testid="payroll-reconcile-success-banner"
+              className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 text-xs font-semibold text-emerald-800 flex items-center justify-between gap-3"
+            >
+              <span>✓ {reconcileSuccessBanner}</span>
+              <button
+                type="button"
+                onClick={() => setReconcileSuccessBanner('')}
+                className="text-emerald-700 hover:text-emerald-900 font-bold"
+              >
+                Đóng
+              </button>
+            </div>
+          )}
 
           {/* R20 Banners for Uncreated / Loading / Error / Export Error states */}
           {periodLoading && (
@@ -1391,6 +1481,192 @@ export default function PayrollPage() {
             </div>
           </div>
         </>
+      )}
+
+      {/* R24: Adjustment Source Conflict Reconciliation Modal */}
+      {conflictModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          data-testid="adjustment-conflict-modal"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-amber-50/60">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 border border-amber-200 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-slate-900 font-display">
+                      Đối Soát Xung Đột Điều Chỉnh Thủ Công & Dữ Liệu Nguồn
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-200 text-amber-900 uppercase">
+                      {conflictItems.length} xung đột cần quyết định
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Kỳ lương <strong>{selectedPeriod} ({currentPeriodCode})</strong> có dữ liệu nguồn thay đổi sau khi HR chỉnh tay. Vui lòng chọn rõ phương án xử lý cho từng mục (không tự động chọn mặc định).
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelConflictModal}
+                disabled={conflictSubmitting}
+                className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {conflictStaleNotice && (
+                <div
+                  data-testid="conflict-stale-notice"
+                  className="p-3.5 bg-amber-100 border border-amber-300 rounded-xl text-amber-900 text-xs font-semibold flex items-start gap-2.5"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>{conflictStaleNotice}</span>
+                </div>
+              )}
+
+              {conflictModalError && (
+                <div
+                  data-testid="conflict-modal-error"
+                  className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold flex items-start gap-2.5"
+                >
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{conflictModalError}</span>
+                </div>
+              )}
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase">
+                      <th className="py-3 px-3.5">Nhân viên</th>
+                      <th className="py-3 px-3.5">Trường dữ liệu</th>
+                      <th className="py-3 px-3.5">Nguồn lần tính trước</th>
+                      <th className="py-3 px-3.5">Nguồn hiện tại (Mới)</th>
+                      <th className="py-3 px-3.5">Giá trị HR chỉnh tay</th>
+                      <th className="py-3 px-3.5 text-right">Quyết định đối soát</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {conflictItems.map((item) => {
+                      const key = getConflictItemKey(item);
+                      const selectedAction = conflictDecisions[key] || null;
+                      const fieldLabel = item.fieldLabel || ADJUSTMENT_FIELD_LABELS[item.field] || item.field;
+                      return (
+                        <tr
+                          key={key}
+                          data-testid="conflict-item-row"
+                          data-conflict-key={key}
+                          className="hover:bg-slate-50/80 transition"
+                        >
+                          <td className="py-3 px-3.5">
+                            <div className="font-bold text-slate-900">{item.employeeName || item.employeeId}</div>
+                            <div className="font-mono text-[11px] text-slate-500">{item.employeeId}</div>
+                          </td>
+                          <td className="py-3 px-3.5">
+                            <div className="font-semibold text-slate-800">{fieldLabel}</div>
+                            <div className="font-mono text-[10px] text-slate-400">{item.field}</div>
+                          </td>
+                          <td
+                            className="py-3 px-3.5 font-mono text-slate-600"
+                            data-testid={`conflict-prev-source-${item.employeeId}-${item.field}`}
+                          >
+                            {formatConflictFieldValue(item.field, item.previousSourceValue)}
+                          </td>
+                          <td
+                            className="py-3 px-3.5 font-mono font-bold text-blue-700 bg-blue-50/40"
+                            data-testid={`conflict-curr-source-${item.employeeId}-${item.field}`}
+                          >
+                            {formatConflictFieldValue(item.field, item.currentSourceValue)}
+                          </td>
+                          <td
+                            className="py-3 px-3.5 font-mono font-bold text-indigo-700 bg-indigo-50/40"
+                            data-testid={`conflict-manual-val-${item.employeeId}-${item.field}`}
+                          >
+                            {formatConflictFieldValue(item.field, item.manualValue)}
+                          </td>
+                          <td className="py-3 px-3.5 text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                data-testid={`conflict-keep-manual-${item.employeeId}-${item.field}`}
+                                disabled={conflictSubmitting}
+                                onClick={() => handleSelectConflictDecision(item.employeeId, item.field, 'KEEP_MANUAL')}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                                  selectedAction === 'KEEP_MANUAL'
+                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-200'
+                                }`}
+                              >
+                                Giữ điều chỉnh
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`conflict-use-source-${item.employeeId}-${item.field}`}
+                                disabled={conflictSubmitting}
+                                onClick={() => handleSelectConflictDecision(item.employeeId, item.field, 'USE_SOURCE')}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                                  selectedAction === 'USE_SOURCE'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-200'
+                                }`}
+                              >
+                                Dùng dữ liệu nguồn
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-4">
+              <div className="text-xs text-slate-600">
+                Đã chọn:{' '}
+                <strong className="text-slate-900">
+                  {conflictItems.filter((item) => {
+                    const act = conflictDecisions[getConflictItemKey(item)];
+                    return act === 'KEEP_MANUAL' || act === 'USE_SOURCE';
+                  }).length}
+                  /{conflictItems.length}
+                </strong>{' '}
+                xung đột
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  data-testid="conflict-cancel-btn"
+                  disabled={conflictSubmitting}
+                  onClick={handleCancelConflictModal}
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-semibold text-xs transition cursor-pointer"
+                >
+                  Hủy bỏ (Không ghi dữ liệu)
+                </button>
+                <button
+                  type="button"
+                  data-testid="conflict-submit-btn"
+                  disabled={conflictSubmitting}
+                  onClick={handleSubmitConflictResolutions}
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  {conflictSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  <span>Xác nhận đối soát & Tính lại bảng lương</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
