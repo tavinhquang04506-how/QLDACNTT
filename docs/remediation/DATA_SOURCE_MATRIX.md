@@ -92,3 +92,21 @@
 | Màn hình / Thành phần | Trường / Action | Component (Verified Path) | Hiện trạng AS-IS (API / Response / Service / Lỗi hiện tại) | Mục tiêu TO-BE (API / DB Table / Scope / Empty / Error / Invalidation / Test) |
 |---|---|---|---|---|
 | **SettingsPage** | Xem & Lưu cấu hình chấm công, GPS, OT, BHXH, Thuế TNCN | `FrontEnd/src/pages/SettingsPage.jsx:24-41` | - **Hiện trạng AS-IS (`F13`)**: Khởi tạo state tĩnh trong component (`standardDays: 22`, `gpsRadius: 150`, `otRateWeekday: 150`, v.v.); khi bấm Lưu (`handleSave` dòng 33) chỉ đặt `setSaved(true)` và chạy `confetti`, **không gọi bất kỳ API nào** (backend hiện chưa có module `/api/settings`). Reload trang mất toàn bộ thay đổi. | - **TO-BE (`F13`, `F26`)**: Tạo endpoint `GET /api/settings` và `PUT /api/settings` (bảo vệ bằng `authenticate` + `requirePermission`, có validation, audit log, phiên bản/ngày hiệu lực) đọc/ghi bảng `system_settings` (không lưu secret vào settings public) và để các service nghiệp vụ đọc cấu hình này (`G2`, `G3`). |
+
+
+---
+
+## 11. Trạng thái Nghiệm thu Sau Khắc phục (G1 → G5 Verification Summary)
+
+| Phân hệ | Mã vấn đề liên quan | Trạng thái sau G5 | Bằng chứng Kiểm thử & Đối chiếu Liên tầng (`DB -> API -> UI`) |
+|---|---|---|---|
+| **1. Auth & Session (`AuthContext`, `/api/auth`)** | `F10`, `F21`, `F29` | **VERIFIED (PASS)** | `Backend/tests/api/g1-remediation.test.js`, `FrontEnd/src/context/AuthContext.jsx`, `FrontEnd/src/services/api.js` (`752f879`) |
+| **2. Dashboard & PDF Report (`DashboardPage`, `PdfReportModal`)** | `F01`, `F14`, `F30` | **VERIFIED (PASS)** | `Backend/tests/api/g1-remediation.test.js` (cache isolation), `FrontEnd/src/pages/DashboardPage.jsx`, `FrontEnd/src/modals/dashboard/PdfReportModal.jsx`, `02-hrd-dashboard.png` (`65e812e`) |
+| **3. Directory, Profile 360 & Lifecycle (`DirectoryPage`)** | `F11`, `F15`, `F20`, `F32` | **VERIFIED (PASS)** | `Backend/tests/api/g2-settings-profile.test.js` (PII redaction), `FrontEnd/tests/dataAdapters.test.js`, `Backend/tests/api/employees-lifecycle.test.js` (`752f879`, `65e812e`) |
+| **4. Attendance, Kiosk & Appeals (`AttendancePage`)** | `F02`, `F03`, `F04`, `F05`, `F06`, `F07`, `F28` | **VERIFIED (PASS)** | `Backend/tests/unit/gpsValidator.test.js`, `Backend/tests/api/g1-remediation.test.js`, `Backend/tests/api/g3-attendance-payroll.test.js` (`752f879`, `09c1e98`) |
+| **5. Leave Management (`LeaveManagementPage`, `CreateLeaveRequestModal`)** | `F11`, `F16`, `F17` | **VERIFIED (PASS)** | `Backend/src/utils/dates.js`, `FrontEnd/src/modals/leave/CreateLeaveRequestModal.jsx`, `04-employee-portal.png` (`09c1e98`) |
+| **6. Payroll, Payslips & Bank Transfer (`PayrollPage`)** | `F09`, `F11`, `F12`, `F18` | **VERIFIED (PASS)** | `Backend/tests/api/g3-attendance-payroll.test.js`, `Backend/tests/api/g5-cross-layer-reconciliation.test.js`, `FrontEnd/src/modals/portal/PayslipPdfModal.jsx`, `FrontEnd/src/modals/payroll/BankTransferModal.jsx` (`65e812e`, `09c1e98`) |
+| **7. Projects, Tasks & Squad Chat (`ProjectsTasksPage`, `SquadChatDrawer`)** | `F08`, `F11`, `F19`, `F31` | **VERIFIED (PASS)** | `Backend/tests/api/g1-remediation.test.js`, `Backend/tests/api/squads.test.js`, `FrontEnd/nginx.conf`, `FrontEnd/vite.config.js` (`752f879`, `65e812e`) |
+| **8. HR Analytics (`AiAnalyticsPage`, `/api/analytics/*`)** | `F26` | **VERIFIED (PASS)** | `Backend/tests/api/analytics.test.js`, `Backend/tests/api/g4-ai-copilot-eval.test.js` (`Cases 28–30`) (`a2e8828`) |
+| **9. Grounded AI Copilot (`AiCopilotDrawerModal`, `/api/ai/*`)** | `F22`, `F23`, `F24`, `F25`, `F26` | **VERIFIED (PASS)** | `Backend/tests/unit/aiCopilot.test.js`, `Backend/tests/api/g4-ai-copilot-eval.test.js` (`32 / 32 PASS`), `Backend/tests/api/g5-cross-layer-reconciliation.test.js` (`a2e8828`) |
+| **10. System Settings (`SettingsPage`, `/api/settings`)** | `F13`, `F26` | **VERIFIED (PASS)** | `Backend/tests/api/g2-settings-profile.test.js`, `Backend/tests/api/g5-cross-layer-reconciliation.test.js`, `03-settings-persistence.png` (`65e812e`) |
