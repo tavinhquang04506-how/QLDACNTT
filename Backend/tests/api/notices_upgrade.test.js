@@ -1,11 +1,14 @@
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const noticesService = require('../../src/modules/notices/service');
 const notificationsService = require('../../src/modules/notifications/service');
 const db = require('../../src/config/db');
 
+after(async () => {
+  await db.pool.end();
+});
+
 test('Notices Upgrade: attachments column exists and getReaders works', async () => {
-  // Query real CEO user from database
   const ceoUser = (await db.query("SELECT u.id AS user_id, u.role_code, u.employee_id, u.email FROM users u WHERE u.role_code = 'CEO' LIMIT 1")).rows[0];
   assert.ok(ceoUser, 'CEO user must exist in users table');
 
@@ -68,6 +71,4 @@ test('Notices Upgrade: attachments column exists and getReaders works', async ()
 
   // 5. Cleanup test notice
   await noticesService.remove(actor, sampleNotice.id, { ip: '127.0.0.1' });
-  console.log('✅ Notices upgrade & read receipts backend tests passed 100%!');
-  process.exit(0);
 });

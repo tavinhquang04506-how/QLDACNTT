@@ -20,7 +20,14 @@ import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
   const { currentRole } = useAuth();
-  const defaultHome = currentRole?.key === 'EMPLOYEE' ? '/portal' : '/dashboard';
+  const defaultHome =
+    currentRole?.key === 'EMPLOYEE'
+      ? '/portal'
+      : currentRole?.key === 'ADMIN'
+      ? '/directory'
+      : currentRole?.key === 'KIOSK'
+      ? '/kiosk'
+      : '/dashboard';
 
   return (
     <ErrorBoundary>

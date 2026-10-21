@@ -1,12 +1,12 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { AVATAR_SEEDS } from '../utils/avatarUtils';
 import authService from '../services/authService';
 
-export const ROLES = {
+export const ROLE_META = {
   CEO: {
     key: 'CEO',
     id: 'NV-0001',
-    name: 'Lê Vũ Ngọc Duy',
+    name: 'Tổng Giám Đốc',
     title: 'Tổng Giám Đốc (CEO)',
     department: 'Ban Điều Hành và Lãnh Đạo',
     level: 'Cấp 1',
@@ -20,11 +20,12 @@ export const ROLES = {
     canAccessPayroll: true,
     canAccessAi: true,
     canManageAll: true,
+    canManageUsers: true,
   },
   HR_DIRECTOR: {
     key: 'HR_DIRECTOR',
     id: 'NV-0002',
-    name: 'Trần Mai Hương',
+    name: 'Giám Đốc Nhân Sự',
     title: 'Giám Đốc Nhân Sự (HRD)',
     department: 'Khối Nhân sự và Vận hành',
     level: 'Cấp 2A',
@@ -38,13 +39,14 @@ export const ROLES = {
     canAccessPayroll: true,
     canAccessAi: true,
     canManageAll: true,
+    canManageUsers: true,
   },
   LINE_MANAGER: {
     key: 'LINE_MANAGER',
     id: 'NV-1000',
-    name: 'Vũ Đình Khang',
-    title: 'Trưởng phòng Kỹ thuật Phần mềm',
-    department: 'Phòng Phát triển Phần mềm',
+    name: 'Trưởng Phòng Ban',
+    title: 'Trưởng Phòng Ban (Line Manager)',
+    department: 'Phòng Ban Chuyên Môn',
     level: 'Cấp 2B',
     levelLabel: 'Cấp 2B (Trưởng Phòng Ban / Lead)',
     roleBadge: 'Cấp 2B',
@@ -53,27 +55,48 @@ export const ROLES = {
     avatar: AVATAR_SEEDS.LEAD,
     isStaff: false,
     canApproveLeave: true,
-    canAccessPayroll: false, // Bị giới hạn không xem full bảng lương công ty
+    canAccessPayroll: false,
     canAccessAi: true,
     canManageAll: false,
+    canManageUsers: false,
   },
   EMPLOYEE: {
     key: 'EMPLOYEE',
     id: 'NV-0842',
-    name: 'Phạm Minh Quân',
-    title: 'Kỹ sư Phần mềm',
-    department: 'Phòng Phát triển Phần mềm',
+    name: 'Nhân Viên',
+    title: 'Nhân Viên Chính Thức',
+    department: 'Phòng Ban Chuyên Môn',
     level: 'Cấp 3',
     levelLabel: 'Cấp 3 (Nhân Viên Tự Phục Vụ / ESS)',
     roleBadge: 'Cấp 3',
     roleColor: 'bg-amber-100 text-amber-800 border-amber-200',
     email: 'employee@fwbnexus.vn',
     avatar: AVATAR_SEEDS.EMPLOYEE,
-    isStaff: true, // Directs to employee portal
+    isStaff: true,
     canApproveLeave: false,
     canAccessPayroll: false,
     canAccessAi: false,
     canManageAll: false,
+    canManageUsers: false,
+  },
+  ADMIN: {
+    key: 'ADMIN',
+    id: 'ADMIN-01',
+    name: 'Quản Trị Hệ Thống',
+    title: 'Quản Trị Viên Hệ Thống (System Admin)',
+    department: 'Khối Hạ Tầng & Bảo Mật CNTT',
+    level: 'QTHT',
+    levelLabel: 'Quản Trị Hệ Thống (ADMIN)',
+    roleBadge: 'ADMIN',
+    roleColor: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+    email: 'admin@fwbnexus.vn',
+    avatar: AVATAR_SEEDS.LEAD,
+    isStaff: false,
+    canApproveLeave: false,
+    canAccessPayroll: false,
+    canAccessAi: false,
+    canManageAll: false,
+    canManageUsers: true,
   },
   KIOSK: {
     key: 'KIOSK',
@@ -92,13 +115,51 @@ export const ROLES = {
     canAccessPayroll: false,
     canAccessAi: false,
     canManageAll: false,
+    canManageUsers: false,
   },
 };
 
-// Aliases for backwards compatibility
-ROLES.ADMIN_CEO = ROLES.CEO;
-ROLES.hr_director = ROLES.HR_DIRECTOR;
-ROLES.employee = ROLES.EMPLOYEE;
+export const ROLES = {
+  ...ROLE_META,
+  ADMIN_CEO: ROLE_META.CEO,
+  hr_director: ROLE_META.HR_DIRECTOR,
+  employee: ROLE_META.EMPLOYEE,
+};
+
+function resolveRoleMeta(roleKey) {
+  const raw = String(roleKey || '').trim();
+  const upper = raw.toUpperCase();
+  if (ROLE_META[raw]) return ROLE_META[raw];
+  if (ROLE_META[upper]) return ROLE_META[upper];
+  if (ROLES[raw]) return ROLES[raw];
+  if (ROLES[upper]) return ROLES[upper];
+  return ROLE_META.EMPLOYEE;
+}
+
+export function buildCurrentRole(user, fallbackRoleKey) {
+  const effectiveKey = user?.roleCode || user?.role || fallbackRoleKey || 'EMPLOYEE';
+  const meta = resolveRoleMeta(effectiveKey);
+  if (!user) return meta;
+
+  return {
+    ...meta,
+    key: meta.key,
+    userId: user.id || user.userId || null,
+    employeeId: user.employeeId || null,
+    id: user.employeeId || user.id || meta.id,
+    name: user.fullName || user.name || user.email || meta.name,
+    title: user.jobTitle || user.positionName || meta.title,
+    department: user.departmentName || user.department || meta.department,
+    departmentId: user.departmentId || null,
+    email: user.email || meta.email,
+    avatar: user.avatarUrl || user.avatar || meta.avatar,
+    phoneNumber: user.phoneNumber || null,
+    kpiScore: user.kpiScore ?? null,
+    attendanceRate: user.attendanceRate ?? null,
+    leaveBalance: user.leaveBalance ?? null,
+    status: user.status || null,
+  };
+}
 
 const AuthContext = createContext();
 
@@ -113,64 +174,114 @@ export function AuthProvider({ children }) {
     }
   });
 
-  const isAuthenticated = Boolean(token);
-
-  // Khởi tạo role từ localStorage
-  const [currentRole, setCurrentRole] = useState(() => {
+  const [roleKey, setRoleKey] = useState(() => {
     try {
-      const savedKey = localStorage.getItem('nexus_role_key');
-      if (savedKey) {
-        const upper = savedKey.toUpperCase();
-        if (ROLES[savedKey]) return ROLES[savedKey];
-        if (ROLES[upper]) return ROLES[upper];
-      }
       const savedUser = localStorage.getItem('nexus_user');
       if (savedUser) {
         const parsed = JSON.parse(savedUser);
         const code = (parsed.roleCode || parsed.role || '').toUpperCase();
-        if (ROLES[code]) return ROLES[code];
+        if (code && ROLE_META[code]) return code;
       }
-    } catch (e) {}
-    return ROLES.EMPLOYEE;
+      const savedKey = localStorage.getItem('nexus_role_key');
+      if (savedKey) {
+        const meta = resolveRoleMeta(savedKey);
+        return meta.key;
+      }
+    } catch {}
+    return 'EMPLOYEE';
   });
 
-  const switchRole = (roleKey) => {
-    const upperKey = (roleKey || '').toUpperCase();
-    let target = null;
-    if (ROLES[roleKey]) {
-      target = ROLES[roleKey];
-    } else if (ROLES[upperKey]) {
-      target = ROLES[upperKey];
-    } else if (roleKey === 'employee') {
-      target = ROLES.EMPLOYEE;
-    } else if (roleKey === 'hr_director') {
-      target = ROLES.HR_DIRECTOR;
-    }
+  const isAuthenticated = Boolean(token);
 
-    if (target) {
-      setCurrentRole(target);
-      try {
-        localStorage.setItem('nexus_role_key', target.key);
-      } catch (e) {}
+  const refreshProfile = useCallback(async () => {
+    const activeToken = localStorage.getItem('nexus_token');
+    if (!activeToken) return null;
+    try {
+      const res = await authService.getProfile();
+      if (res?.success && res.user) {
+        setUser(res.user);
+        const nextRoleKey = resolveRoleMeta(res.user.roleCode).key;
+        setRoleKey(nextRoleKey);
+        localStorage.setItem('nexus_user', JSON.stringify(res.user));
+        localStorage.setItem('nexus_role_key', nextRoleKey);
+        return res.user;
+      }
+    } catch (err) {
+      if (err?.status === 401) {
+        setToken(null);
+        setUser(null);
+      }
     }
-  };
+    return null;
+  }, []);
 
-  const login = (authToken, authUser) => {
+  useEffect(() => {
+    if (token) {
+      refreshProfile();
+    }
+  }, [token, refreshProfile]);
+
+  const currentRole = useMemo(() => buildCurrentRole(user, roleKey), [user, roleKey]);
+
+  const switchRole = useCallback(
+    (nextKey) => {
+      // Backend authorization always uses the authenticated JWT actor (`user.roleCode`).
+      // If authenticated, keep role locked to the authenticated user's roleCode.
+      if (user?.roleCode) {
+        const lockedMeta = resolveRoleMeta(user.roleCode);
+        setRoleKey(lockedMeta.key);
+        try {
+          localStorage.setItem('nexus_role_key', lockedMeta.key);
+        } catch {}
+        return;
+      }
+      const target = resolveRoleMeta(nextKey);
+      if (target) {
+        setRoleKey(target.key);
+        try {
+          localStorage.setItem('nexus_role_key', target.key);
+        } catch {}
+      }
+    },
+    [user]
+  );
+
+  const login = useCallback((authToken, authUser) => {
     setToken(authToken);
-    setUser(authUser);
-    if (authUser?.roleCode) {
-      switchRole(authUser.roleCode);
+    setUser(authUser || null);
+    if (authUser) {
+      const meta = resolveRoleMeta(authUser.roleCode || authUser.role);
+      setRoleKey(meta.key);
+      try {
+        localStorage.setItem('nexus_user', JSON.stringify(authUser));
+        localStorage.setItem('nexus_role_key', meta.key);
+      } catch {}
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     await authService.logout();
     setToken(null);
     setUser(null);
-  };
+    setRoleKey('EMPLOYEE');
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ token, user, currentRole, switchRole, ROLES, isAuthenticated, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        token,
+        user,
+        currentRole,
+        roleMeta: ROLE_META[currentRole.key] || ROLE_META.EMPLOYEE,
+        ROLE_META,
+        ROLES,
+        switchRole,
+        isAuthenticated,
+        login,
+        logout,
+        refreshProfile,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

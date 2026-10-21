@@ -23,6 +23,8 @@ export default function Modal4D_Offboarding({ isOpen, onClose, payload }) {
   const [colleagues, setColleagues] = useState([]);
   const [successor, setSuccessor] = useState('');
   const [completed, setCompleted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     if (isOpen) {
@@ -45,26 +47,32 @@ export default function Modal4D_Offboarding({ isOpen, onClose, payload }) {
   const allChecked = Object.values(checks).every(Boolean);
 
   const handleConfirm = async () => {
-    setCompleted(true);
-    try {
-      if (emp.id) {
-        await api.post(`/employees/${emp.id}/offboard`, {
-          terminationDate: new Date().toISOString().split('T')[0],
-          reason: 'Hoàn tất thủ tục bàn giao tài sản và thanh lý hợp đồng lao động',
-        });
-      }
-    } catch (err) {
-      console.warn('Backend offboard notice:', err);
+    if (!emp?.id) {
+      setErrorMsg('Không tìm thấy mã nhân viên cần thôi việc');
+      return;
     }
-    // Dispatch event to remove employee from directory list
-    window.dispatchEvent(new CustomEvent('nexus:employee-deleted', { detail: { id: emp.id } }));
+    setErrorMsg('');
+    setSubmitting(true);
     try {
-      confetti({ particleCount: 40, spread: 50, origin: { y: 0.6 } });
-    } catch (e) {}
-    setTimeout(() => {
-      setCompleted(false);
-      onClose();
-    }, 1200);
+      await api.post(`/employees/${emp.id}/offboard`, {
+        terminationDate: new Date().toISOString().split('T')[0],
+        reason: 'Hoàn tất thủ tục bàn giao tài sản và thanh lý hợp đồng lao động',
+        note: successor ? `Bàn giao công việc cho ${successor}` : undefined,
+      });
+      setCompleted(true);
+      window.dispatchEvent(new CustomEvent('nexus:employee-deleted', { detail: { id: emp.id } }));
+      try {
+        confetti({ particleCount: 40, spread: 50, origin: { y: 0.6 } });
+      } catch {}
+      setTimeout(() => {
+        setCompleted(false);
+        onClose();
+      }, 1200);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Không thể thực hiện thủ tục thôi việc cho nhân sự này');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -82,6 +90,11 @@ export default function Modal4D_Offboarding({ isOpen, onClose, payload }) {
       maxWidth="max-w-2xl"
     >
       <div className="p-6 space-y-4 text-xs">
+        {errorMsg && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold">
+            {errorMsg}
+          </div>
+        )}
         {/* Warning Callout */}
         <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3">
           <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
@@ -199,7 +212,7 @@ export default function Modal4D_Offboarding({ isOpen, onClose, payload }) {
 
           <button
             type="button"
-            disabled={!allChecked || completed}
+            disabled={!allChecked || completed || submitting}
             onClick={handleConfirm}
             className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold shadow-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
           >
@@ -211,7 +224,7 @@ export default function Modal4D_Offboarding({ isOpen, onClose, payload }) {
             ) : (
               <>
                 <UserX className="w-4 h-4" />
-                <span>Xác nhận hoàn tất bàn giao và Thôi việc</span>
+                <span>{submitting ? 'Đang xử lý...' : 'Xác nhận hoàn tất bàn giao và Thôi việc'}</span>
               </>
             )}
           </button>

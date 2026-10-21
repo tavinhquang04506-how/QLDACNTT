@@ -15,6 +15,19 @@ async function runMigrations({ pool, dir = DEFAULT_DIR, log = () => {} }) {
     : [];
   const { rows } = await pool.query('SELECT name FROM schema_migrations');
   const done = new Set(rows.map((r) => r.name));
+
+  // If 007_pip_workflow.sql is already recorded on an existing database whose schema was
+  // initialized with 001..006 baked in, backfill 001..006 in schema_migrations so forward
+  // migrations (008+) apply cleanly without re-creating existing tables.
+  if (done.has('007_pip_workflow.sql')) {
+    for (const file of files) {
+      if (file < '007_pip_workflow.sql' && !done.has(file)) {
+        await pool.query('INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING', [file]);
+        done.add(file);
+      }
+    }
+  }
+
   const applied = [];
 
   for (const file of files) {

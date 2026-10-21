@@ -73,53 +73,54 @@ export default function Modal4F_JobTitleManage({ isOpen, onClose }) {
   });
 
   const [filterLevel, setFilterLevel] = useState("all");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const handleAdd = async (e) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
+    setErrorMsg("");
 
-    const code = formData.code ? formData.code.toUpperCase().replace(/\s+/g, '') : `JOB-${Math.floor(100 + Math.random() * 900)}`;
+    const rawCode = formData.code ? formData.code.toUpperCase().replace(/[^A-Z0-9]/g, "") : `JOB${Math.floor(100 + Math.random() * 900)}`;
+    const code = rawCode.slice(0, 15);
+    if (code.length < 2) {
+      setErrorMsg("Mã chức danh phải gồm 2-15 ký tự chữ hoặc số (A-Z, 0-9)");
+      return;
+    }
+
     const lvlNum = formData.level.includes("Cấp 1") ? 10 : formData.level.includes("Cấp 2A") ? 8 : formData.level.includes("Cấp 2B") ? 6 : 3;
 
+    setSubmitting(true);
     try {
       await api.post('/positions', {
         code,
-        name: formData.title,
+        name: formData.title.trim(),
         level: lvlNum,
         description: formData.salaryRange || "Thỏa thuận theo năng lực",
       });
-      fetchJobTitles();
+      await fetchJobTitles();
+      setFormData({ title: "", code: "", level: "Cấp 3 - Nhân viên", salaryRange: "" });
+      try {
+        confetti({
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.6 }
+        });
+      } catch {}
     } catch (err) {
-      console.warn('API add position fallback:', err);
-      const newJob = {
-        id: `POS-${code}`,
-        title: formData.title,
-        code,
-        level: formData.level,
-        salaryRange: formData.salaryRange || "Thỏa thuận theo năng lực",
-        count: 0,
-      };
-      setJobTitles([newJob, ...jobTitles]);
+      setErrorMsg(err?.message || "Không thể thêm chức danh mới. Vui lòng kiểm tra mã chức danh hoặc quyền truy cập.");
+    } finally {
+      setSubmitting(false);
     }
-
-    setFormData({ title: "", code: "", level: "Cấp 3 - Nhân viên", salaryRange: "" });
-
-    try {
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.6 }
-      });
-    } catch (e) {}
   };
 
   const handleDelete = async (id) => {
+    setErrorMsg("");
     try {
       await api.delete(`/positions/${id}`);
-      setJobTitles(jobTitles.filter(j => j.id !== id));
+      await fetchJobTitles();
     } catch (err) {
-      console.warn('API delete position fallback:', err);
-      setJobTitles(jobTitles.filter(j => j.id !== id));
+      setErrorMsg(err?.message || "Không thể xóa chức danh này (có thể đang có nhân sự giữ chức danh).");
     }
   };
 
@@ -137,6 +138,11 @@ export default function Modal4F_JobTitleManage({ isOpen, onClose }) {
       maxWidth="max-w-4xl"
     >
       <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
+        {errorMsg && (
+          <div className="md:col-span-3 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 font-semibold">
+            {errorMsg}
+          </div>
+        )}
         {/* Add Job Title Form */}
         <div className="md:col-span-1 bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col gap-4">
           <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
