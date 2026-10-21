@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import {
+  normalizeServerSettingsBaseline,
+  canSubmitSettingsSave,
+  buildSettingsPatch,
+} from '../utils/settingsPatch';
 import { 
   Shield, 
   Clock, 
@@ -23,71 +28,80 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+
+  // R17: Separate load error vs save error, and require a valid server baseline before enabling edit/save.
+  // Never initialize form fields with sample/default policy numbers as if loaded from server.
+  const [hasLoadedBaseline, setHasLoadedBaseline] = useState(false);
+  const [serverBaseline, setServerBaseline] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Settings values (backed by /api/settings -> system_settings table)
   const [autoApproveOT, setAutoApproveOT] = useState(false);
-  const [lateGraceMinutes, setLateGraceMinutes] = useState(15);
-  const [maxOtPerMonth, setMaxOtPerMonth] = useState(40);
-  const [faceConfidenceThreshold, setFaceConfidenceThreshold] = useState(98);
-  const [gpsRadiusMeters, setGpsRadiusMeters] = useState(250);
-  const [officeLat, setOfficeLat] = useState(10.762622);
-  const [officeLng, setOfficeLng] = useState(106.660172);
-  const [officeName, setOfficeName] = useState('Tòa nhà NEXUS Tower');
-  const [personalIncomeTaxDeduction, setPersonalIncomeTaxDeduction] = useState(11000000);
-  const [dependentDeduction, setDependentDeduction] = useState(4400000);
-  const [defaultAllowances, setDefaultAllowances] = useState(1500000);
-  const [policyEffectiveFrom, setPolicyEffectiveFrom] = useState('2020-01');
+  const [lateGraceMinutes, setLateGraceMinutes] = useState('');
+  const [maxOtPerMonth, setMaxOtPerMonth] = useState('');
+  const [faceConfidenceThreshold, setFaceConfidenceThreshold] = useState('');
+  const [gpsRadiusMeters, setGpsRadiusMeters] = useState('');
+  const [officeLat, setOfficeLat] = useState('');
+  const [officeLng, setOfficeLng] = useState('');
+  const [officeName, setOfficeName] = useState('');
+  const [personalIncomeTaxDeduction, setPersonalIncomeTaxDeduction] = useState('');
+  const [dependentDeduction, setDependentDeduction] = useState('');
+  const [defaultAllowances, setDefaultAllowances] = useState('');
+  const [policyEffectiveFrom, setPolicyEffectiveFrom] = useState('');
 
   const canEditSettings = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const canSaveNow = canSubmitSettingsSave({
+    canEditSettings,
+    saving,
+    loading,
+    hasLoadedBaseline,
+    serverBaseline,
+    loadError,
+  });
+  const inputsEditable = canEditSettings && hasLoadedBaseline && !loading && !loadError;
+  const errorMsg = loadError || saveError;
+
+  const clearUnloadedForm = () => {
+    setAutoApproveOT(false);
+    setLateGraceMinutes('');
+    setMaxOtPerMonth('');
+    setFaceConfidenceThreshold('');
+    setGpsRadiusMeters('');
+    setOfficeLat('');
+    setOfficeLng('');
+    setOfficeName('');
+    setPersonalIncomeTaxDeduction('');
+    setDependentDeduction('');
+    setDefaultAllowances('');
+    setPolicyEffectiveFrom('');
+    setLastUpdated(null);
+  };
 
   const applyServerSettings = (d) => {
-    if (!d || typeof d !== 'object') return;
-    if (d.autoApproveOT !== undefined || d.auto_approve_ot !== undefined) {
-      setAutoApproveOT(Boolean(d.autoApproveOT ?? d.auto_approve_ot));
-    }
-    if (d.lateGraceMinutes !== undefined || d.late_grace_minutes !== undefined) {
-      setLateGraceMinutes(Number(d.lateGraceMinutes ?? d.late_grace_minutes));
-    }
-    if (d.maxOtPerMonth !== undefined || d.max_ot_per_month !== undefined) {
-      setMaxOtPerMonth(Number(d.maxOtPerMonth ?? d.max_ot_per_month));
-    }
-    if (d.faceConfidenceThreshold !== undefined || d.face_confidence_threshold !== undefined) {
-      setFaceConfidenceThreshold(Number(d.faceConfidenceThreshold ?? d.face_confidence_threshold));
-    }
-    if (d.gpsRadiusMeters !== undefined || d.gps_radius_meters !== undefined) {
-      setGpsRadiusMeters(Number(d.gpsRadiusMeters ?? d.gps_radius_meters));
-    }
-    if (d.officeLat !== undefined || d.office_lat !== undefined) {
-      setOfficeLat(Number(d.officeLat ?? d.office_lat));
-    }
-    if (d.officeLng !== undefined || d.office_lng !== undefined) {
-      setOfficeLng(Number(d.officeLng ?? d.office_lng));
-    }
-    if (d.officeName !== undefined || d.office_name !== undefined) {
-      setOfficeName(String(d.officeName ?? d.office_name));
-    }
-    if (d.personalIncomeTaxDeduction !== undefined || d.personal_income_tax_deduction !== undefined) {
-      setPersonalIncomeTaxDeduction(Number(d.personalIncomeTaxDeduction ?? d.personal_income_tax_deduction));
-    }
-    if (d.dependentDeduction !== undefined || d.dependent_deduction !== undefined) {
-      setDependentDeduction(Number(d.dependentDeduction ?? d.dependent_deduction));
-    }
-    if (d.defaultAllowances !== undefined || d.default_allowances !== undefined) {
-      setDefaultAllowances(Number(d.defaultAllowances ?? d.default_allowances));
-    }
-    if (d.policyEffectiveFrom !== undefined || d.policy_effective_from !== undefined) {
-      setPolicyEffectiveFrom(String(d.policyEffectiveFrom ?? d.policy_effective_from));
-    }
-    if (d.updated_at) {
-      setLastUpdated(d.updated_at);
-    }
+    const baseline = normalizeServerSettingsBaseline(d);
+    if (!baseline) return;
+    setServerBaseline(baseline);
+    setHasLoadedBaseline(true);
+    setAutoApproveOT(baseline.autoApproveOT);
+    setLateGraceMinutes(String(baseline.lateGraceMinutes));
+    setMaxOtPerMonth(String(baseline.maxOtPerMonth));
+    setFaceConfidenceThreshold(String(baseline.faceConfidenceThreshold));
+    setGpsRadiusMeters(String(baseline.gpsRadiusMeters));
+    setOfficeLat(String(baseline.officeLat));
+    setOfficeLng(String(baseline.officeLng));
+    setOfficeName(baseline.officeName);
+    setPersonalIncomeTaxDeduction(String(baseline.personalIncomeTaxDeduction));
+    setDependentDeduction(String(baseline.dependentDeduction));
+    setDefaultAllowances(String(baseline.defaultAllowances));
+    setPolicyEffectiveFrom(baseline.policyEffectiveFrom);
+    setLastUpdated(baseline.updated_at || null);
   };
 
   const loadSettings = async () => {
     setLoading(true);
-    setErrorMsg('');
+    setLoadError('');
+    setSaveError('');
     try {
       const res = await api.get('/settings');
       if (!res?.success || !res?.data) {
@@ -95,7 +109,11 @@ export default function SettingsPage() {
       }
       applyServerSettings(res.data);
     } catch (err) {
-      setErrorMsg(err?.message || 'Không thể tải cấu hình hệ thống từ máy chủ.');
+      // R17: Invalidate baseline when GET fails so stale or sample values can never be saved
+      setHasLoadedBaseline(false);
+      setServerBaseline(null);
+      clearUnloadedForm();
+      setLoadError(err?.message || 'Không thể tải cấu hình hệ thống từ máy chủ.');
     } finally {
       setLoading(false);
     }
@@ -106,26 +124,28 @@ export default function SettingsPage() {
   }, []);
 
   const handleSave = async () => {
-    if (!canEditSettings || saving) return;
+    if (!canSaveNow) return;
     setSaving(true);
     setSaved(false);
-    setErrorMsg('');
+    setSaveError('');
 
     try {
-      const res = await api.put('/settings', {
+      const patchPayload = buildSettingsPatch(serverBaseline, {
         autoApproveOT,
-        lateGraceMinutes: Number(lateGraceMinutes),
-        maxOtPerMonth: Number(maxOtPerMonth),
-        faceConfidenceThreshold: Number(faceConfidenceThreshold),
-        gpsRadiusMeters: Number(gpsRadiusMeters),
-        officeLat: Number(officeLat),
-        officeLng: Number(officeLng),
-        officeName: String(officeName).trim() || 'Tòa nhà NEXUS Tower',
-        personalIncomeTaxDeduction: Number(personalIncomeTaxDeduction),
-        dependentDeduction: Number(dependentDeduction),
-        defaultAllowances: Number(defaultAllowances),
-        policyEffectiveFrom: String(policyEffectiveFrom).trim() || '2020-01',
+        lateGraceMinutes,
+        maxOtPerMonth,
+        faceConfidenceThreshold,
+        gpsRadiusMeters,
+        officeLat,
+        officeLng,
+        officeName,
+        personalIncomeTaxDeduction,
+        dependentDeduction,
+        defaultAllowances,
+        policyEffectiveFrom,
       });
+
+      const res = await api.put('/settings', patchPayload);
 
       if (!res?.success) {
         throw new Error(res?.message || 'Lưu cấu hình thất bại');
@@ -140,7 +160,8 @@ export default function SettingsPage() {
       } catch {}
       setTimeout(() => setSaved(false), 2500);
     } catch (err) {
-      setErrorMsg(err?.message || 'Không thể lưu cấu hình hệ thống. Vui lòng thử lại.');
+      // R17: Save failure sets saveError without wiping serverBaseline so user can retry saving
+      setSaveError(err?.message || 'Không thể lưu cấu hình hệ thống. Vui lòng thử lại.');
     } finally {
       setSaving(false);
     }
@@ -168,6 +189,7 @@ export default function SettingsPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            data-testid="settings-reload-btn"
             onClick={loadSettings}
             disabled={loading || saving}
             className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
@@ -182,8 +204,8 @@ export default function SettingsPage() {
               type="button"
               data-testid="settings-save-btn"
               onClick={handleSave}
-              disabled={saving || loading}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
+              disabled={!canSaveNow}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
             >
               {saving ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -212,10 +234,32 @@ export default function SettingsPage() {
       {errorMsg && (
         <div
           data-testid="settings-error-banner"
-          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center justify-between gap-3"
         >
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{errorMsg}</span>
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+          {loadError && (
+            <button
+              type="button"
+              data-testid="settings-retry-btn"
+              onClick={loadSettings}
+              disabled={loading}
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              Thử tải lại dữ liệu
+            </button>
+          )}
+        </div>
+      )}
+
+      {!hasLoadedBaseline && !loading && (
+        <div
+          data-testid="settings-unloaded-state"
+          className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium"
+        >
+          Chưa tải được dữ liệu cấu hình thực từ máy chủ. Thao tác chỉnh sửa và lưu cấu hình đã được khóa để bảo vệ dữ liệu gốc. Vui lòng bấm <strong>Tải lại</strong> sau khi kết nối máy chủ ổn định.
         </div>
       )}
 
@@ -292,11 +336,16 @@ export default function SettingsPage() {
                     min="0"
                     max="180"
                     value={lateGraceMinutes}
-                    onChange={(e) => setLateGraceMinutes(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setLateGraceMinutes(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs outline-none focus:bg-white focus:border-blue-500 disabled:opacity-75 disabled:cursor-not-allowed"
                   />
-                  <span className="text-slate-500">phút (Sau 08:{String(lateGraceMinutes).padStart(2, '0')} sẽ tính là đi muộn vào ca)</span>
+                  <span className="text-slate-500">
+                    {hasLoadedBaseline
+                      ? `phút (Sau 08:${String(lateGraceMinutes).padStart(2, '0')} sẽ tính là đi muộn vào ca)`
+                      : 'phút (Chưa tải cấu hình từ máy chủ)'}
+                  </span>
                 </div>
               </div>
 
@@ -343,21 +392,26 @@ export default function SettingsPage() {
                     min="1"
                     max="300"
                     value={maxOtPerMonth}
-                    onChange={(e) => setMaxOtPerMonth(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setMaxOtPerMonth(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs outline-none focus:bg-white focus:border-blue-500 disabled:opacity-75 disabled:cursor-not-allowed"
                   />
-                  <span className="text-slate-500">giờ / tháng (Cảnh báo khi vượt ngưỡng {maxOtPerMonth}h)</span>
+                  <span className="text-slate-500">
+                    {hasLoadedBaseline
+                      ? `giờ / tháng (Cảnh báo khi vượt ngưỡng ${maxOtPerMonth}h)`
+                      : 'giờ / tháng (Chưa tải cấu hình từ máy chủ)'}
+                  </span>
                 </div>
               </div>
 
               <div className="pt-2 border-t border-slate-100">
-                <label className={`inline-flex items-center gap-3 ${canEditSettings ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}>
+                <label className={`inline-flex items-center gap-3 ${inputsEditable ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}>
                   <input
                     type="checkbox"
                     checked={autoApproveOT}
                     onChange={(e) => setAutoApproveOT(e.target.checked)}
-                    disabled={!canEditSettings}
+                    disabled={!inputsEditable}
                     className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 disabled:opacity-75"
                   />
                   <div>
@@ -399,8 +453,9 @@ export default function SettingsPage() {
                     min="0"
                     step="100000"
                     value={personalIncomeTaxDeduction}
-                    onChange={(e) => setPersonalIncomeTaxDeduction(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setPersonalIncomeTaxDeduction(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
@@ -417,8 +472,9 @@ export default function SettingsPage() {
                     min="0"
                     step="100000"
                     value={dependentDeduction}
-                    onChange={(e) => setDependentDeduction(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setDependentDeduction(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
@@ -435,8 +491,9 @@ export default function SettingsPage() {
                     min="0"
                     step="100000"
                     value={defaultAllowances}
-                    onChange={(e) => setDefaultAllowances(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setDefaultAllowances(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
@@ -452,8 +509,8 @@ export default function SettingsPage() {
                     data-testid="input-policy-effective-from"
                     value={policyEffectiveFrom}
                     onChange={(e) => setPolicyEffectiveFrom(e.target.value)}
-                    disabled={!canEditSettings}
-                    placeholder="YYYY-MM"
+                    disabled={!inputsEditable}
+                    placeholder={hasLoadedBaseline ? 'YYYY-MM' : 'Chưa tải'}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>
@@ -519,8 +576,9 @@ export default function SettingsPage() {
                     min="10"
                     max="10000"
                     value={gpsRadiusMeters}
-                    onChange={(e) => setGpsRadiusMeters(Number(e.target.value))}
-                    disabled={!canEditSettings}
+                    placeholder={hasLoadedBaseline ? '' : 'Chưa tải'}
+                    onChange={(e) => setGpsRadiusMeters(e.target.value)}
+                    disabled={!inputsEditable}
                     className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs outline-none focus:bg-white focus:border-blue-500 disabled:opacity-75 disabled:cursor-not-allowed"
                   />
                   <span className="text-slate-500">mét tính từ tâm tòa nhà trụ sở chính</span>
@@ -528,9 +586,11 @@ export default function SettingsPage() {
               </div>
 
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-                <span className="font-bold text-slate-800 block">Tọa độ trụ sở chính ({officeName}):</span>
+                <span className="font-bold text-slate-800 block">
+                  Tọa độ trụ sở chính ({hasLoadedBaseline ? officeName : 'Chưa tải dữ liệu'}):
+                </span>
                 <p className="text-[11px] text-slate-600 font-mono">
-                  {officeLat}° N, {officeLng}° E
+                  {hasLoadedBaseline ? `${officeLat}° N, ${officeLng}° E` : '—'}
                 </p>
               </div>
             </div>
@@ -555,15 +615,17 @@ export default function SettingsPage() {
                   <label className="font-bold text-slate-700">
                     Ngưỡng độ tin cậy thiết bị Kiosk (Confidence Threshold)
                   </label>
-                  <span className="font-bold text-blue-600">{faceConfidenceThreshold}%</span>
+                  <span className="font-bold text-blue-600">
+                    {hasLoadedBaseline ? `${faceConfidenceThreshold}%` : '—'}
+                  </span>
                 </div>
                 <input
                   type="range"
                   min="90"
                   max="99"
-                  value={faceConfidenceThreshold}
-                  onChange={(e) => setFaceConfidenceThreshold(Number(e.target.value))}
-                  disabled={!canEditSettings}
+                  value={hasLoadedBaseline ? faceConfidenceThreshold : 95}
+                  onChange={(e) => setFaceConfidenceThreshold(e.target.value)}
+                  disabled={!inputsEditable}
                   className="w-full accent-blue-600 disabled:opacity-75 disabled:cursor-not-allowed"
                 />
                 <span className="text-slate-400 text-[11px] block mt-1">
