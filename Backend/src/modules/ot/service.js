@@ -4,10 +4,11 @@ const { writeAudit } = require('../../utils/audit');
 const { initialStage } = require('../approvals/chain');
 const { createApprovalService } = require('../approvals/service');
 const { notifySubmitted } = require('../approvals/notify');
+const settingsService = require('../settings/service');
 const { minutes } = require('./schema');
 
 const ACTIVE = ['CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN', 'DA_PHE_DUYET'];
-const MONTHLY_LIMIT_HOURS = 40; // Bộ luật Lao động: tối đa 40 giờ làm thêm mỗi tháng
+const MONTHLY_LIMIT_HOURS = 40; // Bộ luật Lao động: tối đa 40 giờ làm thêm mỗi tháng (mặc định)
 
 const shared = createApprovalService({
   table: 'ot_requests',
@@ -37,17 +38,21 @@ async function create(user, body, req) {
     );
     if (overlap.rows.length > 0) throw new AppError(409, 'OT_OVERLAP', `Trùng giờ với đơn ${overlap.rows[0].id}`);
 
+    const sys = await settingsService.getSettingsForPeriod(client, body.workDate.slice(0, 7));
+    const monthlyLimit = Number(sys.max_ot_per_month) || MONTHLY_LIMIT_HOURS;
+
     const month = await client.query(
       `SELECT COALESCE(SUM(hours), 0) AS n FROM ot_requests
         WHERE employee_id = $1 AND stage = ANY($2) AND date_trunc('month', work_date) = date_trunc('month', $3::date)`,
       [user.employeeId, ACTIVE, body.workDate]
     );
-    if (Number(month.rows[0].n) + hours > MONTHLY_LIMIT_HOURS) {
+    if (Number(month.rows[0].n) + hours > monthlyLimit) {
       throw new AppError(409, 'OT_MONTHLY_LIMIT',
-        `Vượt giới hạn ${MONTHLY_LIMIT_HOURS} giờ làm thêm mỗi tháng (đã đăng ký ${month.rows[0].n} giờ)`);
+        `Vượt giới hạn ${monthlyLimit} giờ làm thêm mỗi tháng (đã đăng ký ${month.rows[0].n} giờ)`);
     }
 
-    const { stage, autoApprove } = initialStage(user.roleCode);
+    const { stage, autoApprove: roleAutoApprove } = initialStage(user.roleCode);
+    const autoApprove = roleAutoApprove || (Boolean(sys.auto_approve_ot) && hours <= 2);
     const { rows } = await client.query(
       `INSERT INTO ot_requests (employee_id, work_date, start_time, end_time, hours, reason, stage)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
@@ -57,7 +62,9 @@ async function create(user, body, req) {
     if (autoApprove) {
       await client.query(
         `UPDATE ot_requests SET stage = 'DA_PHE_DUYET', hr_approved_by = $2, hr_approved_at = NOW(),
-                hr_note = 'Tự phê duyệt (Tổng Giám Đốc)' WHERE id = $1`, [id, user.employeeId]);
+                hr_note = $3 WHERE id = $1`,
+        [id, user.employeeId, roleAutoApprove ? 'Tự phê duyệt (Tổng Giám Đốc)' : 'Tự động duyệt theo cấu hình OT <= 2h']
+      );
     }
     await writeAudit(client, {
       user, action: 'CREATE_OT', table: 'ot_requests', recordId: id, req,

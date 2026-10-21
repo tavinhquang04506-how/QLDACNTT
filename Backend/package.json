@@ -10,6 +10,7 @@
     "db:test": "node scripts/test-db.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:unit": "node --require ./tests/helpers/env.js --test \"tests/unit/**/*.test.js\"",
+    "test:e2e": "node scripts/e2e-browser-verify.js",
     "test:load": "node scripts/load-test-benchmark.js",
     "test": "node scripts/test-setup.js && node --require ./tests/helpers/env.js --test --test-concurrency=1 \"tests/**/*.test.js\"",
     "seed": "node scripts/reset-seed-50.js",

@@ -12,6 +12,10 @@ const DEFAULT_SETTINGS = {
   dependent_deduction: 4400000,
   employee_bhxh_rate: 10.5,
   employer_bhxh_rate: 21.5,
+  standard_work_days: 22,
+  ot_multiplier: 1.5,
+  default_allowances: 1500000,
+  policy_effective_from: '2020-01',
   gps_radius_meters: 250,
   office_lat: 10.77,
   office_lng: 106.7,
@@ -29,6 +33,10 @@ const KEY_META = {
   dependent_deduction: { category: 'tax_bhxh', type: 'number', min: 0, max: 100000000 },
   employee_bhxh_rate: { category: 'tax_bhxh', type: 'number', min: 0, max: 100 },
   employer_bhxh_rate: { category: 'tax_bhxh', type: 'number', min: 0, max: 100 },
+  standard_work_days: { category: 'payroll', type: 'number', min: 1, max: 31 },
+  ot_multiplier: { category: 'payroll', type: 'number', min: 1, max: 5 },
+  default_allowances: { category: 'payroll', type: 'number', min: 0, max: 100000000 },
+  policy_effective_from: { category: 'tax_bhxh', type: 'period' },
   gps_radius_meters: { category: 'biometrics', type: 'number', min: 10, max: 10000 },
   office_lat: { category: 'biometrics', type: 'number', min: -90, max: 90 },
   office_lng: { category: 'biometrics', type: 'number', min: -180, max: 180 },
@@ -47,6 +55,10 @@ const CAMEL_TO_SNAKE = {
   dependentDeduction: 'dependent_deduction',
   employeeBhxhRate: 'employee_bhxh_rate',
   employerBhxhRate: 'employer_bhxh_rate',
+  standardWorkDays: 'standard_work_days',
+  otMultiplier: 'ot_multiplier',
+  defaultAllowances: 'default_allowances',
+  policyEffectiveFrom: 'policy_effective_from',
   gpsRadiusMeters: 'gps_radius_meters',
   officeLat: 'office_lat',
   officeLng: 'office_lng',
@@ -66,6 +78,10 @@ function toCamelMap(snakeObj) {
     dependentDeduction: snakeObj.dependent_deduction,
     employeeBhxhRate: snakeObj.employee_bhxh_rate,
     employerBhxhRate: snakeObj.employer_bhxh_rate,
+    standardWorkDays: snakeObj.standard_work_days,
+    otMultiplier: snakeObj.ot_multiplier,
+    defaultAllowances: snakeObj.default_allowances,
+    policyEffectiveFrom: snakeObj.policy_effective_from,
     gpsRadiusMeters: snakeObj.gps_radius_meters,
     officeLat: snakeObj.office_lat,
     officeLng: snakeObj.office_lng,
@@ -75,28 +91,48 @@ function toCamelMap(snakeObj) {
 }
 
 async function getSettings(executor = db) {
+  const { rows } = await executor.query(
+    'SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key'
+  );
   const merged = { ...DEFAULT_SETTINGS };
   let updatedAt = null;
   let updatedBy = null;
-  try {
-    const { rows } = await executor.query(
-      'SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key'
-    );
-    for (const r of rows) {
-      merged[r.key] = r.value;
-      if (!updatedAt || (r.updated_at && new Date(r.updated_at) > new Date(updatedAt))) {
-        updatedAt = r.updated_at;
-        updatedBy = r.updated_by || updatedBy;
-      }
+  for (const r of rows) {
+    merged[r.key] = r.value;
+    if (!updatedAt || (r.updated_at && new Date(r.updated_at) > new Date(updatedAt))) {
+      updatedAt = r.updated_at;
+      updatedBy = r.updated_by || updatedBy;
     }
-  } catch {
-    // Fallback to DEFAULT_SETTINGS only if isolated unit test does not have system_settings table
   }
   return {
     ...toCamelMap(merged),
     updated_at: updatedAt,
     updated_by: updatedBy,
   };
+}
+
+async function getSettingsForPeriod(executor = db, period = null) {
+  const current = await getSettings(executor);
+  const effectiveFrom = String(current.policy_effective_from || '2020-01');
+  if (period && String(period) < effectiveFrom) {
+    const baseline = {
+      ...current,
+      max_ot_per_month: DEFAULT_SETTINGS.max_ot_per_month,
+      personal_income_tax_deduction: DEFAULT_SETTINGS.personal_income_tax_deduction,
+      dependent_deduction: DEFAULT_SETTINGS.dependent_deduction,
+      employee_bhxh_rate: DEFAULT_SETTINGS.employee_bhxh_rate,
+      employer_bhxh_rate: DEFAULT_SETTINGS.employer_bhxh_rate,
+      standard_work_days: DEFAULT_SETTINGS.standard_work_days,
+      ot_multiplier: DEFAULT_SETTINGS.ot_multiplier,
+      default_allowances: DEFAULT_SETTINGS.default_allowances,
+    };
+    return {
+      ...toCamelMap(baseline),
+      updated_at: current.updated_at,
+      updated_by: current.updated_by,
+    };
+  }
+  return current;
 }
 
 function normalizeAndValidatePatch(body = {}) {
@@ -127,6 +163,12 @@ function normalizeAndValidatePatch(body = {}) {
         throw badRequest(`Giá trị ${rawKey} phải là kiểu boolean`);
       }
       updates[snakeKey] = rawVal;
+    } else if (meta.type === 'period') {
+      const s = String(rawVal).trim();
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(s)) {
+        throw badRequest(`Giá trị ${rawKey} phải có định dạng YYYY-MM`);
+      }
+      updates[snakeKey] = s;
     } else if (meta.type === 'string') {
       const s = String(rawVal).trim();
       if (!s || s.length > 200) {
@@ -180,5 +222,6 @@ async function updateSettings(actor, body, req = null) {
 module.exports = {
   DEFAULT_SETTINGS,
   getSettings,
+  getSettingsForPeriod,
   updateSettings,
 };

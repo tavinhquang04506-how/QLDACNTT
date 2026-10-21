@@ -15,55 +15,97 @@ after(async () => {
 
 const today = async () => (await db.query('SELECT CURRENT_DATE::text AS d')).rows[0].d;
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const GPS = { method: 'gps', gpsLat: 10.77, gpsLng: 106.7 };
 
 test('check-in then check-out for the company-local day', async () => {
   const s = await employeeSession();
-  const inRes = await callWith(s.token, 'post', '/api/attendance/check-in', { method: 'gps', gpsLat: 10.77, gpsLng: 106.7 });
+  const inRes = await callWith(s.token, 'post', '/api/attendance/check-in', GPS);
   assert.equal(inRes.status, 201);
   assert.equal(inRes.body.data.work_date, await today());
   assert.equal(inRes.body.data.employee_id, s.employeeId);
 
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-in', {})).status, 409);
+  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-in', GPS)).status, 409);
 
   const state = await callWith(s.token, 'get', '/api/attendance/me/today');
   assert.equal(state.body.checkedIn, true);
   assert.equal(state.body.checkedOut, false);
 
-  const out = await callWith(s.token, 'post', '/api/attendance/check-out', { method: 'gps' });
+  const out = await callWith(s.token, 'post', '/api/attendance/check-out', GPS);
   assert.equal(out.status, 200);
   assert.ok(out.body.data.check_out_time);
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', {})).status, 409);
+  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', GPS)).status, 409);
   assert.equal((await callWith(s.token, 'get', '/api/attendance/me/today')).body.checkedOut, true);
 });
 
 test('check-out before check-in -> 400', async () => {
   const s = await employeeSession();
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', {})).status, 400);
+  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', GPS)).status, 400);
 });
 
-test('check-in validates method and GPS; face_id is no longer accepted', async () => {
+test('R01/F06: check-in and check-out strictly enforce method, GPS coordinates, and 6-digit code', async () => {
   const s = await employeeSession();
-  for (const body of [{ method: 'telepathy' }, { method: 'face_id' }, { gpsLat: 200 }, { gpsLng: -500 }, { gpsLat: 'x' }]) {
-    const res = await callWith(s.token, 'post', '/api/attendance/check-in', body);
-    assert.equal(res.status, 400, JSON.stringify(body));
-    assert.equal(res.body.code, 'VALIDATION_ERROR');
+  const invalidPayloads = [
+    {},
+    { method: 'telepathy' },
+    { method: 'face_id' },
+    { method: 'manual' },
+    { method: 'qr' },
+    { method: 'kiosk' },
+    { method: 'gps' },
+    { method: 'gps', gpsLat: 10.77 },
+    { method: 'gps', gpsLng: 106.7 },
+    { method: 'code' },
+    { method: 'code', code: '' },
+    { method: 'code', code: '12345' },
+    { method: 'code_gps', code: '123456' },
+    { method: 'code_gps', gpsLat: 10.77, gpsLng: 106.7 },
+    { method: 'gps', gpsLat: 200, gpsLng: 106.7 },
+    { method: 'gps', gpsLat: 10.77, gpsLng: -500 },
+    { method: 'gps', gpsLat: 'x', gpsLng: 106.7 },
+  ];
+  for (const body of invalidPayloads) {
+    const inRes = await callWith(s.token, 'post', '/api/attendance/check-in', body);
+    assert.equal(inRes.status, 400, `check-in should reject ${JSON.stringify(body)}`);
+    assert.equal(inRes.body.code, 'VALIDATION_ERROR');
   }
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-in', { method: 'qr' })).status, 201);
+
+  const { getCurrentKioskCode } = require('../../src/modules/attendance/kioskCode');
+  const liveCode = getCurrentKioskCode().code;
+
+  const okIn = await callWith(s.token, 'post', '/api/attendance/check-in', {
+    method: 'code_gps',
+    code: liveCode,
+    gpsLat: 10.77,
+    gpsLng: 106.7,
+  });
+  assert.equal(okIn.status, 201);
+
+  for (const body of invalidPayloads) {
+    const outRes = await callWith(s.token, 'post', '/api/attendance/check-out', body);
+    assert.equal(outRes.status, 400, `check-out should reject ${JSON.stringify(body)}`);
+    assert.equal(outRes.body.code, 'VALIDATION_ERROR');
+  }
+
+  const okOut = await callWith(s.token, 'post', '/api/attendance/check-out', {
+    method: 'code',
+    code: getCurrentKioskCode().code,
+  });
+  assert.equal(okOut.status, 200);
 });
 
 test('an account without an employee record cannot punch', async () => {
   const u = await createTestUser({ role: 'EMPLOYEE' });
   const { accessToken } = await loginUser(u);
-  assert.equal((await callWith(accessToken, 'post', '/api/attendance/check-in', {})).status, 403);
-  assert.equal((await callWith(accessToken, 'post', '/api/attendance/check-out', {})).status, 403);
+  assert.equal((await callWith(accessToken, 'post', '/api/attendance/check-in', GPS)).status, 403);
+  assert.equal((await callWith(accessToken, 'post', '/api/attendance/check-out', GPS)).status, 403);
   assert.equal((await callWith(accessToken, 'get', '/api/attendance/me/today')).status, 403);
 });
 
 test('list scope: employee sees only their own rows, manager their department, CEO everyone', async () => {
   const a = await employeeSession({ departmentId: 'DEPT-MKT' });
   const b = await employeeSession({ departmentId: 'DEPT-SALES' });
-  await callWith(a.token, 'post', '/api/attendance/check-in', {});
-  await callWith(b.token, 'post', '/api/attendance/check-in', {});
+  await callWith(a.token, 'post', '/api/attendance/check-in', GPS);
+  await callWith(b.token, 'post', '/api/attendance/check-in', GPS);
 
   const own = await callWith(a.token, 'get', '/api/attendance');
   assert.equal(own.status, 200);
@@ -292,7 +334,7 @@ test('exceptions: late and absent lists for a weekday; nothing absent on a weeke
 
 test('live: latest punches of today, HR/CEO/manager only', async () => {
   const s = await employeeSession();
-  await callWith(s.token, 'post', '/api/attendance/check-in', {});
+  await callWith(s.token, 'post', '/api/attendance/check-in', GPS);
   const res = await call('HR_DIRECTOR', 'get', '/api/attendance/live');
   assert.equal(res.status, 200);
   const mine = res.body.data.find((r) => r.employee_id === s.employeeId);
@@ -322,12 +364,12 @@ test('an employee can still punch on a day HR pre-marked without times', async (
   const pre = await call('HR_DIRECTOR', 'post', '/api/attendance/adjust', { employeeId: s.employeeId, workDate: day, status: 'NGHI_LE', note: 'Nghỉ lễ' });
   assert.equal(pre.status, 201);
 
-  const first = await callWith(s.token, 'post', '/api/attendance/check-in', { method: 'gps' });
+  const first = await callWith(s.token, 'post', '/api/attendance/check-in', GPS);
   assert.equal(first.status, 201);
   assert.ok(first.body.data.check_in_time);
   assert.notEqual(first.body.data.status, 'NGHI_LE');
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-in', {})).status, 409); // now really checked in
-  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', {})).status, 200);
+  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-in', GPS)).status, 409); // now really checked in
+  assert.equal((await callWith(s.token, 'post', '/api/attendance/check-out', GPS)).status, 200);
 });
 
 test('a pre-marked business-trip day keeps its status when the employee punches; the kiosk works too', async () => {
