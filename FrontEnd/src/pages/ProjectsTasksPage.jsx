@@ -299,133 +299,123 @@ export default function ProjectsTasksPage() {
   const overloadedMembers = Object.entries(memberTaskCounts).filter(([_, count]) => count >= 3);
 
   // Handlers
-  const handleCreateProject = (e) => {
+  const handleCreateProject = async (e) => {
     e.preventDefault();
     if (!newProject.name.trim()) return;
 
-    const created = {
-      ...newProject,
-      id: `PRJ-${Date.now().toString().slice(-4)}`,
-      progress: 0,
-      status: 'in_progress',
-      usedHours: 0,
-    };
+    try {
+      const payload = {
+        name: newProject.name.trim(),
+        code: newProject.code?.trim() || undefined,
+        priority: newProject.priority || 'Cao',
+        description: newProject.description || '',
+        budget_hours: Number(newProject.budgetHours) || 240,
+      };
+      if (user?.departmentId) payload.department_id = user.departmentId;
+      else if (!isLineManager) payload.department_id = 'DEPT-IT';
 
-    setProjects([created, ...projects]);
-    setIsCreateProjectOpen(false);
-    confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
+      const res = await projectService.createProject(payload);
+      if (!res?.success || !res?.data) {
+        alert(res?.message || 'Không thể khởi tạo dự án trên máy chủ.');
+        return;
+      }
 
-    // Gọi API Backend lưu project vào PostgreSQL
-    projectService.createProject({
-      name: newProject.name,
-      code: newProject.code,
-      department_id: 'DEPT-IT',
-      priority: newProject.priority,
-      description: newProject.description,
-      budget_hours: newProject.budgetHours,
-    }).catch((err) => console.warn('Backend create project notice:', err));
+      const p = res.data;
+      const created = {
+        id: p.id,
+        code: p.code || newProject.code,
+        name: p.name || newProject.name,
+        department: p.department_name || newProject.department,
+        manager: p.manager_name || currentRole.name || 'Quản lý dự án',
+        managerAvatar: p.manager_avatar,
+        startDate: p.start_date ? new Date(p.start_date).toLocaleDateString('vi-VN') : newProject.startDate,
+        endDate: p.end_date ? new Date(p.end_date).toLocaleDateString('vi-VN') : newProject.endDate,
+        progress: p.progress || 0,
+        status: p.status || 'in_progress',
+        priority: p.priority || newProject.priority,
+        budgetHours: p.budget_hours ?? newProject.budgetHours,
+        usedHours: p.used_hours || 0,
+        description: p.description || newProject.description,
+      };
 
-    if (newProject.autoCreateChat) {
-      window.dispatchEvent(new CustomEvent('nexus:squad-created', {
-        detail: {
-          id: `SQD-${Date.now().toString().slice(-4)}`,
-          name: `Squad ${newProject.name}`,
-          code: newProject.code,
-          projectName: newProject.name,
-          projectCode: newProject.code,
-          leadName: currentRole?.name || 'Trưởng nhóm',
-          leadRole: currentRole?.title || 'Techlead',
-          target: newProject.description || 'Trao đổi và điều phối công việc dự án.',
-          activeTasksCount: 0,
-          members: [
-            { id: currentRole?.id || 'NV-0001', name: currentRole?.name || 'Quản lý', role: currentRole?.title || 'Quản lý', avatar: currentRole?.avatar }
-          ],
-          chatMessages: [
-            {
-              id: `m-init-${Date.now()}`,
-              sender: currentRole?.name || 'Quản lý',
-              roleBadge: currentRole?.title || 'Trưởng phòng',
-              avatar: currentRole?.avatar,
-              text: `Kênh chat dự án [${newProject.code}] ${newProject.name} đã được khởi tạo tự động! Các thành viên bắt đầu trao đổi tại đây.`,
-              time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-              isManager: true,
-            }
-          ]
-        }
-      }));
+      setProjects([created, ...projects]);
+      setIsCreateProjectOpen(false);
+      try {
+        confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
+      } catch (_) {}
+
+      if (newProject.autoCreateChat) {
+        await projectService.createSquad({
+          name: `Squad ${created.name}`,
+          code: created.code,
+          projectId: created.id,
+          description: created.description || 'Trao đổi và điều phối công việc dự án.',
+        }).catch(() => null);
+      }
+
+      setNewProject({
+        name: '',
+        code: `PRJ-2026-0${projects.length + 2}`,
+        department: 'Phòng Phát triển Phần mềm',
+        manager: currentRole.name || 'Quản lý dự án',
+        startDate: '15/09/2026',
+        endDate: '30/11/2026',
+        priority: 'Cao',
+        description: '',
+        budgetHours: 240,
+        autoCreateChat: true,
+      });
+    } catch (err) {
+      alert(err?.message || 'Lỗi khi lưu dự án vào cơ sở dữ liệu.');
     }
-
-    setNewProject({
-      name: '',
-      code: `PRJ-2026-0${projects.length + 2}`,
-      department: 'Phòng Phát triển Phần mềm',
-      manager: currentRole.name || 'Quản lý dự án',
-      startDate: '15/09/2026',
-      endDate: '30/11/2026',
-      priority: 'Cao',
-      description: '',
-      budgetHours: 240,
-      autoCreateChat: true,
-    });
   };
 
-  const handleAssignTask = (e) => {
+  const handleAssignTask = async (e) => {
     e.preventDefault();
     if (!newTask.title.trim()) return;
 
     const member = members.find((m) => m.id === newTask.assigneeId) || members[0];
     const project = projects.find((p) => p.id === newTask.projectId) || projects[0];
+    if (!project?.id) {
+      alert('Vui lòng chọn dự án hợp lệ trước khi giao việc.');
+      return;
+    }
 
-    const createdTask = {
-      id: `TSK-${tasks.length + 101}`,
-      projectId: project.id,
-      projectName: project.name,
-      title: newTask.title,
-      description: newTask.description || 'Hoàn thành theo tiêu chuẩn kỹ thuật sprint.',
-      assigneeId: member.id,
-      assigneeName: member.name,
-      assigneeRole: member.role,
-      assigneeAvatar: member.avatar,
-      creator: `${currentRole.name || 'Quản trị viên'} (Trưởng phòng)`,
-      deadline: newTask.deadline,
-      priority: newTask.priority,
-      stage: 'todo',
-      progress: 0,
-      kpiWeight: Number(newTask.kpiWeight) || 20,
-      submissionNote: '',
-      logs: [
-        {
-          time: new Date().toLocaleDateString('vi-VN') + ' 09:00',
-          author: currentRole.name || 'Quản lý dự án',
-          note: `Trưởng phòng giao task mới với trọng số KPI ${newTask.kpiWeight}%.`,
-        },
-      ],
-    };
+    try {
+      const res = await projectService.createTask(project.id, {
+        title: newTask.title.trim(),
+        description: newTask.description,
+        assignee_id: member?.id || newTask.assigneeId,
+        deadline: newTask.deadline,
+        priority: newTask.priority,
+        kpi_weight: Number(newTask.kpiWeight) || 20,
+        stage: 'todo',
+      });
 
-    setTasks([createdTask, ...tasks]);
-    setIsAssignTaskOpen(false);
-    confetti({ particleCount: 60, spread: 70, origin: { y: 0.5 } });
+      if (!res?.success || !res?.data) {
+        alert(res?.message || 'Không thể giao nhiệm vụ trên máy chủ.');
+        return;
+      }
 
-    // Gọi API Backend lưu task vào PostgreSQL
-    projectService.createTask(project.id, {
-      title: newTask.title,
-      description: newTask.description,
-      assignee_id: member.id,
-      deadline: newTask.deadline,
-      priority: newTask.priority,
-      kpi_weight: Number(newTask.kpiWeight) || 20,
-      stage: 'todo',
-    }).catch((err) => console.warn('Backend create task notice:', err));
+      const createdTask = mapTask(res.data, project.name);
+      setTasks([createdTask, ...tasks]);
+      setIsAssignTaskOpen(false);
+      try {
+        confetti({ particleCount: 60, spread: 70, origin: { y: 0.5 } });
+      } catch (_) {}
 
-    setNewTask({
-      projectId: projects[0]?.id || '',
-      title: '',
-      description: '',
-      assigneeId: currentRole?.id || '',
-      deadline: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-      priority: 'Cao',
-      kpiWeight: 20,
-    });
+      setNewTask({
+        projectId: projects[0]?.id || '',
+        title: '',
+        description: '',
+        assigneeId: currentRole?.id || '',
+        deadline: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        priority: 'Cao',
+        kpiWeight: 20,
+      });
+    } catch (err) {
+      alert(err?.message || 'Lỗi khi giao nhiệm vụ vào cơ sở dữ liệu.');
+    }
   };
 
   const handleOpenUpdateTask = (task) => {
@@ -445,18 +435,25 @@ export default function ProjectsTasksPage() {
     }
 
     try {
-      await projectService.updateTask(selectedTaskForUpdate.id, {
+      const res = await projectService.updateTask(selectedTaskForUpdate.id, {
         progress: Number(updateProgress),
         deliverableNote: updateNote,
-      }).catch((err) => console.warn('Backend update task progress notice:', err));
+      });
+      if (!res?.success) {
+        alert(res?.message || 'Không thể cập nhật tiến độ nhiệm vụ trên máy chủ.');
+        return;
+      }
 
       if (selectedTaskForUpdate.stage !== updateStage) {
-        await projectService.updateTaskStage(selectedTaskForUpdate.id, updateStage, updateNote).catch((err) => {
-          console.warn('Backend update task stage notice:', err);
-        });
+        const stageRes = await projectService.updateTaskStage(selectedTaskForUpdate.id, updateStage, updateNote);
+        if (!stageRes?.success) {
+          alert(stageRes?.message || 'Không thể chuyển trạng thái nhiệm vụ trên máy chủ.');
+          return;
+        }
       }
     } catch (err) {
-      console.warn('Backend update task notice:', err);
+      alert(err?.message || 'Lỗi khi cập nhật nhiệm vụ trên máy chủ.');
+      return;
     }
 
     const updated = tasks.map((t) => {
@@ -483,7 +480,9 @@ export default function ProjectsTasksPage() {
     setTasks(updated);
     setSelectedTaskForUpdate(null);
     if (updateStage === 'review' || updateProgress === 100) {
-      confetti({ particleCount: 40, spread: 50 });
+      try {
+        confetti({ particleCount: 40, spread: 50 });
+      } catch (_) {}
     }
   };
 
@@ -497,11 +496,14 @@ export default function ProjectsTasksPage() {
 
     const decision = isApproved ? 'accept' : 'reject';
     try {
-      await projectService.reviewTask(selectedTaskForReview.id, decision, managerReviewNote);
+      const res = await projectService.reviewTask(selectedTaskForReview.id, decision, managerReviewNote);
+      if (!res?.success) {
+        alert(res?.message || 'Không thể nghiệm thu nhiệm vụ trên máy chủ.');
+        return;
+      }
     } catch (err) {
-      console.warn('Backend task review notice, falling back to stage update:', err);
-      const targetStage = isApproved ? 'done' : 'in_progress';
-      projectService.updateTaskStage(selectedTaskForReview.id, targetStage, managerReviewNote).catch(() => null);
+      alert(err?.message || 'Lỗi khi nghiệm thu nhiệm vụ trên máy chủ.');
+      return;
     }
 
     const updated = tasks.map((t) => {
@@ -528,7 +530,9 @@ export default function ProjectsTasksPage() {
     setTasks(updated);
     setSelectedTaskForReview(null);
     if (isApproved) {
-      confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
+      try {
+        confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
+      } catch (_) {}
     }
   };
 
@@ -749,17 +753,17 @@ export default function ProjectsTasksPage() {
 
             <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:shadow-md transition-shadow">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Điểm KPI Dự Án TB</span>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Tỷ Lệ Hoàn Thành Task</span>
                 <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
                   <TrendingUp className="w-5 h-5" />
                 </div>
               </div>
               <div className="mt-3 flex items-baseline gap-2">
-                <span className="text-2xl font-extrabold text-emerald-600">88.5 / 100</span>
-                <span className="text-xs font-semibold text-slate-400">Hạng A</span>
+                <span className="text-2xl font-extrabold text-emerald-600">{overallRate}%</span>
+                <span className="text-xs font-semibold text-slate-400">{completedTasksCount}/{totalTasksCount} task hoàn thành</span>
               </div>
               <div className="mt-3 flex items-center gap-1.5 text-xs text-emerald-700 font-semibold">
-                <span>Liên kết trực tiếp 9-Box Matrix</span>
+                <span>Tiến độ dự án trung bình: {avgPlanProgress}%</span>
               </div>
             </div>
 
