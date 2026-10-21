@@ -1,6 +1,6 @@
 import React from 'react';
 import AppleModal from '../../components/motion/AppleModal';
-import { Printer, Download, CheckCircle2, ShieldCheck, QrCode, Award } from 'lucide-react';
+import { Printer, Download, ShieldCheck, QrCode } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from '../../context/AuthContext';
 import { numberToVietnameseWords } from '../../utils/numberToVietnameseWords';
@@ -12,7 +12,7 @@ export default function Modal3C_PayslipPdf({ isOpen, onClose, payload }) {
   const role = payload?.job_title || payload?.role || currentRole?.title || 'Chuyên viên';
   const department = payload?.department_name || payload?.department || payload?.dept || currentRole?.department || 'Chưa phân phòng';
   const baseSalary = Number(payload?.base_salary ?? payload?.contractSalary ?? 0);
-  const kpiBonus = Number(payload?.bonus ?? payload?.ot_pay ?? 0);
+  const kpiBonus = Number(payload?.bonus ?? 0) + Number(payload?.ot_pay ?? 0);
   const lunchAllowance = Number(payload?.allowances ?? payload?.allowance ?? 0);
   const gross = Number(payload?.gross_income ?? payload?.gross_salary ?? (baseSalary + kpiBonus + lunchAllowance));
   const bhxh = Number(payload?.bhxh_amount ?? payload?.insurance_deduction ?? 0);
