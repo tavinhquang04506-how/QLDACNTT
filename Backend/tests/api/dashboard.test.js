@@ -7,6 +7,8 @@ const { deleteTestEmployees } = require('../helpers/employees');
 const { employeeSession } = require('../helpers/sessions');
 const { giveBalance, deleteTestLeaves } = require('../helpers/leaves');
 
+const GPS = { method: 'gps', gpsLat: 10.77, gpsLng: 106.7 };
+
 after(async () => {
   await deleteTestLeaves();
   await deleteTestUsers();
@@ -16,7 +18,7 @@ after(async () => {
 
 test('company view (CEO/HR): live counts that match the database', async () => {
   const s = await employeeSession({ departmentId: 'DEPT-MKT' });
-  await callWith(s.token, 'post', '/api/attendance/check-in', {});
+  await callWith(s.token, 'post', '/api/attendance/check-in', GPS);
   const res = await call('HR_DIRECTOR', 'get', '/api/dashboard/stats');
   assert.equal(res.status, 200);
   assert.equal(res.body.data.scope, 'company');
@@ -50,7 +52,7 @@ test('department view (manager): only their department', async () => {
 test('personal view (employee): no company figures, only their own', async () => {
   const s = await employeeSession({ departmentId: 'DEPT-IT' });
   await giveBalance(s.employeeId, new Date().getFullYear(), 12);
-  await callWith(s.token, 'post', '/api/attendance/check-in', {});
+  await callWith(s.token, 'post', '/api/attendance/check-in', GPS);
   const res = await callWith(s.token, 'get', '/api/dashboard/stats');
   assert.equal(res.status, 200);
   assert.equal(res.body.data.scope, 'self');

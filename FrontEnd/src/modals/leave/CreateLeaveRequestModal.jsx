@@ -26,6 +26,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
   const [endDate, setEndDate] = useState(todayStr);
   const [shiftType, setShiftType] = useState('full');
   const [employees, setEmployees] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [handoverPerson, setHandoverPerson] = useState('');
   const [reason, setReason] = useState('');
   const [attachedFile, setAttachedFile] = useState(null);
@@ -40,6 +41,12 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
       api.get('/employees').then(res => {
         if (res?.data && Array.isArray(res.data)) {
           setEmployees(res.data);
+        }
+      }).catch(console.warn);
+      api.get('/leaves/holidays').then(res => {
+        const list = res?.data || (Array.isArray(res) ? res : []);
+        if (Array.isArray(list)) {
+          setHolidays(list.map(h => String(h.holiday_date || h).slice(0, 10)));
         }
       }).catch(console.warn);
     }
@@ -70,20 +77,22 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
     }
   }, [availableHandovers, handoverPerson]);
 
-  const computeWorkingDays = (fromIso, toIso) => {
+  const computeWorkingDays = (fromIso, toIso, holidayList = holidays) => {
     if (!fromIso || !toIso) return 0;
     const from = new Date(`${fromIso}T00:00:00Z`);
     const to = new Date(`${toIso}T00:00:00Z`);
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) return 0;
+    const holidaySet = new Set(Array.isArray(holidayList) ? holidayList : []);
     let count = 0;
     for (let d = new Date(from); d <= to; d = new Date(d.getTime() + 86400000)) {
       const dow = d.getUTCDay();
-      if (dow !== 0 && dow !== 6) count += 1;
+      const iso = d.toISOString().slice(0, 10);
+      if (dow !== 0 && dow !== 6 && !holidaySet.has(iso)) count += 1;
     }
     return count;
   };
 
-  const workingDaysCount = computeWorkingDays(startDate, endDate);
+  const workingDaysCount = computeWorkingDays(startDate, endDate, holidays);
   const diffDays = shiftType === 'morning' || shiftType === 'afternoon'
     ? (workingDaysCount === 1 ? 0.5 : workingDaysCount)
     : workingDaysCount;
@@ -97,7 +106,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
       return;
     }
     if (workingDaysCount <= 0) {
-      setErrorMsg('Khoảng thời gian đã chọn chỉ rơi vào ngày nghỉ cuối tuần (Thứ 7 / Chủ Nhật), không phát sinh ngày phép làm việc.');
+      setErrorMsg('Khoảng thời gian đã chọn chỉ rơi vào ngày nghỉ cuối tuần hoặc ngày lễ, không phát sinh ngày phép làm việc.');
       return;
     }
     if ((shiftType === 'morning' || shiftType === 'afternoon') && startDate !== endDate) {
@@ -121,7 +130,7 @@ export default function Modal6D_CreateLeaveRequest({ isOpen, onClose }) {
         leave_type_id: typeMapping[leaveType] || 'LT-AL',
         start_date: startDate,
         end_date: endDate,
-        total_days: shiftType === 'morning' || shiftType === 'afternoon' ? 0.5 : undefined,
+        shift_type: shiftType,
         reason: reason.trim(),
         handover_to: handoverPerson || null,
         attachment_name: attachedFile || null,

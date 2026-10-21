@@ -3,7 +3,8 @@ const { AppError, badRequest, forbidden, notFound, conflict } = require('../../u
 const { parsePagination, paginationMeta } = require('../../utils/pagination');
 const { writeAudit } = require('../../utils/audit');
 const { scopeCondition } = require('../../utils/scope');
-const { initialStage, decide, workingDays } = require('../approvals/chain');
+const { workingDays } = require('../../utils/dates');
+const { initialStage, decide } = require('../approvals/chain');
 const workflow = require('../approvals/workflow');
 const { notifySubmitted, notifyDecided } = require('../approvals/notify');
 
@@ -37,6 +38,14 @@ async function canSeeEmployee(executor, user, scope, employeeId, departmentId) {
   return Boolean(mine) && mine === departmentId;
 }
 
+async function queryHolidayDates(executor, startDate, endDate) {
+  const { rows } = await executor.query(
+    'SELECT holiday_date::text AS d FROM public_holidays WHERE is_paid = TRUE AND holiday_date >= $1::date AND holiday_date <= $2::date',
+    [startDate, endDate]
+  );
+  return rows.map((r) => String(r.d).slice(0, 10));
+}
+
 async function create(user, body, req) {
   const employeeId = requireEmployee(user);
   return db.withTransaction(async (client) => {
@@ -44,10 +53,28 @@ async function create(user, body, req) {
     if (type.rows.length === 0) throw notFound('Không tìm thấy loại phép');
     if (!type.rows[0].is_active) throw badRequest('Loại phép này hiện không được sử dụng');
 
-    const span = Math.round((Date.parse(`${body.endDate}T00:00:00Z`) - Date.parse(`${body.startDate}T00:00:00Z`)) / 86400000) + 1;
-    const totalDays = body.totalDays ?? workingDays(body.startDate, body.endDate);
-    if (totalDays <= 0) throw badRequest('Khoảng thời gian nghỉ không có ngày làm việc nào');
-    if (totalDays > span) throw badRequest(`Số ngày nghỉ (${totalDays}) vượt quá khoảng thời gian đã chọn (${span} ngày)`);
+    const holidayDates = await queryHolidayDates(client, body.startDate, body.endDate);
+    const computedDays = workingDays(body.startDate, body.endDate, holidayDates);
+    if (computedDays <= 0) {
+      throw badRequest('Khoảng thời gian nghỉ không có ngày làm việc nào (trùng cuối tuần hoặc ngày lễ)');
+    }
+
+    const shiftType = body.shiftType || 'full';
+    if ((shiftType === 'morning' || shiftType === 'afternoon') && body.startDate !== body.endDate) {
+      throw badRequest('Nghỉ nửa ngày (0.5 ngày) chỉ áp dụng khi ngày bắt đầu và ngày kết thúc là cùng một ngày làm việc');
+    }
+
+    const isSingleDayHalf =
+      body.startDate === body.endDate &&
+      computedDays === 1 &&
+      (shiftType === 'morning' || shiftType === 'afternoon' || Number(body.totalDays) === 0.5);
+    const totalDays = isSingleDayHalf ? 0.5 : computedDays;
+
+    if (body.totalDays !== undefined && Number(body.totalDays) !== totalDays) {
+      throw badRequest(
+        `Số ngày nghỉ gửi lên (${body.totalDays}) không khớp số ngày làm việc thực tế (${totalDays} ngày, đã trừ cuối tuần và ngày lễ)`
+      );
+    }
 
     // Serialize this employee's submissions so the overlap and balance checks cannot race.
     await client.query('SELECT 1 FROM employees WHERE id = $1 FOR UPDATE', [employeeId]);
@@ -189,6 +216,16 @@ async function types() {
   return (await db.query('SELECT * FROM leave_types ORDER BY name')).rows;
 }
 
+async function holidays() {
+  const { rows } = await db.query(
+    'SELECT holiday_date::text AS holiday_date, name, is_paid FROM public_holidays WHERE is_paid = TRUE ORDER BY holiday_date'
+  );
+  return rows.map((r) => ({
+    ...r,
+    holiday_date: String(r.holiday_date).slice(0, 10),
+  }));
+}
+
 /** Approve or reject: the chain decides whether this actor may act on this request at its current stage. */
 async function decideOn(actor, id, action, note, req) {
   return db.withTransaction(async (client) => {
@@ -254,4 +291,4 @@ async function cancel(user, id, req) {
   });
 }
 
-module.exports = { create, list, get, calendar, balances, types, decideOn, cancel };
+module.exports = { create, list, get, calendar, balances, types, holidays, decideOn, cancel };

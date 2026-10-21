@@ -27,7 +27,7 @@ async function setup({ role = 'EMPLOYEE', departmentId = 'DEPT-IT', balance = 12
 }
 const submit = (s, extra) => callWith(s.token, 'post', '/api/leaves', leave(extra));
 
-test('create: working days are computed when totalDays is omitted; both naming styles work', async () => {
+test('create: working days are computed on the server; both naming styles and single-day half-day work', async () => {
   const s = await setup();
   const res = await submit(s);
   assert.equal(res.status, 201);
@@ -37,10 +37,16 @@ test('create: working days are computed when totalDays is omitted; both naming s
   assert.equal(res.body.data.start_date, MON);
 
   const snake = await callWith((await setup()).token, 'post', '/api/leaves', {
-    leave_type_id: 'LT-AL', start_date: '2027-04-05', end_date: '2027-04-06', total_days: 1.5, reason: 'r',
+    leave_type_id: 'LT-AL', start_date: '2027-04-05', end_date: '2027-04-06', total_days: 2, reason: 'r',
   });
   assert.equal(snake.status, 201);
-  assert.equal(Number(snake.body.data.total_days), 1.5);
+  assert.equal(Number(snake.body.data.total_days), 2);
+
+  const halfDay = await callWith((await setup()).token, 'post', '/api/leaves', {
+    leave_type_id: 'LT-AL', start_date: '2027-04-07', end_date: '2027-04-07', shift_type: 'morning', total_days: 0.5, reason: 'Nghỉ buổi sáng',
+  });
+  assert.equal(halfDay.status, 201);
+  assert.equal(Number(halfDay.body.data.total_days), 0.5);
 });
 
 test('create: ids never collide, even for simultaneous submissions', async () => {
@@ -50,11 +56,19 @@ test('create: ids never collide, even for simultaneous submissions', async () =>
   assert.equal(new Set(results.map((r) => r.body.data.id)).size, 4);
 });
 
-test('create: validation', async () => {
+test('create: validation and server-side totalDays enforcement (R04)', async () => {
   const s = await setup();
   const bad = [
-    { leaveTypeId: undefined }, { startDate: '2027-03-06', endDate: '2027-03-01' }, { startDate: '01/03/2027' },
-    { reason: '' }, { totalDays: 0 }, { totalDays: -1 }, { totalDays: 1.3 }, { totalDays: 9 }, { totalDays: 'lots' },
+    { leaveTypeId: undefined },
+    { startDate: '2027-03-06', endDate: '2027-03-01' },
+    { startDate: '01/03/2027' },
+    { reason: '' },
+    { totalDays: 0 },
+    { totalDays: -1 },
+    { totalDays: 1.3 },
+    { totalDays: 0.5 }, // forged 0.5 on a 5-day range must be rejected!
+    { totalDays: 9 },
+    { totalDays: 'lots' },
   ];
   for (const extra of bad) {
     const res = await submit(s, extra);
