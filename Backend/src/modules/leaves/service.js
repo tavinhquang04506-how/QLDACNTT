@@ -59,20 +59,19 @@ async function create(user, body, req) {
       throw badRequest('Khoảng thời gian nghỉ không có ngày làm việc nào (trùng cuối tuần hoặc ngày lễ)');
     }
 
+    // Legacy clients omitting shiftType default to 'full' (full working days).
+    // Half-day leave (0.5) is ONLY granted when shiftType is explicitly 'morning' or 'afternoon' on a single working day.
     const shiftType = body.shiftType || 'full';
-    if ((shiftType === 'morning' || shiftType === 'afternoon') && body.startDate !== body.endDate) {
+    const isHalfDayShift = shiftType === 'morning' || shiftType === 'afternoon';
+    if (isHalfDayShift && (body.startDate !== body.endDate || computedDays !== 1)) {
       throw badRequest('Nghỉ nửa ngày (0.5 ngày) chỉ áp dụng khi ngày bắt đầu và ngày kết thúc là cùng một ngày làm việc');
     }
 
-    const isSingleDayHalf =
-      body.startDate === body.endDate &&
-      computedDays === 1 &&
-      (shiftType === 'morning' || shiftType === 'afternoon' || Number(body.totalDays) === 0.5);
-    const totalDays = isSingleDayHalf ? 0.5 : computedDays;
+    const totalDays = isHalfDayShift ? 0.5 : computedDays;
 
     if (body.totalDays !== undefined && Number(body.totalDays) !== totalDays) {
       throw badRequest(
-        `Số ngày nghỉ gửi lên (${body.totalDays}) không khớp số ngày làm việc thực tế (${totalDays} ngày, đã trừ cuối tuần và ngày lễ)`
+        `Số ngày nghỉ gửi lên (${body.totalDays}) mâu thuẫn với số ngày tính theo ca '${shiftType}' (${totalDays} ngày làm việc, đã trừ cuối tuần và ngày lễ)`
       );
     }
 
@@ -124,7 +123,7 @@ async function create(user, body, req) {
     }
     await writeAudit(client, {
       user, action: 'CREATE_LEAVE', table: 'leave_requests', recordId: id, req,
-      newValues: { employee_id: employeeId, leave_type_id: body.leaveTypeId, start_date: body.startDate, end_date: body.endDate, total_days: totalDays, stage: autoApprove ? 'DA_PHE_DUYET' : stage },
+      newValues: { employee_id: employeeId, leave_type_id: body.leaveTypeId, start_date: body.startDate, end_date: body.endDate, shift_type: shiftType, total_days: totalDays, stage: autoApprove ? 'DA_PHE_DUYET' : stage },
     });
     const created = await findDetail(client, id);
     await notifySubmitted(client, 'leave_requests', created,

@@ -10,8 +10,20 @@ router.use(authenticate);
 router.get(
   '/',
   requirePermission('settings.read'),
+  asyncHandler(async (req, res) => {
+    const period = req.query?.period ? String(req.query.period).trim() : null;
+    const data = period
+      ? await service.getSettingsForPeriod( undefined, period)
+      : await service.getSettings();
+    res.json({ success: true, data });
+  })
+);
+
+router.get(
+  '/versions',
+  requirePermission('settings.read'),
   asyncHandler(async (_req, res) => {
-    const data = await service.getSettings();
+    const data = await service.listPolicyVersions();
     res.json({ success: true, data });
   })
 );

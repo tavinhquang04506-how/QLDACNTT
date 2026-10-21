@@ -5,7 +5,10 @@ const numericId = z.string().regex(/^\d{1,18}$/, 'Mã không hợp lệ');
 
 const calculateBody = z.object({ period: z.string({ required_error: 'Thiếu kỳ lương' }).pipe(period) });
 const idParam = z.object({ id: numericId });
-const lockBody = z.object({ acknowledgeAnomalies: z.boolean().optional() });
+const lockBody = z.object({
+  acknowledgeAnomalies: z.boolean().optional().default(false),
+  note: z.string().trim().max(500).optional(),
+});
 const payslipsQuery = z.object({ period: period.optional(), page: z.string().optional(), limit: z.string().optional() });
 const updatePayslipBody = z.object({
   baseSalary: z.number().nonnegative().optional(),
