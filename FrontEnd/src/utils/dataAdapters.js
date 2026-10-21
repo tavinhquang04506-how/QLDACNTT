@@ -4,7 +4,7 @@
 // ============================================
 
 /**
- * Normalizes an employee record to safe UI format with fallbacks
+ * Normalizes an employee record to safe UI format without fabricating business numbers
  */
 export function normalizeEmployee(emp) {
   if (!emp || typeof emp !== 'object') {
@@ -16,45 +16,92 @@ export function normalizeEmployee(emp) {
       departmentId: null,
       role: 'Nhân viên',
       roleCode: 'EMPLOYEE',
-      status: 'active',
+      status: 'DANG_LAM_VIEC',
       avatar: '',
       phone: '',
-      baseSalary: 0,
+      baseSalary: null,
+      base_salary: null,
       joinedDate: '',
-      kpiScore: 0,
-      attendanceRate: 100,
-      contractType: 'full_time',
+      kpiScore: null,
+      attendanceRate: null,
+      leaveBalance: null,
+      leave_balance: null,
+      contractType: null,
+      contractNo: null,
+      contractSalary: null,
       citizenId: '',
       dob: '',
       gender: '',
       address: '',
       bankAccount: '',
       bankName: '',
+      managerId: null,
+      managerName: '',
     };
   }
+
+  const rawSalary = emp.base_salary ?? emp.baseSalary ?? null;
+  const baseSalary = rawSalary !== null && rawSalary !== undefined && rawSalary !== '' ? Number(rawSalary) : null;
+
+  const rawKpi = emp.kpi_score ?? emp.kpiScore ?? null;
+  const kpiScore = rawKpi !== null && rawKpi !== undefined && rawKpi !== '' ? Number(rawKpi) : null;
+
+  const rawAtt = emp.attendance_rate ?? emp.attendanceRate ?? null;
+  const attendanceRate = rawAtt !== null && rawAtt !== undefined && rawAtt !== '' ? Number(rawAtt) : null;
+
+  const rawLeave = emp.leave_balance ?? emp.leaveBalance ?? null;
+  const leaveBalance = rawLeave !== null && rawLeave !== undefined && rawLeave !== '' ? Number(rawLeave) : null;
+
+  const rawContractSalary = emp.contract_salary ?? emp.contractSalary ?? rawSalary;
+  const contractSalary =
+    rawContractSalary !== null && rawContractSalary !== undefined && rawContractSalary !== ''
+      ? Number(rawContractSalary)
+      : baseSalary;
 
   return {
     id: emp.id ?? emp.employee_id ?? emp.employeeId ?? '',
     name: emp.full_name ?? emp.fullName ?? emp.name ?? 'Chưa rõ',
+    full_name: emp.full_name ?? emp.fullName ?? emp.name ?? 'Chưa rõ',
     email: emp.work_email ?? emp.email ?? '',
+    work_email: emp.work_email ?? emp.email ?? '',
     department: emp.department_name ?? emp.departmentName ?? emp.department ?? 'Chưa phân bổ',
+    department_name: emp.department_name ?? emp.departmentName ?? emp.department ?? 'Chưa phân bổ',
     departmentId: emp.department_id ?? emp.departmentId ?? null,
+    department_id: emp.department_id ?? emp.departmentId ?? null,
     role: emp.job_title ?? emp.jobTitle ?? emp.position_name ?? emp.role ?? 'Nhân viên',
+    job_title: emp.job_title ?? emp.jobTitle ?? emp.position_name ?? emp.role ?? 'Nhân viên',
     roleCode: emp.role_code ?? emp.roleCode ?? 'EMPLOYEE',
-    status: emp.employee_status ?? emp.status ?? 'active',
+    status: emp.employee_status ?? emp.status ?? 'DANG_LAM_VIEC',
     avatar: emp.avatar_url ?? emp.avatarUrl ?? emp.avatar ?? '',
     phone: emp.phone_number ?? emp.phoneNumber ?? emp.phone ?? '',
-    baseSalary: Number(emp.base_salary ?? emp.baseSalary ?? 0),
+    phone_number: emp.phone_number ?? emp.phoneNumber ?? emp.phone ?? '',
+    baseSalary,
+    base_salary: baseSalary,
     joinedDate: emp.joined_date ?? emp.joinedDate ?? emp.hire_date ?? emp.hireDate ?? '',
-    kpiScore: Number(emp.kpi_score ?? emp.kpiScore ?? 0),
-    attendanceRate: Number(emp.attendance_rate ?? emp.attendanceRate ?? 100),
-    contractType: emp.contract_type ?? emp.contractType ?? 'full_time',
-    citizenId: emp.citizen_id ?? emp.citizenId ?? '',
-    dob: emp.date_of_birth ?? emp.dateOfBirth ?? '',
+    joined_date: emp.joined_date ?? emp.joinedDate ?? emp.hire_date ?? emp.hireDate ?? '',
+    kpiScore,
+    kpi_score: kpiScore,
+    attendanceRate,
+    attendance_rate: attendanceRate,
+    leaveBalance,
+    leave_balance: leaveBalance,
+    contractType: emp.active_contract_type ?? emp.contract_type ?? emp.contractType ?? null,
+    contractNo: emp.contract_no ?? emp.contractNo ?? null,
+    contractStartDate: emp.contract_start_date ?? emp.contractStartDate ?? emp.joined_date ?? emp.joinedDate ?? '',
+    contractEndDate: emp.contract_end_date ?? emp.contractEndDate ?? null,
+    contractSalary,
+    citizenId: emp.citizen_id ?? emp.citizenId ?? emp.cccd ?? '',
+    citizen_id: emp.citizen_id ?? emp.citizenId ?? emp.cccd ?? '',
+    dob: emp.date_of_birth ?? emp.dateOfBirth ?? emp.dob ?? '',
     gender: emp.gender ?? '',
     address: emp.address ?? '',
     bankAccount: emp.bank_account ?? emp.bankAccount ?? '',
+    bank_account: emp.bank_account ?? emp.bankAccount ?? '',
     bankName: emp.bank_name ?? emp.bankName ?? '',
+    bank_name: emp.bank_name ?? emp.bankName ?? '',
+    managerId: emp.manager_id ?? emp.managerId ?? null,
+    managerName: emp.manager_name ?? emp.managerName ?? '',
+    manager_name: emp.manager_name ?? emp.managerName ?? '',
   };
 }
 
@@ -90,7 +137,7 @@ export function normalizeLeaveRequest(leave) {
     leaveType: leave.leave_type ?? leave.leaveType ?? 'annual',
     startDate: leave.start_date ?? leave.startDate ?? '',
     endDate: leave.end_date ?? leave.endDate ?? '',
-    daysCount: Number(leave.days_count ?? leave.daysCount ?? 0),
+    daysCount: Number(leave.total_days ?? leave.days_count ?? leave.daysCount ?? 0),
     reason: leave.reason ?? '',
     status: leave.status ?? 'pending',
     stage: leave.stage ?? leave.current_stage ?? 'PENDING_LM',
@@ -122,8 +169,8 @@ export function normalizePayslip(slip) {
 
   const base = Number(slip.base_salary ?? slip.baseSalary ?? 0);
   const allowances = Number(slip.allowances ?? 0);
-  const overtime = Number(slip.overtime_pay ?? slip.overtimePay ?? 0);
-  const deductions = Number(slip.deductions ?? 0);
+  const overtime = Number(slip.overtime_pay ?? slip.overtimePay ?? slip.ot_pay ?? 0);
+  const deductions = Number(slip.total_deductions ?? slip.deductions ?? 0);
   const net = slip.net_salary != null || slip.netSalary != null
     ? Number(slip.net_salary ?? slip.netSalary)
     : base + allowances + overtime - deductions;
@@ -212,7 +259,9 @@ export function normalizeDepartment(dept) {
  * Currency formatter for Vietnamese Dong (VNĐ)
  */
 export function formatVND(amount) {
-  const num = Number(amount) || 0;
+  if (amount === null || amount === undefined || amount === '') return 'Chưa có dữ liệu';
+  const num = Number(amount);
+  if (Number.isNaN(num)) return 'Chưa có dữ liệu';
   return new Intl.NumberFormat('vi-VN').format(num) + ' VNĐ';
 }
 

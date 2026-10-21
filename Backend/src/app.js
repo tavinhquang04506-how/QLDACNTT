@@ -52,6 +52,7 @@ app.use('/api/squads', require('./modules/squads/routes'));
 app.use('/api/tasks', require('./modules/tasks/routes'));
 app.use('/api/projects', require('./modules/projects/routes'));
 app.use('/api/dashboard', require('./modules/dashboard/routes'));
+app.use('/api/settings', require('./modules/settings/routes'));
 app.use('/api/ai', require('./modules/ai/routes'));
 
 app.get('/api/health', async (req, res) => {
