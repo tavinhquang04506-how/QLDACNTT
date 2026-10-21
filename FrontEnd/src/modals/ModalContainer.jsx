@@ -59,21 +59,15 @@ export default function ModalContainer() {
   const { activeModal, closeModal, modalPayload } = useModal();
 
   const handleApproveLeave = async (id, note) => {
-    try {
-      await leaveService.approve(id, note);
-      window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id, status: 'approved' } }));
-    } catch (e) {
-      console.warn('Approve leave API notice:', e);
-    }
+    const res = await leaveService.approve(id, note);
+    window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id, status: 'approved' } }));
+    return res;
   };
 
   const handleRejectLeave = async (id, note) => {
-    try {
-      await leaveService.reject(id, note);
-      window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id, status: 'rejected' } }));
-    } catch (e) {
-      console.warn('Reject leave API notice:', e);
-    }
+    const res = await leaveService.reject(id, note);
+    window.dispatchEvent(new CustomEvent('nexus:leave-updated', { detail: { id, status: 'rejected' } }));
+    return res;
   };
 
   if (!activeModal) return null;

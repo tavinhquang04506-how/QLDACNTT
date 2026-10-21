@@ -28,7 +28,11 @@ async function findSquad(executor, id, { lock = false } = {}) {
   return (await attachMembers(executor, [rows[0]]))[0];
 }
 
-const isMember = (squad, user) => Boolean(user.employeeId) && (squad.lead_id === user.employeeId || (squad.members && squad.members.some((m) => m.id === user.employeeId)) || (user.roleCode && HR_ROLES.includes(user.roleCode)));
+// F31: Only actual squad members (lead or in squad_members) are members who may post messages;
+// HR_ROLES ('CEO', 'HR_DIRECTOR') have oversight read/manage rights via canRead / canManage.
+const isMember = (squad, user) =>
+  Boolean(user?.employeeId) &&
+  (squad.lead_id === user.employeeId || Boolean(squad.members && squad.members.some((m) => m.id === user.employeeId)));
 
 async function projectOf(executor, squad) {
   if (!squad.project_id) return null;
@@ -117,7 +121,6 @@ async function update(actor, id, body, req) {
     if (!before) throw notFound('Không tìm thấy nhóm');
     if (!(await canManage(client, actor, before))) throw forbidden('Bạn không có quyền sửa nhóm này');
     if (body.projectId && body.projectId !== before.project_id) {
-      // Attaching a squad to a project grants its members access to it, so the actor must manage that project.
       const target = (await client.query('SELECT id, manager_id, department_id FROM projects WHERE id = $1', [body.projectId])).rows[0];
       if (!target) throw notFound('Không tìm thấy dự án');
       if (!(await canManageProject(client, actor, target))) throw forbidden('Bạn không có quyền gắn nhóm vào dự án này');
@@ -185,7 +188,7 @@ const MESSAGE_SQL = `
   SELECT m.*, e.full_name AS sender_name, e.avatar_url AS sender_avatar
     FROM squad_messages m LEFT JOIN employees e ON e.id = m.sender_id`;
 
-async function listMessages(user, id, query) {
+async function listMessages(user, id, query = {}) {
   const squad = await get(user, id);
   const { limit } = parsePagination({ limit: query.limit }, { defaultLimit: 50, maxLimit: 200 });
   if (query.since) {
@@ -221,7 +224,7 @@ async function leaveSquad(user, id) {
     throw new AppError(400, 'LEAD_CANNOT_LEAVE', 'Trưởng nhóm không thể rời nhóm. Vui lòng chuyển giao vai trò trưởng nhóm trước.');
   }
   await db.query('DELETE FROM squad_members WHERE squad_id = $1 AND employee_id = $2', [id, user.employeeId]);
-  
+
   if (user.employeeId) {
     try {
       await db.query(
@@ -250,5 +253,4 @@ async function rejoinSquad(user, id) {
   return { success: true, squadId: id, left: false };
 }
 
-module.exports = { list, get, create, update, remove, addMember, removeMember, listMessages, postMessage, clearMessages, leaveSquad, rejoinSquad };
-
+module.exports = { list, get, create, update, remove, addMember, removeMember, listMessages, postMessage, clearMessages, leaveSquad, rejoinSquad, isMember, canRead };

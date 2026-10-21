@@ -22,13 +22,19 @@ export default function Sidebar() {
   useEffect(() => {
     let isMounted = true;
     async function loadPendingCount() {
+      if (!currentRole?.canApproveLeave) {
+        if (isMounted) setPendingLeavesCount(0);
+        return;
+      }
       try {
         const res = await leaveService.getAll();
         if (res?.success && Array.isArray(res.data) && isMounted) {
-          const pending = res.data.filter(l => l.stage === 'CHO_TRUONG_PHONG_DUYET' || l.stage === 'CHO_HR_PHE_CHUAN');
+          const pending = res.data.filter(
+            (l) => l.stage === 'CHO_TRUONG_PHONG_DUYET' || l.stage === 'CHO_HR_PHE_CHUAN'
+          );
           setPendingLeavesCount(pending.length);
         }
-      } catch (e) {}
+      } catch {}
     }
     loadPendingCount();
     window.addEventListener('nexus:leave-updated', loadPendingCount);
@@ -37,7 +43,7 @@ export default function Sidebar() {
       isMounted = false;
       window.removeEventListener('nexus:leave-updated', loadPendingCount);
     };
-  }, [currentRole.key]);
+  }, [currentRole.key, currentRole.canApproveLeave]);
 
   const leaveBadge = pendingLeavesCount > 0 ? String(pendingLeavesCount) : undefined;
 
@@ -78,6 +84,11 @@ export default function Sidebar() {
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Đánh giá hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
+        ];
+      case 'ADMIN':
+        return [
+          { name: 'Danh bạ nhân sự', path: '/directory', icon: Users },
+          { name: 'Quản trị tài khoản & Hệ thống', path: '/settings', icon: Settings },
         ];
       case 'EMPLOYEE':
       default:

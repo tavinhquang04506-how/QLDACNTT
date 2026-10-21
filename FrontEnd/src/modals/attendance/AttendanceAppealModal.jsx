@@ -8,10 +8,6 @@ import {
   XCircle, 
   AlertCircle, 
   Calendar, 
-  User, 
-  Building2, 
-  ShieldCheck, 
-  ChevronRight,
   RefreshCw
 } from 'lucide-react';
 import api from '../../services/api';
@@ -19,9 +15,9 @@ import { useAuth } from '../../context/AuthContext';
 
 export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
   const { user, currentRole } = useAuth();
-  const isAdminOrHR = currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO' || currentRole?.key === 'LINE_MANAGER' || currentRole?.canManageAll || user?.role === 'ADMIN' || user?.role === 'HR_MANAGER';
+  const isReviewer = currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'LINE_MANAGER' || user?.roleCode === 'HR_MANAGER' || user?.roleCode === 'DEPARTMENT_HEAD';
 
-  const [activeTab, setActiveTab] = useState(isAdminOrHR ? 'list' : 'create'); // 'create' | 'list'
+  const [activeTab, setActiveTab] = useState(isReviewer ? 'list' : 'create'); // 'create' | 'list'
   const [appeals, setAppeals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -42,6 +38,7 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
     VE_SOM: 'Về sớm do công việc / việc gấp',
     QUEN_CHAM_CONG: 'Quên chấm công (dập thẻ / face scan)',
     CONG_TAC: 'Công tác / Làm việc tại địa bàn khách hàng',
+    KHAC: 'Lý do khác',
   };
 
   const statusBadge = (status) => {
@@ -75,7 +72,7 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
         setAppeals(Array.isArray(res.data) ? res.data : (res.data.data || []));
       }
     } catch (err) {
-      console.warn('Lỗi lấy danh sách giải trình:', err);
+      setErrorMsg(err?.message || 'Không thể tải danh sách giải trình chấm công.');
     } finally {
       setLoading(false);
     }
@@ -109,24 +106,23 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
         appeal_type: form.appeal_type,
         reason: form.reason.trim(),
         proof_url: form.proof_url.trim() || null,
-        employee_id: user?.id || user?.employee_id,
-        employee_name: user?.full_name || user?.name,
-        department_name: user?.department || 'Khối Kỹ Thuật',
       });
 
-      if (res && (res.status === 200 || res.status === 201 || res.data?.success)) {
-        setSuccessMsg('Gửi đơn giải trình chấm công thành công!');
-        setForm({
-          date: new Date().toISOString().split('T')[0],
-          appeal_type: 'DI_MUON',
-          reason: '',
-          proof_url: '',
-        });
-        fetchAppeals();
-        setTimeout(() => setActiveTab('list'), 1000);
+      if (!res?.success) {
+        throw new Error(res?.message || 'Có lỗi xảy ra khi gửi đơn giải trình.');
       }
+
+      setSuccessMsg('Gửi đơn giải trình chấm công thành công!');
+      setForm({
+        date: new Date().toISOString().split('T')[0],
+        appeal_type: 'DI_MUON',
+        reason: '',
+        proof_url: '',
+      });
+      await fetchAppeals();
+      setTimeout(() => setActiveTab('list'), 800);
     } catch (err) {
-      setErrorMsg(err.response?.data?.message || 'Có lỗi xảy ra khi gửi đơn giải trình.');
+      setErrorMsg(err?.message || 'Có lỗi xảy ra khi gửi đơn giải trình.');
     } finally {
       setSubmitting(false);
     }
@@ -136,19 +132,25 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
     const note = window.prompt(status === 'DA_DUYET' ? 'Nhập ghi chú duyệt (tùy chọn):' : 'Nhập lý do từ chối:');
     if (status === 'TU_CHOI' && note === null) return;
 
+    setErrorMsg('');
     try {
-      await api.put(`/attendance/appeals/${id}/review`, {
+      const res = await api.put(`/attendance/appeals/${id}/review`, {
         status,
         review_note: note || '',
       });
-      fetchAppeals();
+      if (!res?.success) {
+        throw new Error(res?.message || 'Không thể cập nhật trạng thái đơn');
+      }
+      await fetchAppeals();
       try {
         window.dispatchEvent(new CustomEvent('nexus:attendance-updated'));
-      } catch (e) { }
+      } catch { }
     } catch (err) {
-      setErrorMsg('Không thể cập nhật trạng thái đơn: ' + (err.response?.data?.message || err.message));
+      setErrorMsg('Không thể cập nhật trạng thái đơn: ' + (err?.message || 'Lỗi không xác định'));
     }
   };
+
+  const actorEmployeeId = user?.employeeId || user?.employee_id || null;
 
   return (
     <AppleModal isOpen={isOpen} onClose={onClose} maxWidth="max-w-3xl">
@@ -207,6 +209,13 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
           </button>
         </div>
 
+        {errorMsg && (
+          <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            {errorMsg}
+          </div>
+        )}
+
         {/* Tab 1: Create Form */}
         {activeTab === 'create' && (
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -214,12 +223,6 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
               <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-medium flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 {successMsg}
-              </div>
-            )}
-            {errorMsg && (
-              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                {errorMsg}
               </div>
             )}
 
@@ -319,70 +322,73 @@ export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
               </div>
             ) : (
               <div className="max-h-96 overflow-y-auto space-y-3 pr-1">
-                {appeals.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-900">{item.id}</span>
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
-                            {appealTypeLabels[item.appeal_type] || item.appeal_type}
-                          </span>
+                {appeals.map((item) => {
+                  const isOwnAppeal = Boolean(actorEmployeeId && item.employee_id === actorEmployeeId);
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-900">{item.id}</span>
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                              {appealTypeLabels[item.appeal_type] || item.appeal_type}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500 mt-1 flex items-center gap-3">
+                            <span className="font-semibold text-slate-700">{item.employee_name || item.employee_id}</span>
+                            <span>•</span>
+                            <span>Ngày vi phạm: <strong className="text-slate-700">{String(item.date).split('T')[0]}</strong></span>
+                            <span>•</span>
+                            <span>Gửi lúc: {new Date(item.created_at).toLocaleString('vi-VN')}</span>
+                          </div>
                         </div>
-                        <div className="text-xs text-slate-500 mt-1 flex items-center gap-3">
-                          <span className="font-semibold text-slate-700">{item.employee_name || item.employee_id}</span>
-                          <span>•</span>
-                          <span>Ngày vi phạm: <strong className="text-slate-700">{String(item.date).split('T')[0]}</strong></span>
-                          <span>•</span>
-                          <span>Gửi lúc: {new Date(item.created_at).toLocaleString('vi-VN')}</span>
-                        </div>
+                        <div>{statusBadge(item.status)}</div>
                       </div>
-                      <div>{statusBadge(item.status)}</div>
+
+                      <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-normal">
+                        <strong className="text-slate-800">Lý do:</strong> {item.reason}
+                      </p>
+
+                      {item.proof_url && (
+                        <div className="text-xs text-blue-600 font-medium flex items-center gap-1">
+                          <span>Minh chứng đính kèm:</span>
+                          <a href={item.proof_url} target="_blank" rel="noreferrer" className="underline hover:text-blue-800">
+                            {item.proof_url}
+                          </a>
+                        </div>
+                      )}
+
+                      {item.review_note && (
+                        <div className="text-xs text-slate-600 bg-blue-50/50 p-2 rounded-lg border border-blue-100/50">
+                          <strong className="text-blue-900">Phản hồi của {item.reviewer_name || 'Quản lý'}:</strong> {item.review_note}
+                        </div>
+                      )}
+
+                      {/* Reviewer action controls (never allow reviewing own appeal) */}
+                      {isReviewer && !isOwnAppeal && item.status === 'CHO_DUYET' && (
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleReview(item.id, 'TU_CHOI')}
+                            className="px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 rounded-lg transition-colors border border-rose-200"
+                          >
+                            Từ chối
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleReview(item.id, 'DA_DUYET')}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
+                          >
+                            Duyệt giải trình
+                          </button>
+                        </div>
+                      )}
                     </div>
-
-                    <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-normal">
-                      <strong className="text-slate-800">Lý do:</strong> {item.reason}
-                    </p>
-
-                    {item.proof_url && (
-                      <div className="text-xs text-blue-600 font-medium flex items-center gap-1">
-                        <span>Minh chứng đính kèm:</span>
-                        <a href={item.proof_url} target="_blank" rel="noreferrer" className="underline hover:text-blue-800">
-                          {item.proof_url}
-                        </a>
-                      </div>
-                    )}
-
-                    {item.review_note && (
-                      <div className="text-xs text-slate-600 bg-blue-50/50 p-2 rounded-lg border border-blue-100/50">
-                        <strong className="text-blue-900">Phản hồi của {item.reviewer_name || 'Quản lý'}:</strong> {item.review_note}
-                      </div>
-                    )}
-
-                    {/* Admin/HR action controls */}
-                    {isAdminOrHR && item.status === 'CHO_DUYET' && (
-                      <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleReview(item.id, 'TU_CHOI')}
-                          className="px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 rounded-lg transition-colors border border-rose-200"
-                        >
-                          Từ chối
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleReview(item.id, 'DA_DUYET')}
-                          className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
-                        >
-                          Duyệt giải trình
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

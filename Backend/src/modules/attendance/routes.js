@@ -7,7 +7,7 @@ const { punchBody, kioskBody, listQuery, adjustBody, timesheetQuery, exceptionsQ
 
 const router = express.Router();
 
-// Route lấy mã Dynamic Code cho màn hình Kiosk (không yêu cầu đăng nhập cá nhân)
+// Route lấy mã Dynamic Code cho màn hình Kiosk
 router.get('/kiosk-code', controller.getKioskCode);
 
 router.use(authenticate);
@@ -21,9 +21,10 @@ router.post('/adjust', requirePermission('attendance.adjust'), validate({ body: 
 router.get('/timesheet', requirePermission('attendance.read'), validate({ query: timesheetQuery }), controller.timesheet);
 router.get('/exceptions', requirePermission('attendance.report'), validate({ query: exceptionsQuery }), controller.exceptions);
 router.get('/live', requirePermission('attendance.report'), controller.live);
-router.post('/appeals', controller.createAppeal);
-router.get('/appeals', controller.getAppeals);
+router.post('/appeals', requirePermission('attendance.appeals.create'), controller.createAppeal);
+router.get('/appeals', requirePermission('attendance.appeals.read'), controller.getAppeals);
 router.put('/appeals/:id/review', requirePermission('attendance.appeals.review'), controller.reviewAppeal);
+router.patch('/appeals/:id/review', requirePermission('attendance.appeals.review'), controller.reviewAppeal);
 
 router.get('/', requirePermission('attendance.read'), validate({ query: listQuery }), controller.list);
 
