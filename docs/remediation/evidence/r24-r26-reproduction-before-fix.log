@@ -1,0 +1,16 @@
+# LABEL: R24-R26 Before-Fix Reproduction on 4077088
+# COMMAND: node Backend/scripts/reproduce-r24-r26-before-fix.js
+# BRANCH: bugfix/remediation-r24-r26-review-fixes
+# BASE_COMMIT: 4077088
+# STARTED_AT: 2026-10-21T09:16:19.125Z
+# FINISHED_AT: 2026-10-21T09:16:19.189Z
+# EXIT_CODE: 0
+================================================================================
+=== [BEFORE-FIX REPRODUCTION: R24, R25, R26 ON COMMIT 4077088] ===
+[R24 BEFORE FIX] PayrollPage.jsx conflict handling keywords: {"ADJUSTMENT_SOURCE_CONFLICT":false,"KEEP_MANUAL":false,"USE_SOURCE":false,"adjustmentResolutions":false}
+[R25 BEFORE FIX] Server status is DU_THAO, but with client-only isCeoApproved=true -> payrollStatus: {"serverStatus":"DU_THAO","uiPayrollStatus":"CEO Đã Phê Duyệt Chi Trả","hasFakeApproveLabelInPayrollPage":true}
+[R26 BEFORE FIX] Duplicate employee_id across 2 pages (NV-A on page 1 & page 2, total=2): {"accepted":true,"rows":2,"uniqueEmployees":1}
+[R26 BEFORE FIX] Changed pagination.total on page 2 (2 -> 3): {"accepted":true,"rows":2}
+[R26 BEFORE FIX] Mixed snapshotToken between page 1 (snap-v1) and page 2 (snap-v2): {"accepted":true,"rows":2}
+
+EXIT_CODE=0

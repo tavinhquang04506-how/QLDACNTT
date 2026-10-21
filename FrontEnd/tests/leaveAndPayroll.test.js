@@ -14,6 +14,9 @@ import {
   buildPeriodSelectOptions,
   computePeriodViewState,
   fetchAllPayslipsForPeriod,
+  areAllConflictsResolved,
+  buildConflictResolutionPayload,
+  reconcileConflictModalState,
 } from '../src/utils/payrollPeriodState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -293,6 +296,233 @@ describe('Leave and Payroll Logic Tests', () => {
     await assert.rejects(
       () => fetchAllPayslipsForPeriod(truncatedPage2, { period: '2032-08', pageSize: 500 }),
       /không khớp tổng số bản ghi/
+    );
+  });
+
+  it('R24: Adjustment source conflict helpers enforce explicit choices without defaults, include expectedSourceValues, and invalidate stale decisions when source mutates mid-review', () => {
+    const initialConflicts = [
+      {
+        employeeId: 'NV-1001',
+        employeeName: 'Nguyen Van A',
+        field: 'actualWorkDays',
+        previousSourceValue: 18,
+        currentSourceValue: 19,
+        manualValue: 21,
+      },
+      {
+        employeeId: 'NV-1001',
+        employeeName: 'Nguyen Van A',
+        field: 'baseSalary',
+        previousSourceValue: 20000000,
+        currentSourceValue: 22000000,
+        manualValue: 25000000,
+      },
+    ];
+
+    // 1. Initial modal state has NO default selection
+    const state1 = reconcileConflictModalState([], {}, initialConflicts);
+    assert.equal(state1.decisions['NV-1001::actualWorkDays'], null);
+    assert.equal(state1.decisions['NV-1001::baseSalary'], null);
+    assert.equal(areAllConflictsResolved(state1.conflictItems, state1.decisions), false);
+
+    // 2. Partial selection still blocks submit
+    const partialDecisions = {
+      ...state1.decisions,
+      'NV-1001::actualWorkDays': 'KEEP_MANUAL',
+    };
+    assert.equal(areAllConflictsResolved(state1.conflictItems, partialDecisions), false);
+
+    // 3. Complete selection allows submit and builds payload with expectedCurrentSourceValue
+    const fullDecisions = {
+      'NV-1001::actualWorkDays': 'KEEP_MANUAL',
+      'NV-1001::baseSalary': 'USE_SOURCE',
+    };
+    assert.equal(areAllConflictsResolved(state1.conflictItems, fullDecisions), true);
+    const payload = buildConflictResolutionPayload(state1.conflictItems, fullDecisions);
+    assert.deepEqual(payload.adjustmentResolutions['NV-1001'].actualWorkDays, {
+      action: 'KEEP_MANUAL',
+      expectedCurrentSourceValue: 19,
+    });
+    assert.deepEqual(payload.adjustmentResolutions['NV-1001'].baseSalary, {
+      action: 'USE_SOURCE',
+      expectedCurrentSourceValue: 22000000,
+    });
+    assert.deepEqual(payload.expectedSourceValues['NV-1001'], {
+      actualWorkDays: 19,
+      baseSalary: 22000000,
+    });
+
+    // 4. Source changes again while modal is open (actualWorkDays: 19 -> 20) -> invalidates actualWorkDays decision, keeps baseSalary decision
+    const updatedConflicts = [
+      {
+        employeeId: 'NV-1001',
+        employeeName: 'Nguyen Van A',
+        field: 'actualWorkDays',
+        previousSourceValue: 18,
+        currentSourceValue: 20,
+        manualValue: 21,
+      },
+      {
+        employeeId: 'NV-1001',
+        employeeName: 'Nguyen Van A',
+        field: 'baseSalary',
+        previousSourceValue: 20000000,
+        currentSourceValue: 22000000,
+        manualValue: 25000000,
+      },
+    ];
+    const state2 = reconcileConflictModalState(state1.conflictItems, fullDecisions, updatedConflicts);
+    assert.deepEqual(state2.invalidatedKeys, ['NV-1001::actualWorkDays']);
+    assert.equal(state2.decisions['NV-1001::actualWorkDays'], null);
+    assert.equal(state2.decisions['NV-1001::baseSalary'], 'USE_SOURCE');
+    assert.equal(areAllConflictsResolved(state2.conflictItems, state2.decisions), false);
+
+    const payrollPageSrc = fs.readFileSync(path.resolve(__dirname, '../src/pages/PayrollPage.jsx'), 'utf8');
+    assert.match(payrollPageSrc, /data-testid="adjustment-conflict-modal"/);
+    assert.match(payrollPageSrc, /reconcileConflictModalState/);
+    assert.match(payrollPageSrc, /buildConflictResolutionPayload/);
+  });
+
+  it('R25: PayrollPage and PayrollAnomalyModal remove fake local CEO/Exception approval state and reflect real server status', () => {
+    const viewState = computePeriodViewState({
+      currentPeriodCode: '2026-10',
+      currentPeriodObj: { id: 10, period: '2026-10', status: 'DU_THAO' },
+      loadedPeriodCode: '2026-10',
+      loadedPeriodId: 10,
+      loadedExpectedTotal: 1,
+      periodLoading: false,
+      periodError: '',
+      apiPayslips: [{ id: 1, period: '2026-10', period_id: 10, employee_id: 'NV-0001', net_salary: 20000000 }],
+      anomalies: [],
+      isCeoApproved: true,
+    });
+    assert.equal(viewState.payrollStatus, 'Đang xử lý dự thảo');
+    assert.notEqual(viewState.payrollStatus, 'CEO Đã Phê Duyệt Chi Trả');
+
+    const payrollPageSrc = fs.readFileSync(path.resolve(__dirname, '../src/pages/PayrollPage.jsx'), 'utf8');
+    assert.doesNotMatch(payrollPageSrc, /Phê duyệt chi trả toàn công ty/);
+    assert.doesNotMatch(payrollPageSrc, /Đã phê duyệt chi trả/);
+    assert.doesNotMatch(payrollPageSrc, /handleCeoApprove/);
+    assert.match(payrollPageSrc, /data-testid="recalculate-payroll-btn"/);
+
+    const anomalyModalSrc = fs.readFileSync(path.resolve(__dirname, '../src/modals/payroll/PayrollAnomalyModal.jsx'), 'utf8');
+    assert.doesNotMatch(anomalyModalSrc, /handleApproveException/);
+    assert.doesNotMatch(anomalyModalSrc, /Chấp thuận ngoại lệ/);
+  });
+
+  it('R26: fetchAllPayslipsForPeriod rejects duplicate employee_id, duplicate id, missing metadata, changed total, and mid-pagination monetary changes while accepting 505+ valid rows', async () => {
+    const totalRecords = 505;
+    const validRows = Array.from({ length: totalRecords }, (_, idx) => ({
+      id: idx + 1,
+      period: '2032-08',
+      employee_id: `NV-TR26-${String(idx + 1).padStart(4, '0')}`,
+      net_salary: 15000000 + idx * 1000,
+    }));
+    const expectedTotalNet = validRows.reduce((s, r) => s + r.net_salary, 0);
+
+    // 1. Valid 505+ rows with consistent snapshotToken and aggregates
+    const validLoader = async ({ page, limit }) => {
+      const start = (page - 1) * limit;
+      return {
+        success: true,
+        data: validRows.slice(start, start + limit),
+        pagination: {
+          total: totalRecords,
+          page,
+          limit,
+          totalPages: 2,
+          period: '2032-08',
+          snapshotToken: 'snap-valid-505',
+          aggregates: { totalNet: expectedTotalNet },
+        },
+      };
+    };
+    const okRes = await fetchAllPayslipsForPeriod(validLoader, {
+      period: '2032-08',
+      pageSize: 500,
+      expectedSnapshotToken: 'snap-valid-505',
+      expectedTotalNet,
+    });
+    assert.equal(okRes.data.length, 505);
+    assert.equal(okRes.snapshotToken, 'snap-valid-505');
+    assert.equal(okRes.totalNet, expectedTotalNet);
+
+    // 2. Duplicate employee_id with exact total count (505) -> MUST REJECT
+    const dupEmpLoader = async ({ page, limit }) => {
+      const start = (page - 1) * limit;
+      const slice = validRows.slice(start, start + limit).map((r) => ({ ...r }));
+      if (page === 2) {
+        slice[0] = { ...slice[0], employee_id: 'NV-TR26-0001' }; // duplicate from page 1!
+      }
+      return {
+        success: true,
+        data: slice,
+        pagination: { total: totalRecords, page, limit, totalPages: 2, period: '2032-08' },
+      };
+    };
+    await assert.rejects(
+      () => fetchAllPayslipsForPeriod(dupEmpLoader, { period: '2032-08', pageSize: 500 }),
+      (err) => err.code === 'DUPLICATE_PAYSLIP_EMPLOYEE'
+    );
+
+    // 3. Missing pagination metadata on page 1 -> MUST REJECT
+    const missingMetaLoader = async () => ({
+      success: true,
+      data: validRows.slice(0, 500),
+      pagination: {},
+    });
+    await assert.rejects(
+      () => fetchAllPayslipsForPeriod(missingMetaLoader, { period: '2032-08', pageSize: 500 }),
+      (err) => err.code === 'INVALID_PAGINATION_METADATA'
+    );
+
+    // 4. Total changes between page 1 and page 2 -> MUST REJECT
+    const changedTotalLoader = async ({ page, limit }) => {
+      const start = (page - 1) * limit;
+      return {
+        success: true,
+        data: validRows.slice(start, start + limit),
+        pagination: {
+          total: page === 1 ? 505 : 506,
+          page,
+          limit,
+          totalPages: 2,
+          period: '2032-08',
+        },
+      };
+    };
+    await assert.rejects(
+      () => fetchAllPayslipsForPeriod(changedTotalLoader, { period: '2032-08', pageSize: 500 }),
+      (err) => err.code === 'PAGINATION_TOTAL_CHANGED'
+    );
+
+    // 5. Monetary value changes on page 2 while count stays 505 -> MUST REJECT
+    const mutatedAmountLoader = async ({ page, limit }) => {
+      const start = (page - 1) * limit;
+      const slice = validRows.slice(start, start + limit).map((r) => ({ ...r }));
+      if (page === 2) {
+        slice[0] = { ...slice[0], net_salary: slice[0].net_salary + 500000 };
+      }
+      return {
+        success: true,
+        data: slice,
+        pagination: {
+          total: totalRecords,
+          page,
+          limit,
+          totalPages: 2,
+          period: '2032-08',
+          snapshotToken: page === 1 ? 'snap-v1' : 'snap-v2',
+          aggregates: { totalNet: page === 1 ? expectedTotalNet : expectedTotalNet + 500000 },
+        },
+      };
+    };
+    await assert.rejects(
+      () => fetchAllPayslipsForPeriod(mutatedAmountLoader, { period: '2032-08', pageSize: 500 }),
+      (err) =>
+        err.code === 'SNAPSHOT_CHANGED_DURING_PAGINATION' ||
+        err.code === 'SNAPSHOT_AGGREGATE_CHANGED' ||
+        err.code === 'SNAPSHOT_AMOUNT_MISMATCH'
     );
   });
 });

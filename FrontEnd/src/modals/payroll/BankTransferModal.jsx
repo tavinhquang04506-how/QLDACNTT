@@ -12,16 +12,26 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const [missingList, setMissingList] = useState([]);
   const [batchError, setBatchError] = useState('');
   const [batchLoading, setBatchLoading] = useState(false);
+  const [loadedSnapshotToken, setLoadedSnapshotToken] = useState(null);
 
   const periodId = payload?.periodId || payload?.period?.id || null;
   const periodName = payload?.period?.period || payload?.period?.name || payload?.period || 'Kỳ lương hiện tại';
   const periodCode = payload?.periodCode || parsePeriodCode(periodName);
+  const expectedSnapshotTokenFromParent = payload?.expectedSnapshotToken || null;
+  const expectedTotalNetFromParent =
+    payload?.expectedTotalNet !== undefined && payload?.expectedTotalNet !== null
+      ? Number(payload.expectedTotalNet)
+      : payload?.totalNet !== undefined && payload?.totalNet !== null
+      ? Number(payload.totalNet)
+      : null;
 
   useEffect(() => {
     if (!isOpen) return;
     setBatchError('');
     setMissingList([]);
     setFetchedList([]);
+    setDownloadSuccess(false);
+    setLoadedSnapshotToken(expectedSnapshotTokenFromParent);
 
     if (!periodId) {
       setBatchError('Kỳ lương chưa được khởi tạo hoặc chưa tải xong dữ liệu kỳ lương. Không thể kết xuất lệnh chi.');
@@ -32,42 +42,29 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
     (async () => {
       setBatchLoading(true);
       try {
-        const btRes = await payrollService.getBankTransfer(periodId).catch(() => null);
-        const btData = btRes?.data || btRes;
-        if (btData && Array.isArray(btData.items) && isMounted) {
-          const combined = [
-            ...btData.items.map((it) => ({ ...it, net_salary: it.amount })),
-            ...(btData.missingBank || []).map((m) => ({ ...m, bank_account: '', bank_name: '', net_salary: 0 })),
-          ];
-          setFetchedList(combined);
-          setMissingList(btData.missingBank || []);
-          setBatchLoading(false);
-          return;
-        }
-
-        if (Array.isArray(payload?.slips) && payload.slips.length > 0) {
-          if (
-            payload.expectedTotal != null &&
-            payload.slips.length !== Number(payload.expectedTotal)
-          ) {
-            throw new Error(
-              `Danh sách phiếu lương (${payload.slips.length}) không khớp tổng số bản ghi của kỳ (${payload.expectedTotal}).`
-            );
-          }
-          if (isMounted) {
-            setFetchedList(payload.slips);
-            setBatchLoading(false);
-          }
-          return;
-        }
-
         if (!periodCode) {
           throw new Error('Thiếu mã kỳ lương để tải danh sách chi trả.');
         }
 
-        const allPages = await payrollService.getAllPayslipsForPeriod(periodCode, 500);
+        // R22 + R26: Always load and validate all pages with duplicate/metadata/snapshot consistency checks
+        const allPages = await payrollService.getAllPayslipsForPeriod(periodCode, 500, {
+          expectedSnapshotToken: expectedSnapshotTokenFromParent,
+          expectedTotalNet: expectedTotalNetFromParent,
+        });
+
+        if (
+          payload?.expectedTotal != null &&
+          Array.isArray(allPages.data) &&
+          allPages.data.length !== Number(payload.expectedTotal)
+        ) {
+          throw new Error(
+            `Danh sách phiếu lương tải về (${allPages.data.length}) không khớp tổng số bản ghi của kỳ (${payload.expectedTotal}).`
+          );
+        }
+
         if (isMounted) {
           setFetchedList(allPages.data || []);
+          setLoadedSnapshotToken(allPages.snapshotToken || expectedSnapshotTokenFromParent || null);
           setBatchLoading(false);
         }
       } catch (err) {
@@ -78,21 +75,21 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
         }
       }
     })();
-    return () => { isMounted = false; };
-  }, [isOpen, periodId, periodCode, payload]);
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, periodId, periodCode, expectedSnapshotTokenFromParent, expectedTotalNetFromParent, payload?.expectedTotal]);
 
-  const rawList =
-    !batchError && !batchLoading
-      ? fetchedList.length > 0
-        ? fetchedList
-        : Array.isArray(payload?.slips)
-        ? payload.slips
-        : []
-      : [];
+  const rawList = !batchError && !batchLoading ? fetchedList : [];
 
   const displayAccounts = rawList.map((item, idx) => {
     const rawNet = Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0);
-    const hasBank = Boolean(item.bank_account && String(item.bank_account).trim() && item.bank_name && String(item.bank_name).trim());
+    const hasBank = Boolean(
+      item.bank_account &&
+        String(item.bank_account).trim() &&
+        item.bank_name &&
+        String(item.bank_name).trim()
+    );
     const isPayable = hasBank && rawNet > 0;
     return {
       stt: idx + 1,
@@ -114,24 +111,61 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
   const totalAmountStr = `${totalAmount.toLocaleString('vi-VN')} đ`;
   const canExportBatch = Boolean(periodId && !batchLoading && !batchError && validAccounts.length > 0);
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!canExportBatch) return;
-    const headers = ['STT', 'Mã Nhân Viên', 'Họ Và Tên', 'Số Tài Khoản', 'Ngân Hàng Thụ Hưởng', 'Số Tiền Thực Nhận (VNĐ)', 'Trạng Thái'];
-    const rows = validAccounts.map((a, idx) => [
-      idx + 1,
-      a.id,
-      a.name,
-      a.account,
-      a.bank,
-      a.rawAmount,
-      a.status,
-    ]);
-    const csv = generateCSVContent(headers, rows);
-    const bankLabel = selectedBank === 'vcb' ? 'Vietcombank' : selectedBank === 'tcb' ? 'Techcombank' : 'NAPAS247';
-    const safePeriod = String(periodName).replace(/[^a-zA-Z0-9_-]/g, '_');
-    downloadFile(`Lenh_Chi_Luong_${bankLabel}_${safePeriod}.csv`, csv);
-    setDownloadSuccess(true);
-    setTimeout(() => setDownloadSuccess(false), 3000);
+    setBatchError('');
+    setDownloadSuccess(false);
+    try {
+      // R26: Re-verify multi-page snapshot consistency right before generating the financial CSV
+      const verified = await payrollService.getAllPayslipsForPeriod(periodCode, 500, {
+        expectedSnapshotToken: loadedSnapshotToken,
+        expectedTotalNet: expectedTotalNetFromParent,
+      });
+      const verifiedRows = (verified.data || []).filter((item) => {
+        const rawNet = Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0);
+        const hasBank = Boolean(
+          item.bank_account &&
+            String(item.bank_account).trim() &&
+            item.bank_name &&
+            String(item.bank_name).trim()
+        );
+        return hasBank && rawNet > 0;
+      });
+      if (verifiedRows.length === 0) {
+        throw new Error('Không có hồ sơ nhân sự hợp lệ để xuất lệnh chi ngân hàng.');
+      }
+
+      const headers = [
+        'STT',
+        'Mã Nhân Viên',
+        'Họ Và Tên',
+        'Số Tài Khoản',
+        'Ngân Hàng Thụ Hưởng',
+        'Số Tiền Thực Nhận (VNĐ)',
+        'Trạng Thái',
+      ];
+      const rows = verifiedRows.map((item, idx) => [
+        idx + 1,
+        item.code || item.employee_code || item.employee_id || item.id || '',
+        item.name || item.employee_name || item.full_name || 'Nhân sự',
+        item.bank_account,
+        item.bank_name,
+        Number(item.net_salary ?? item.netSalary ?? item.amount ?? 0),
+        'Hợp lệ',
+      ]);
+      const csv = generateCSVContent(headers, rows);
+      const bankLabel =
+        selectedBank === 'vcb' ? 'Vietcombank' : selectedBank === 'tcb' ? 'Techcombank' : 'NAPAS247';
+      const safePeriod = String(periodName).replace(/[^a-zA-Z0-9_-]/g, '_');
+      downloadFile(`Lenh_Chi_Luong_${bankLabel}_${safePeriod}.csv`, csv);
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    } catch (err) {
+      setBatchError(
+        err?.message ||
+          'Dữ liệu bảng lương đã thay đổi hoặc không hợp lệ khi kết xuất lệnh chi. Vui lòng tải lại kỳ lương.'
+      );
+    }
   };
 
   return (
@@ -251,7 +285,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {displayAccounts.map(acc => (
+              {displayAccounts.map((acc) => (
                 <tr key={acc.stt} className="hover:bg-slate-50/70 transition">
                   <td className="py-2 px-3 text-slate-400">{acc.stt}</td>
                   <td className="py-2 px-3 font-mono font-semibold text-slate-800">{acc.id}</td>
@@ -285,7 +319,7 @@ export default function Modal7B_BankTransfer({ isOpen, onClose, payload }) {
         {/* Footer Actions */}
         <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between">
           <div className="text-xs text-slate-500">
-            Dữ liệu được mã hóa chuẩn SHA-256 theo tiêu chuẩn kết nối ngân hàng điện tử B2B.
+            Dữ liệu được kiểm tra tính nhất quán snapshot và mã nhân viên duy nhất trước khi kết xuất.
           </div>
 
           <div className="flex items-center gap-2.5">
