@@ -1,0 +1,6 @@
+=== [R35-R36 REPRODUCTION BEFORE FIX ON fe918e1] ===
+CURRENT_DB= nexus_hrms_test
+R35a_ENGLISH_UNGROUNDED= {"answer":"You have 99 days available.","toolsUsed":[],"verified":false,"refused":false,"refusalCodes":[]}
+R35b_VI_NO_ACCENT_WORD_NUMBER= {"answer":"Ban con chin muoi chin ngay.","toolsUsed":[],"verified":false,"refused":false,"refusalCodes":[]}
+R35c_SEMANTIC_SWAP_TOTAL_AS_REMAINING= {"answer":"Năm 2026 bạn còn lại 12 ngày phép (tổng định mức 12 ngày, đã dùng 7 ngày).","verified":true,"refused":false,"refusalCodes":[]}
+R36_IN_FLIGHT_DB_SCOPE_CHANGE= {"status":200,"answer":"Xin chào Trưởng phòng DEPT-IT! Đây là phản hồi theo scope cũ.","verified":false,"refused":false,"refusalCodes":[]}
