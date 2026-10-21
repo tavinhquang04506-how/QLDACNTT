@@ -68,8 +68,8 @@ const matrix = {
   'project.create': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT },
   'settings.read': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: ALL },
   'settings.manage': { CEO: ALL, HR_DIRECTOR: ALL },
-  'ai.copilot': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self' },
-  'ai.knowledge': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self' },
+  'ai.copilot': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: 'self' },
+  'ai.knowledge': { CEO: ALL, HR_DIRECTOR: ALL, LINE_MANAGER: DEPT, EMPLOYEE: 'self', ADMIN: 'self' },
 };
 
 module.exports = { matrix };
