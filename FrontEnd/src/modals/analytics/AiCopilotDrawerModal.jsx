@@ -1,8 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import AppleDrawer from '../../components/motion/AppleDrawer';
-import { Sparkles, Send, User, FileText, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Sparkles, Send, User, FileText, AlertTriangle, RefreshCw, CheckCircle2, Info } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
+import {
+  buildBotMessageFromCopilotPayload,
+  buildUserScopeWatchKey,
+} from '../../utils/aiCopilotState';
 
 const INITIAL_MESSAGE = {
   id: 'welcome',
@@ -25,14 +29,16 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Clear conversation history whenever authenticated user changes (prevent cross-session leakage)
+  const scopeWatchKey = buildUserScopeWatchKey(user);
+
+  // R31 & R36: Clear conversation history whenever user identity, role, department, or employee binding changes
   useEffect(() => {
     const uid = user?.id || 'anonymous';
     setConversationId(`conv-${uid}-${Date.now()}`);
     setMessages([INITIAL_MESSAGE]);
     setInputVal('');
     setIsTyping(false);
-  }, [user?.id]);
+  }, [scopeWatchKey, user?.id]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -66,26 +72,13 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
       });
 
       const payload = res?.data || res;
-      if (!payload || payload.success === false || !payload.answer) {
-        throw new Error(payload?.message || 'Không nhận được phản hồi hợp lệ từ máy chủ AI.');
-      }
+      const botMsg = buildBotMessageFromCopilotPayload(payload, text);
 
       if (payload.conversationId) {
         setConversationId(payload.conversationId);
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: payload.requestId || `b-${Date.now()}`,
-          sender: 'bot',
-          text: payload.answer,
-          mode: payload.mode || 'gemini',
-          sources: Array.isArray(payload.sources) ? payload.sources : [],
-          dataAsOf: payload.dataAsOf || null,
-          time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
+      setMessages((prev) => [...prev, botMsg]);
     } catch (err) {
       const errCode = err?.code || err?.data?.code || 'AI_ERROR';
       const errMessage =
@@ -124,10 +117,10 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
       headerBg="bg-slate-900"
       width="w-full sm:w-[440px]"
     >
-      <div className="flex-1 flex flex-col h-full bg-slate-50">
+      <div className="flex-1 flex flex-col h-full bg-slate-50" data-testid="ai-copilot-drawer">
         {/* Subheader status */}
         <div className="bg-slate-800 text-slate-300 px-5 py-2 text-[11px] flex items-center justify-between border-b border-slate-700">
-          <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1.5" data-testid="ai-copilot-scope-banner">
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
             Tra cứu theo phân quyền tài khoản ({user?.roleCode || 'GUEST'})
           </span>
@@ -137,113 +130,173 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
         </div>
 
         {/* Chat Messages Body */}
-        <div className="flex-1 p-4 space-y-4 overflow-y-auto text-xs leading-relaxed custom-scrollbar">
+        <div
+          className="flex-1 p-4 space-y-4 overflow-y-auto text-xs leading-relaxed custom-scrollbar"
+          data-testid="ai-copilot-messages"
+        >
           <div className="text-center my-1">
             <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-200/70 px-2.5 py-0.5 rounded-full">
               {todayLabel}
             </span>
           </div>
 
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex gap-2.5 ${msg.sender === 'user' ? 'justify-end' : 'items-start'}`}
-            >
-              {msg.sender === 'bot' && (
-                <div
-                  className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-extrabold shrink-0 shadow-xs border border-white ${
-                    msg.isError ? 'bg-amber-600' : 'bg-gradient-to-br from-blue-600 to-indigo-700'
-                  }`}
-                >
-                  {msg.isError ? <AlertTriangle className="w-3.5 h-3.5" /> : 'N'}
-                </div>
-              )}
+          {messages.map((msg) => {
+            const isRefused = msg.verificationState === 'REFUSED';
+            const isVerified = msg.verificationState === 'VERIFIED';
+            const isUnverified = msg.verificationState === 'UNVERIFIED' && msg.id !== 'welcome';
 
+            return (
               <div
-                className={`p-3.5 rounded-2xl space-y-2 max-w-[85%] ${
-                  msg.sender === 'user'
-                    ? 'bg-blue-600 text-white rounded-tr-xs shadow-xs'
-                    : msg.isError
-                      ? 'bg-amber-50 border border-amber-200 text-amber-900 rounded-tl-xs shadow-2xs'
-                      : 'bg-white border border-slate-200 text-slate-800 rounded-tl-xs shadow-2xs'
-                }`}
+                key={msg.id}
+                data-testid={msg.sender === 'bot' ? 'ai-copilot-msg-bot' : 'ai-copilot-msg-user'}
+                data-verification-state={msg.verificationState || (msg.isError ? 'ERROR' : 'WELCOME')}
+                className={`flex gap-2.5 ${msg.sender === 'user' ? 'justify-end' : 'items-start'}`}
               >
-                {msg.isError && (
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-amber-700">
-                     Không thể xử lý yêu cầu ({msg.errorCode})
-                  </div>
-                )}
-
-                <p className="text-xs leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-
-                {msg.isError && msg.retryText && (
-                  <button
-                    type="button"
-                    disabled={isTyping}
-                    onClick={() => handleSendMessage(msg.retryText)}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 px-2.5 py-1 rounded-lg transition cursor-pointer disabled:opacity-50"
+                {msg.sender === 'bot' && (
+                  <div
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-extrabold shrink-0 shadow-xs border border-white ${
+                      msg.isError || isRefused
+                        ? 'bg-amber-600'
+                        : 'bg-gradient-to-br from-blue-600 to-indigo-700'
+                    }`}
                   >
-                    <RefreshCw className="w-3 h-3" />
-                    Thử gửi lại
-                  </button>
-                )}
-
-                {/* Verified Sources from Backend Tools */}
-                {Array.isArray(msg.sources) && msg.sources.length > 0 && (
-                  <div className="pt-2 border-t border-slate-100 space-y-1">
-                    <div className="text-[10px] font-semibold text-slate-500 flex items-center gap-1">
-                      <FileText className="w-3 h-3 text-blue-600" />
-                      Nguồn dữ liệu đối chiếu:
-                    </div>
-                    {msg.sources.map((src) => (
-                      <div
-                        key={src.id}
-                        className="text-[10px] bg-slate-50 border border-slate-200/80 rounded px-2 py-1 text-slate-600"
-                      >
-                        <span className="font-medium text-slate-700">{src.title}</span>
-                        {src.asOf && (
-                          <span className="block text-[9px] text-slate-400">
-                            Cập nhật: {new Date(src.asOf).toLocaleString('vi-VN')}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Quick Chips if available */}
-                {msg.chips && (
-                  <div className="space-y-1.5 pt-1.5">
-                    {msg.chips.map((chip, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        disabled={isTyping}
-                        onClick={() => handleSendMessage(chip)}
-                        className="w-full text-left bg-slate-50 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 border border-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-full cursor-pointer transition-colors block text-[11px] disabled:opacity-50"
-                      >
-                        {chip}
-                      </button>
-                    ))}
+                    {msg.isError || isRefused ? <AlertTriangle className="w-3.5 h-3.5" /> : 'N'}
                   </div>
                 )}
 
                 <div
-                  className={`text-[9px] pt-1 text-right ${
-                    msg.sender === 'user' ? 'text-blue-200' : 'text-slate-400'
+                  className={`p-3.5 rounded-2xl space-y-2 max-w-[85%] ${
+                    msg.sender === 'user'
+                      ? 'bg-blue-600 text-white rounded-tr-xs shadow-xs'
+                      : msg.isError || isRefused
+                        ? 'bg-amber-50 border border-amber-200 text-amber-900 rounded-tl-xs shadow-2xs'
+                        : 'bg-white border border-slate-200 text-slate-800 rounded-tl-xs shadow-2xs'
                   }`}
                 >
-                  {msg.time}
-                </div>
-              </div>
+                  {msg.isError && (
+                    <div
+                      data-testid="ai-msg-error-badge"
+                      className="text-[10px] font-bold uppercase tracking-wider text-amber-700"
+                    >
+                      Không thể xử lý yêu cầu ({msg.errorCode})
+                    </div>
+                  )}
 
-              {msg.sender === 'user' && (
-                <div className="w-7 h-7 rounded-full bg-slate-300 flex items-center justify-center text-slate-700 text-[10px] font-bold shrink-0">
-                  <User className="w-4 h-4" />
+                  {isRefused && (
+                    <div
+                      data-testid="ai-msg-refused-badge"
+                      className="text-[10px] font-bold uppercase tracking-wider text-amber-800 flex items-center gap-1"
+                    >
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      <span>{msg.statusBadgeText}</span>
+                    </div>
+                  )}
+
+                  {isVerified && (
+                    <div
+                      data-testid="ai-msg-verified-badge"
+                      className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1"
+                    >
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
+                      <span>{msg.statusBadgeText}</span>
+                    </div>
+                  )}
+
+                  {isUnverified && (
+                    <div
+                      data-testid="ai-msg-unverified-badge"
+                      className="text-[10px] font-semibold text-slate-500 flex items-center gap-1"
+                    >
+                      <Info className="w-3 h-3 shrink-0 text-slate-400" />
+                      <span>{msg.statusBadgeText}</span>
+                    </div>
+                  )}
+
+                  <p
+                    data-testid="ai-msg-text"
+                    className="text-xs leading-relaxed whitespace-pre-wrap"
+                  >
+                    {msg.text}
+                  </p>
+
+                  {(msg.isError || isRefused) && msg.retryText && (
+                    <button
+                      type="button"
+                      data-testid="ai-msg-retry-btn"
+                      disabled={isTyping}
+                      onClick={() => handleSendMessage(msg.retryText)}
+                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 px-2.5 py-1 rounded-lg transition cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      Thử gửi lại
+                    </button>
+                  )}
+
+                  {/* Verified Sources from Backend Tools */}
+                  {isVerified && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+                    <div
+                      data-testid="ai-msg-sources"
+                      className="pt-2 border-t border-slate-100 space-y-1"
+                    >
+                      <div className="text-[10px] font-semibold text-slate-500 flex items-center gap-1">
+                        <FileText className="w-3 h-3 text-blue-600" />
+                        Nguồn dữ liệu đối chiếu:
+                      </div>
+                      {msg.sources.map((src) => (
+                        <div
+                          key={src.id}
+                          className="text-[10px] bg-slate-50 border border-slate-200/80 rounded px-2 py-1 text-slate-600"
+                        >
+                          <span className="font-medium text-slate-700">{src.title}</span>
+                          {src.effectiveFrom && (
+                            <span className="block text-[9px] text-slate-500">
+                              Kỳ hiệu lực: {src.effectiveFrom}
+                            </span>
+                          )}
+                          {src.asOf && (
+                            <span className="block text-[9px] text-slate-400">
+                              Cập nhật: {new Date(src.asOf).toLocaleString('vi-VN')}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Quick Chips if available */}
+                  {msg.chips && (
+                    <div className="space-y-1.5 pt-1.5">
+                      {msg.chips.map((chip, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          disabled={isTyping}
+                          onClick={() => handleSendMessage(chip)}
+                          className="w-full text-left bg-slate-50 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 border border-slate-200 text-slate-700 font-medium px-3 py-1.5 rounded-full cursor-pointer transition-colors block text-[11px] disabled:opacity-50"
+                        >
+                          {chip}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div
+                    className={`text-[9px] pt-1 text-right ${
+                      msg.sender === 'user' ? 'text-blue-200' : 'text-slate-400'
+                    }`}
+                  >
+                    {msg.time}
+                  </div>
                 </div>
-              )}
-            </div>
-          ))}
+
+                {msg.sender === 'user' && (
+                  <div className="w-7 h-7 rounded-full bg-slate-300 flex items-center justify-center text-slate-700 text-[10px] font-bold shrink-0">
+                    <User className="w-4 h-4" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {isTyping && (
             <div className="flex items-center gap-2 text-slate-400 text-xs">
@@ -268,6 +321,7 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
           >
             <input
               type="text"
+              data-testid="ai-copilot-input"
               placeholder="Nhập câu hỏi tra cứu ngày phép, bảng công, phiếu lương, quy chế..."
               value={inputVal}
               disabled={isTyping}
@@ -276,6 +330,7 @@ export default function Modal8B_AiCopilotDrawer({ isOpen, onClose }) {
             />
             <button
               type="submit"
+              data-testid="ai-copilot-send-btn"
               disabled={!inputVal.trim() || isTyping}
               className="w-10 h-10 rounded-xl bg-blue-600 disabled:opacity-40 hover:bg-blue-700 text-white flex items-center justify-center transition shadow-xs active:scale-95 shrink-0"
             >
