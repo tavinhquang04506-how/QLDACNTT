@@ -1,0 +1,7 @@
+=== [R09-R14 PRE-FIX REPRODUCTION ON COMMIT aa7cfbb] ===
+TIMESTAMP=2026-10-21T05:11:17.430Z
+[PRE-FIX ISSUE 1] Expected 2028-02 PIT deduction=13000000, Actual=11000000 (fell back to DEFAULT_SETTINGS=11000000 because 2028-02 version was overwritten)
+[PRE-FIX ISSUE 2 & 4] payrollService default acknowledgeAnomalies=true: true, modal hardcodes lockPeriod(periodId, true): true, modal has fake password input: true
+[PRE-FIX ISSUE 3] shiftType=full + totalDays=0.5 HTTP status=201, stored total_days=0.5 (expected 400 rejection)
+[PRE-FIX ISSUE 6] Employee with 5 attendance days + 2 approved paid leave days -> actual_work_days=5.0 (expected 7)
+EXIT_CODE=0
