@@ -6,6 +6,12 @@ const { scopeCondition } = require('../../utils/scope');
 const { STANDARD_WORK_DAYS, PERSONAL_DEDUCTION, DEPENDENT_DEDUCTION, computePayslip } = require('./tax');
 const settingsService = require('../settings/service');
 
+function parseIsoDate(iso) {
+  if (!iso || typeof iso !== 'string') return null;
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 const DEFAULT_ALLOWANCES = 1_500_000; // phụ cấp ăn trưa + xăng xe
 const OT_MONTHLY_LIMIT = 40;
 const LOCKED = ['DA_CHOT', 'DA_CHUYEN_KHOAN'];
@@ -14,6 +20,7 @@ const SEVERITY_ORDER = { Cao: 0, 'Trung bình': 1, Thấp: 2 };
 
 function buildPolicySnapshot(settings = {}) {
   return {
+    policy_version_id: settings.policy_version_id ?? null,
     standard_work_days: Number(settings.standard_work_days) > 0 ? Number(settings.standard_work_days) : STANDARD_WORK_DAYS,
     ot_multiplier: Number(settings.ot_multiplier) > 0 ? Number(settings.ot_multiplier) : 1.5,
     default_allowances: Number.isFinite(Number(settings.default_allowances)) && Number(settings.default_allowances) >= 0
@@ -41,6 +48,33 @@ async function resolvePeriodPolicy(executor, periodRow) {
   return buildPolicySnapshot(settings);
 }
 
+/**
+ * Compute approved paid leave days within a payroll period that do not overlap dates already counted in `paidDatesSet`.
+ */
+function computeApprovedPaidLeaveDays(leavesForEmp = [], paidDatesSet = new Set(), holidaySet = new Set()) {
+  if (!leavesForEmp || leavesForEmp.length === 0) return 0;
+  let totalPaidLeaveDays = 0;
+  const countedLeaveDates = new Set();
+
+  for (const lr of leavesForEmp) {
+    const isHalfDaySingle = lr.raw_start === lr.raw_end && Number(lr.total_days) === 0.5;
+    const cur = parseIsoDate(lr.clip_start);
+    const last = parseIsoDate(lr.clip_end);
+    if (!cur || !last || last < cur) continue;
+
+    while (cur <= last) {
+      const dow = cur.getUTCDay();
+      const iso = cur.toISOString().slice(0, 10);
+      if (dow >= 1 && dow <= 5 && !holidaySet.has(iso) && !paidDatesSet.has(iso) && !countedLeaveDates.has(iso)) {
+        countedLeaveDates.add(iso);
+        totalPaidLeaveDays += isHalfDaySingle ? 0.5 : 1;
+      }
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+  }
+  return Math.round(totalPaidLeaveDays * 10) / 10;
+}
+
 async function findPeriod(executor, id, { lock = false } = {}) {
   const { rows } = await executor.query(`SELECT * FROM payroll_periods WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [id]);
   if (!rows[0]) throw notFound('Không tìm thấy kỳ lương');
@@ -56,15 +90,15 @@ const getPeriod = (id) => findPeriod(db, id);
 /** Draft payroll for every employee paid in `period` ('YYYY-MM'). A locked or transferred period is never touched. */
 async function calculate(actor, period, req) {
   return db.withTransaction(async (client) => {
+    const settings = await settingsService.getSettingsForPeriod(client, period);
+    const policySnapshot = buildPolicySnapshot(settings);
+
     await client.query('INSERT INTO payroll_periods (period) VALUES ($1) ON CONFLICT (period) DO NOTHING', [period]);
     const periodRow = (await client.query('SELECT * FROM payroll_periods WHERE period = $1 FOR UPDATE', [period])).rows[0];
     if (periodRow.status !== 'DU_THAO') {
       throw new AppError(409, 'PERIOD_LOCKED', `Kỳ lương ${period} đã được chốt, không thể tính lại`);
     }
     await client.query('DELETE FROM payslips WHERE period_id = $1', [periodRow.id]);
-
-    const settings = await settingsService.getSettingsForPeriod(client, period);
-    const policySnapshot = buildPolicySnapshot(settings);
 
     const start = `${period}-01`;
     const { rows: employees } = await client.query(
@@ -78,6 +112,7 @@ async function calculate(actor, period, req) {
       `SELECT employee_id,
               COUNT(*)::int AS total_logs,
               COUNT(*) FILTER (WHERE status <> 'VANG_KHONG_PHEP')::int AS work_days,
+              COALESCE(ARRAY_AGG(work_date::text) FILTER (WHERE status <> 'VANG_KHONG_PHEP'), ARRAY[]::text[]) AS paid_dates,
               COALESCE(SUM(ot_hours), 0) AS ot
          FROM attendance_logs
         WHERE work_date >= $1::date AND work_date < ($1::date + INTERVAL '1 month')
@@ -86,16 +121,61 @@ async function calculate(actor, period, req) {
     );
     const byEmployee = new Map(attendance.map((a) => [a.employee_id, a]));
 
+    const { rows: holidayRows } = await client.query(
+      `SELECT holiday_date::text AS d
+         FROM public_holidays
+        WHERE is_paid = TRUE
+          AND holiday_date >= $1::date
+          AND holiday_date < ($1::date + INTERVAL '1 month')`,
+      [start]
+    );
+    const holidaySet = new Set(holidayRows.map((r) => String(r.d).slice(0, 10)));
+
+    const { rows: paidLeaveRows } = await client.query(
+      `SELECT lr.employee_id,
+              GREATEST(lr.start_date, $1::date)::text AS clip_start,
+              LEAST(lr.end_date, ($1::date + INTERVAL '1 month' - INTERVAL '1 day')::date)::text AS clip_end,
+              lr.start_date::text AS raw_start,
+              lr.end_date::text AS raw_end,
+              lr.total_days
+         FROM leave_requests lr
+         JOIN leave_types lt ON lt.id = lr.leave_type_id
+        WHERE lr.stage = 'DA_PHE_DUYET'
+          AND lt.is_paid = TRUE
+          AND lr.start_date < ($1::date + INTERVAL '1 month')
+          AND lr.end_date >= $1::date
+        ORDER BY lr.start_date, lr.id`,
+      [start]
+    );
+    const paidLeavesByEmployee = new Map();
+    for (const lr of paidLeaveRows) {
+      if (!paidLeavesByEmployee.has(lr.employee_id)) {
+        paidLeavesByEmployee.set(lr.employee_id, []);
+      }
+      paidLeavesByEmployee.get(lr.employee_id).push({
+        ...lr,
+        clip_start: String(lr.clip_start).slice(0, 10),
+        clip_end: String(lr.clip_end).slice(0, 10),
+        raw_start: String(lr.raw_start).slice(0, 10),
+        raw_end: String(lr.raw_end).slice(0, 10),
+      });
+    }
+
     const totals = { net: 0, bhxh: 0, tax: 0, ot: 0 };
     for (const emp of employees) {
       const base = Number(emp.base_salary) || 0;
       const att = byEmployee.get(emp.id);
-      const hasRecordedLogs = Boolean(att && Number(att.total_logs) > 0);
       const loggedWorkDays = att ? Number(att.work_days) : 0;
+      const paidDatesSet = new Set((att?.paid_dates || []).map((d) => String(d).slice(0, 10)));
+      const approvedPaidLeaveDays = computeApprovedPaidLeaveDays(
+        paidLeavesByEmployee.get(emp.id) || [],
+        paidDatesSet,
+        holidaySet
+      );
       const otHours = att ? Number(att.ot) : 0;
-      // R02 / F09: Never fabricate 22 workdays when attendance logs are missing.
-      // Employees with no attendance logs in the period receive 0 workdays and trigger a blocking NO_ATTENDANCE violation on lock.
-      const workDays = hasRecordedLogs ? loggedWorkDays : 0;
+      // R02 / F09 + R14: Never fabricate 22 workdays when attendance logs are missing.
+      // Combine actual attendance workdays with non-overlapping approved paid leave days (`DA_PHE_DUYET` & `is_paid = TRUE`).
+      const workDays = loggedWorkDays + approvedPaidLeaveDays;
       const rawAllowances = workDays === 0 && otHours === 0 ? 0 : policySnapshot.default_allowances;
       const p = computePayslip({
         base,
@@ -199,8 +279,14 @@ async function computeAnomalies(executor, periodRow) {
 
   const { rows } = await executor.query(
     `SELECT ps.employee_id, e.full_name, ps.actual_work_days, ps.ot_hours, ps.bank_account, ps.bank_name,
-            (SELECT COUNT(*) FROM attendance_logs a
-              WHERE a.employee_id = ps.employee_id AND a.work_date >= $2::date AND a.work_date < ($2::date + INTERVAL '1 month')) AS att_days,
+            (
+              (SELECT COUNT(*) FROM attendance_logs a
+                WHERE a.employee_id = ps.employee_id AND a.work_date >= $2::date AND a.work_date < ($2::date + INTERVAL '1 month'))
+              +
+              (SELECT COUNT(*) FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
+                WHERE lr.employee_id = ps.employee_id AND lr.stage = 'DA_PHE_DUYET' AND lt.is_paid = TRUE
+                  AND lr.start_date < ($2::date + INTERVAL '1 month') AND lr.end_date >= $2::date)
+            ) AS att_days,
             (SELECT COALESCE(SUM(o.hours), 0) FROM ot_requests o
               WHERE o.employee_id = ps.employee_id AND o.stage = 'DA_PHE_DUYET'
                 AND o.work_date >= $2::date AND o.work_date < ($2::date + INTERVAL '1 month')) AS approved_ot
@@ -215,7 +301,7 @@ async function anomalies(id) {
   return computeAnomalies(db, await findPeriod(db, id));
 }
 
-async function lock(actor, id, body, req) {
+async function lock(actor, id, body = {}, req) {
   return db.withTransaction(async (client) => {
     const period = await findPeriod(client, id, { lock: true });
     if (period.status !== 'DU_THAO') throw new AppError(409, 'PERIOD_LOCKED', 'Kỳ lương đã được chốt');
@@ -223,24 +309,45 @@ async function lock(actor, id, body, req) {
     const count = await client.query('SELECT COUNT(*)::int AS n FROM payslips WHERE period_id = $1', [id]);
     if (count.rows[0].n === 0) throw new AppError(409, 'NO_PAYSLIPS', 'Chưa có phiếu lương, hãy tính lương trước khi chốt');
 
+    const acknowledge = body?.acknowledgeAnomalies === true;
     const violations = (await computeAnomalies(client, period)).filter((a) => a.category === 'violation');
-    if (violations.length > 0 && !body.acknowledgeAnomalies) {
+    if (violations.length > 0 && !acknowledge) {
       throw new AppError(409, 'ANOMALIES_PENDING', `Còn ${violations.length} vi phạm cần xử lý hoặc xác nhận trước khi chốt lương`, violations);
     }
     const policySnapshot = await resolvePeriodPolicy(client, period);
+    const lockNote = typeof body?.note === 'string' && body.note.trim() ? body.note.trim() : null;
     await client.query(
       `UPDATE payroll_periods
           SET status = 'DA_CHOT',
               locked_by = $2,
               locked_at = NOW(),
+              note = COALESCE($4, note),
               policy_snapshot = COALESCE(policy_snapshot, $3::jsonb)
         WHERE id = $1`,
-      [id, actor.employeeId ?? null, JSON.stringify(policySnapshot)]
+      [id, actor.employeeId ?? null, JSON.stringify(policySnapshot), lockNote]
     );
     await client.query("UPDATE payslips SET status = 'DA_CHOT' WHERE period_id = $1", [id]);
     await writeAudit(client, {
-      user: actor, action: 'LOCK_PAYROLL', table: 'payroll_periods', recordId: id, req,
-      oldValues: { status: 'DU_THAO' }, newValues: { status: 'DA_CHOT', acknowledged_violations: violations.length },
+      user: actor,
+      action: 'LOCK_PAYROLL',
+      table: 'payroll_periods',
+      recordId: id,
+      req,
+      oldValues: { status: 'DU_THAO' },
+      newValues: {
+        status: 'DA_CHOT',
+        acknowledge_anomalies: acknowledge,
+        acknowledged_violations: violations.length,
+        acknowledged_violation_items: acknowledge
+          ? violations.map((v) => ({
+              type: v.type,
+              employee_id: v.employee_id,
+              employeeId: v.employeeId || v.employee_id,
+              severity: v.severity,
+            }))
+          : [],
+        note: lockNote,
+      },
     });
     return findPeriod(client, id);
   });
@@ -444,6 +551,7 @@ module.exports = {
   calculate,
   anomalies,
   evaluateAnomalyRows,
+  computeApprovedPaidLeaveDays,
   lock,
   transfer,
   bankTransfer,

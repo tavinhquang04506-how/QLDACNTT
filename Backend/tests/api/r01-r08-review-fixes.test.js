@@ -237,6 +237,7 @@ test('R05 (F12/F13/F26): system_settings drive payroll/OT by effective period an
     assert.equal(Number(slipMayAfter.allowances), 1500000);
     assert.equal(Number(slipMayAfter.net_salary), Number(slipMay.net_salary));
   } finally {
+    await db.query("DELETE FROM system_policy_versions WHERE effective_from LIKE '2028-%'");
     await settingsService.updateSettings({ employeeId: null, role: 'HR_DIRECTOR' }, originalSettings, null);
   }
 });

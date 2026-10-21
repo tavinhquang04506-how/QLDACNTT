@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { normalizeLeaveRequest, normalizePayslip, formatVND } from '../src/utils/dataAdapters.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Leave and Payroll Logic Tests', () => {
   it('correctly counts pending requests without double subtraction', () => {
@@ -39,5 +44,23 @@ describe('Leave and Payroll Logic Tests', () => {
   it('formats payroll currency accurately with formatVND', () => {
     assert.equal(formatVND(25000000), '25.000.000 VNĐ');
     assert.equal(formatVND(0), '0 VNĐ');
+  });
+
+  it('R10: payrollService.lockPeriod defaults acknowledgeAnomalies to false and forwards audit note', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../src/services/payrollService.js'), 'utf8');
+    assert.match(src, /lockPeriod:\s*\(id,\s*acknowledgeAnomalies\s*=\s*false/);
+    assert.doesNotMatch(src, /lockPeriod:\s*\(id,\s*acknowledgeAnomalies\s*=\s*true/);
+  });
+
+  it('R10 & R13: PayrollLockModal displays real anomalies, defaults acknowledgeAnomalies to false, and removes fake password/checkbox controls', () => {
+    const modalSrc = fs.readFileSync(path.resolve(__dirname, '../src/modals/payroll/PayrollLockModal.jsx'), 'utf8');
+    assert.match(modalSrc, /useState\(false\)/);
+    assert.match(modalSrc, /payrollService[\s\S]*\.getAnomalies\(periodId\)/);
+    assert.match(modalSrc, /data-testid="acknowledge-anomalies-checkbox"/);
+    assert.match(modalSrc, /data-testid="payroll-lock-note-input"/);
+    assert.doesNotMatch(modalSrc, /type=\{showPassword \? 'text' : 'password'\}/);
+    assert.doesNotMatch(modalSrc, /Nhập mật khẩu hoặc mã xác nhận quản trị/);
+    assert.doesNotMatch(modalSrc, /sendPush/);
+    assert.doesNotMatch(modalSrc, /openPortal/);
   });
 });

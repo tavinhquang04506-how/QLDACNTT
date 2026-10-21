@@ -15,8 +15,11 @@ const payrollService = {
   getAnomalies: (id) => api.get(`/payroll/periods/${id}/anomalies`),
   updatePayslip: (id, data) => api.put(`/payroll/payslips/${id}`, data),
   getBankTransfer: (id) => api.get(`/payroll/periods/${id}/bank-transfer`),
-  lockPeriod: (id, acknowledgeAnomalies = true) =>
-    api.post(`/payroll/periods/${id}/lock`, { acknowledgeAnomalies }),
+  lockPeriod: (id, acknowledgeAnomalies = false, extra = {}) =>
+    api.post(`/payroll/periods/${id}/lock`, {
+      acknowledgeAnomalies: Boolean(acknowledgeAnomalies),
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    }),
   transferPeriod: (id) => api.post(`/payroll/periods/${id}/transfer`),
 };
 

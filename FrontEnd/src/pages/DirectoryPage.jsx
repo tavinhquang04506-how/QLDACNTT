@@ -237,7 +237,10 @@ export default function DirectoryPage() {
       </div>
 
       {errorMsg && (
-        <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+        <div
+          data-testid="directory-error-banner"
+          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+        >
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>
         </div>
@@ -347,6 +350,8 @@ export default function DirectoryPage() {
                   return (
                     <tr 
                       key={emp.id} 
+                      data-testid="directory-row"
+                      data-emp-id={emp.id}
                       className="hover:bg-slate-50/80 transition-colors cursor-pointer"
                       onClick={() => openModal('modal4B', emp)}
                     >
@@ -410,13 +415,14 @@ export default function DirectoryPage() {
 
         {/* Pagination Footer */}
         <div className="px-4 py-3 bg-slate-50/70 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
-          <div>
+          <div data-testid="directory-pagination-info">
             Hiển thị <strong>{employees.length}</strong> trên tổng số <strong>{totalEmployeesCount}</strong> nhân sự
             {pagination.totalPages > 1 ? ` (Trang ${pagination.page} / ${pagination.totalPages})` : ''}
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
+              data-testid="directory-prev-page"
               disabled={page <= 1 || isLoadingEmployees}
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-semibold flex items-center gap-1 cursor-pointer"
@@ -429,6 +435,7 @@ export default function DirectoryPage() {
             </span>
             <button
               type="button"
+              data-testid="directory-next-page"
               disabled={page >= pagination.totalPages || isLoadingEmployees}
               onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
               className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-semibold flex items-center gap-1 cursor-pointer"

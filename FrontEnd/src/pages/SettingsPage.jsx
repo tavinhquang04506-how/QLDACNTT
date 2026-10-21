@@ -37,6 +37,8 @@ export default function SettingsPage() {
   const [officeName, setOfficeName] = useState('Tòa nhà NEXUS Tower');
   const [personalIncomeTaxDeduction, setPersonalIncomeTaxDeduction] = useState(11000000);
   const [dependentDeduction, setDependentDeduction] = useState(4400000);
+  const [defaultAllowances, setDefaultAllowances] = useState(1500000);
+  const [policyEffectiveFrom, setPolicyEffectiveFrom] = useState('2020-01');
 
   const canEditSettings = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
 
@@ -71,6 +73,12 @@ export default function SettingsPage() {
     }
     if (d.dependentDeduction !== undefined || d.dependent_deduction !== undefined) {
       setDependentDeduction(Number(d.dependentDeduction ?? d.dependent_deduction));
+    }
+    if (d.defaultAllowances !== undefined || d.default_allowances !== undefined) {
+      setDefaultAllowances(Number(d.defaultAllowances ?? d.default_allowances));
+    }
+    if (d.policyEffectiveFrom !== undefined || d.policy_effective_from !== undefined) {
+      setPolicyEffectiveFrom(String(d.policyEffectiveFrom ?? d.policy_effective_from));
     }
     if (d.updated_at) {
       setLastUpdated(d.updated_at);
@@ -115,6 +123,8 @@ export default function SettingsPage() {
         officeName: String(officeName).trim() || 'Tòa nhà NEXUS Tower',
         personalIncomeTaxDeduction: Number(personalIncomeTaxDeduction),
         dependentDeduction: Number(dependentDeduction),
+        defaultAllowances: Number(defaultAllowances),
+        policyEffectiveFrom: String(policyEffectiveFrom).trim() || '2020-01',
       });
 
       if (!res?.success) {
@@ -170,6 +180,7 @@ export default function SettingsPage() {
           {canEditSettings ? (
             <button
               type="button"
+              data-testid="settings-save-btn"
               onClick={handleSave}
               disabled={saving || loading}
               className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
@@ -199,7 +210,10 @@ export default function SettingsPage() {
       </div>
 
       {errorMsg && (
-        <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+        <div
+          data-testid="settings-error-banner"
+          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+        >
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>
         </div>
@@ -209,6 +223,7 @@ export default function SettingsPage() {
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto no-scrollbar">
         <button
           type="button"
+          data-testid="settings-tab-attendance"
           onClick={() => setActiveTab('attendance')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'attendance'
@@ -222,6 +237,7 @@ export default function SettingsPage() {
 
         <button
           type="button"
+          data-testid="settings-tab-tax"
           onClick={() => setActiveTab('tax_bhxh')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'tax_bhxh'
@@ -235,6 +251,7 @@ export default function SettingsPage() {
 
         <button
           type="button"
+          data-testid="settings-tab-biometrics"
           onClick={() => setActiveTab('biometrics')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
             activeTab === 'biometrics'
@@ -271,6 +288,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <input
                     type="number"
+                    data-testid="input-late-grace-minutes"
                     min="0"
                     max="180"
                     value={lateGraceMinutes}
@@ -321,6 +339,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <input
                     type="number"
+                    data-testid="input-max-ot-per-month"
                     min="1"
                     max="300"
                     value={maxOtPerMonth}
@@ -376,6 +395,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
+                    data-testid="input-pit-deduction"
                     min="0"
                     step="100000"
                     value={personalIncomeTaxDeduction}
@@ -393,11 +413,47 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
+                    data-testid="input-dependent-deduction"
                     min="0"
                     step="100000"
                     value={dependentDeduction}
                     onChange={(e) => setDependentDeduction(Number(e.target.value))}
                     disabled={!canEditSettings}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Phụ cấp định kỳ mặc định (VNĐ / tháng)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    data-testid="input-default-allowances"
+                    min="0"
+                    step="100000"
+                    value={defaultAllowances}
+                    onChange={(e) => setDefaultAllowances(Number(e.target.value))}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Kỳ lương hiệu lực chính sách (YYYY-MM)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    data-testid="input-policy-effective-from"
+                    value={policyEffectiveFrom}
+                    onChange={(e) => setPolicyEffectiveFrom(e.target.value)}
+                    disabled={!canEditSettings}
+                    placeholder="YYYY-MM"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono text-slate-900 text-xs disabled:opacity-75"
                   />
                 </div>

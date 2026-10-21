@@ -676,6 +676,7 @@ export default function PayrollPage() {
             <div className="flex items-center gap-2 flex-wrap shrink-0">
               {/* Period selector */}
               <select
+                data-testid="payroll-period-select"
                 value={selectedPeriod}
                 onChange={(e) => setSelectedPeriod(e.target.value)}
                 className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 shadow-2xs cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100 shrink-0"
@@ -716,6 +717,7 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
+                    data-testid="open-bank-transfer-modal-btn"
                     onClick={() => openModal('modal7B', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod })}
                     className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
                   >
@@ -747,6 +749,7 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
+                    data-testid="open-bank-transfer-modal-btn"
                     onClick={() => openModal('modal7B', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod })}
                     className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
                   >
@@ -756,7 +759,8 @@ export default function PayrollPage() {
 
                   <button
                     type="button"
-                    onClick={() => openModal('modal7C', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod, employeesCount: periodPayslips.length || employees.length })}
+                    data-testid="open-payroll-lock-modal-btn"
+                    onClick={() => openModal('modal7C', { periodId: currentPeriodObj?.id, slips: periodPayslips, employees, totalNet, period: selectedPeriod, employeesCount: periodPayslips.length || employees.length, anomalies })}
                     className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shrink-0"
                   >
                     <Lock className="w-4 h-4" />
@@ -767,6 +771,7 @@ export default function PayrollPage() {
 
               <button
                 type="button"
+                data-testid="export-payroll-csv-btn"
                 onClick={handleExportPayrollReport}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
               >
