@@ -1,0 +1,11 @@
+COMMAND: node Backend/scripts/reproduce-r20-r23-before-fix.js
+COMMIT: b4adde0
+
+=== [R20-R23 REPRODUCTION BEFORE FIX START] ===
+TIMESTAMP=2026-10-21T07:46:16.609Z
+[R20 REPRODUCED] Non-existent period B falls back to Period A ID & data: {"hasPeriodZeroFallback":true,"hasPeriodIdFilterLeak":true,"hasEmptyCatchOnPayslips":true,"selectedPeriod":"Tháng 11/2028","currentPeriodCode":"2028-11","resolvedPeriodId":101,"resolvedPeriodCode":"2028-10","leakedPayslipsCount":1,"modalPayloadWhenSelectingUncreatedB":{"periodId":101,"period":"Tháng 11/2028","slipsCount":1}}
+[R21 REPRODUCED] HR manual adjustments on actualWorkDays/baseSalary/otHours lost on calculate(): {"beforeRecalculate":{"actualWorkDays":20,"baseSalary":30000000,"otHours":12,"updated_by":"NV-0002","updated_at":"2026-10-21T07:00:00.000Z"},"afterRecalculatePreserved":null,"lostActualWorkDays":true,"lostBaseSalary":true,"lostOtHours":true,"calculatesUsesEmpSrcBaseDirectly":true,"calculatesUsesEmpSrcWorkDaysDirectly":true,"calculatesUsesEmpSrcOtHoursDirectly":true}
+[R22 REPRODUCED] 505 payslips truncated to 500 by single-page fetch: {"hasSinglePageLimit500":true,"maxLimitEnforcedByBackend":500,"totalRecordsInPeriod":505,"returnedInSingleCall":500,"missingRecordsCount":5,"paginationMeta":{"total":505,"page":1,"limit":500,"totalPages":2}}
+[R23 & R16-CLI REPRODUCED] Guard & CLI inspection: {"employeesHelperChecksCurrentDatabase":false,"migrateScriptParsesTargetDbFlag":false}
+=== [R20-R23 REPRODUCTION BEFORE FIX COMPLETE] ===
+EXIT_CODE=0
