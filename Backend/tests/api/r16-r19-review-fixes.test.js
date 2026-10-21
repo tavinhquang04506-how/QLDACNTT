@@ -9,12 +9,14 @@ const { giveBalance, deleteTestLeaves } = require('../helpers/leaves');
 const settingsService = require('../../src/modules/settings/service');
 const payrollService = require('../../src/modules/payroll/service');
 const { checkSchemaReadiness } = require('../../src/utils/schemaReadiness');
+const { assertSafeTestDatabase } = require('../../src/utils/testDbGuard');
 const {
   reconcilePayrollReportCsv,
   reconcileBankTransferCsv,
 } = require('../../src/utils/csvReconciler');
 
 after(async () => {
+  await assertSafeTestDatabase(db, 'r16-r19 after() cleanup');
   await db.query(
     "DELETE FROM audit_logs WHERE action IN ('CALCULATE_PAYROLL', 'LOCK_PAYROLL', 'UPDATE_PAYSLIP', 'UPDATE_SETTINGS')"
   );
