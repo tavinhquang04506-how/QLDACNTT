@@ -188,6 +188,7 @@ async function kioskPunch(body) {
   consumeQrToken(claims);
 
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const emp = await client.query('SELECT id, status FROM employees WHERE id = $1', [claims.employeeId]);
     if (emp.rows.length === 0) throw notFound('Không tìm thấy nhân viên');
     if (emp.rows[0].status === 'DA_NGHI_VIEC') throw conflict('Nhân viên đã nghỉ việc');
@@ -249,6 +250,7 @@ async function list(user, query, scope) {
 /** HR/CEO correction of one day (upsert). The DB trigger recomputes late minutes, hours and status from the times. */
 async function adjust(actor, body, req) {
   return db.withTransaction(async (client) => {
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
     const emp = await client.query('SELECT 1 FROM employees WHERE id = $1', [body.employeeId]);
     if (emp.rows.length === 0) throw notFound('Không tìm thấy nhân viên');
 

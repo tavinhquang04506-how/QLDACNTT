@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Reproducible End-to-End Browser DOM/UI & Cross-Layer Verification Script (R08 / R14 / F27)
+ * Reproducible End-to-End Browser DOM/UI & Cross-Layer Verification Script (R08 / R14 / R17 / R18 / R19 / F27)
  * Runs against isolated `nexus_hrms_test` database, spawns backend (:8000) + frontend (:3000),
  * drives Headless Chrome via Chrome DevTools Protocol (CDP) using real DOM/UI interactions:
  *   1. Settings UI form fill -> click Save button -> browser reload -> verify DOM input values + DB/API
  *   2. Real UI Login & DOM content verification for 2 EMPLOYEEs (same role) + 2 LINE_MANAGERs (different departments)
- *   3. UI-initiated HTTP 403 & HTTP 500 error handling -> verify DOM error banner, no false success, no fabricated fallback numbers
- *   4. UI Pagination button clicks ('Sau' / 'Trước') on /employees table with >50 records -> verify rendered <tr> rows across all pages
- *   5. UI Payroll period selection, UI Lock Modal (anomaly display, default acknowledgeAnomalies=false blocks with 409, explicit checkbox locks + audits), and real CSV file downloads from disk reconciled against API & DB
+ *   3. UI-initiated HTTP 403 & HTTP 500 error handling + R17 UI E2E (GET /api/settings 500 -> backend recovers -> Save blocked -> Retry loads baseline -> Save diff patch -> reload error blocks Save)
+ *   4. UI Pagination button clicks ('Sau' / 'Trước') on /directory table with >50 records -> verify rendered <tr> rows across all pages
+ *   5. R18 + R19 UI Payroll: Stale payroll blocked in Lock Modal -> Recalculate preserves HR bonus -> Lock -> Multi-period (2028-09 & 2028-10), multi-employee (3+ positive + 0-net + missing-bank) CSV download & full row/column/sum reconciliation + negative tests (swapped amounts, dropped row, cross-period)
  */
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -23,6 +23,10 @@ const db = require('../src/config/db');
 const app = require('../src/app');
 const { initSocket } = require('../src/socket');
 const settingsService = require('../src/modules/settings/service');
+const {
+  reconcilePayrollReportCsv,
+  reconcileBankTransferCsv,
+} = require('../src/utils/csvReconciler');
 const { createTestEmployee, deleteTestEmployees } = require('../tests/helpers/employees');
 const { createTestUser, deleteTestUsers } = require('../tests/helpers/users');
 const { giveBalance, deleteTestLeaves } = require('../tests/helpers/leaves');
@@ -182,15 +186,20 @@ class CdpSession {
   }
 }
 
-async function createRoleAccount({ role, departmentId = 'DEPT-IT', fullName, baseSalary = 20000000 }) {
+async function createRoleAccount({
+  role,
+  departmentId = 'DEPT-IT',
+  fullName,
+  baseSalary = 20000000,
+  bankAccount = '0071001234567',
+  bankName = 'Vietcombank',
+}) {
   const emp = await createTestEmployee({ departmentId, status: 'DANG_LAM_VIEC' });
-  if (fullName || baseSalary) {
-    await db.query(
-      'UPDATE employees SET full_name = COALESCE($2, full_name), base_salary = COALESCE($3, base_salary), joined_date = \'2020-01-01\', bank_account = \'0071001234567\', bank_name = \'Vietcombank\' WHERE id = $1',
-      [emp.id, fullName || null, baseSalary || null]
-    );
-    emp.full_name = fullName || emp.full_name;
-  }
+  await db.query(
+    "UPDATE employees SET full_name = COALESCE($2, full_name), base_salary = COALESCE($3, base_salary), joined_date = '2020-01-01', bank_account = $4, bank_name = $5 WHERE id = $1",
+    [emp.id, fullName || null, baseSalary || null, bankAccount, bankName]
+  );
+  emp.full_name = fullName || emp.full_name;
   const user = await createTestUser({ role, employeeId: emp.id, password: 'Password@123' });
   return { emp, user, password: 'Password@123' };
 }
@@ -236,7 +245,7 @@ async function waitForDownloadedCsv(downloadDir, prefix, timeoutMs = 8000) {
 
 async function main() {
   assert.match(process.env.DB_NAME || '', /_test$/, 'E2E verification must only run on *_test database');
-  console.log('=== [R14 UI-DRIVEN E2E VERIFICATION START] ===');
+  console.log('=== [R14-R19 UI-DRIVEN E2E VERIFICATION START] ===');
   console.log(`TIMESTAMP=${new Date().toISOString()}`);
   console.log(`DB_NAME=${process.env.DB_NAME}`);
 
@@ -436,7 +445,7 @@ async function main() {
     );
 
     // =========================================================================
-    // SCENARIO 3: UI-Triggered HTTP 403 & HTTP 500 -> Verify DOM Error Banner & No False Success / Fallback
+    // SCENARIO 3: UI-Triggered HTTP 403 & HTTP 500 + R17 Settings Load Failure Guard & Retry Flow
     // =========================================================================
     await loginViaUi(cdp, hrAcc.user.email, hrAcc.password);
     await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/settings`, 2200);
@@ -493,12 +502,115 @@ async function main() {
       assert.match(err500DirectoryDom.errorBanner, /Internal Server Error|500|Lỗi khi tải/i);
       assert.equal(err500DirectoryDom.rowCount, 0, 'Directory UI must render 0 rows (no fabricated employees) when API returns 500');
       console.log(
-        `[ASSERT 3 PASS] UI 403/500 Error Handling: 403/500 Settings Banner="${err500SettingsDom.errorBanner}", 500 Directory Banner="${err500DirectoryDom.errorBanner}", rendered fallback rows=${err500DirectoryDom.rowCount}`
+        `[ASSERT 3a/3b PASS] UI 403/500 Error Handling: 403/500 Settings Banner="${err500SettingsDom.errorBanner}", 500 Directory Banner="${err500DirectoryDom.errorBanner}", rendered fallback rows=${err500DirectoryDom.rowCount}`
       );
     } finally {
       simulateDb500 = false;
       db.query = origQuery;
       db.withTransaction = origWithTx;
+    }
+
+    // 3c. R17 UI E2E: Initial GET /api/settings fails (500) -> Backend recovers -> Save blocked (0 PUTs, DB untouched) -> Retry loads real server baseline -> Edit 1 field & Save succeeds -> Reload failure also blocks Save
+    await settingsService.updateSettings(
+      { employeeId: null, role: 'HR_DIRECTOR' },
+      {
+        personal_income_tax_deduction: 14200000,
+        dependent_deduction: 5600000,
+        max_ot_per_month: 34,
+        policy_effective_from: '2026-06',
+      },
+      null
+    );
+
+    let simulateSettingsGet500 = true;
+    let settingsPutCallCount = 0;
+    db.query = async (sql, params) => {
+      if (simulateSettingsGet500 && /FROM system_settings/i.test(String(sql))) {
+        throw new Error('SIMULATED_SETTINGS_GET_500');
+      }
+      return origQuery(sql, params);
+    };
+    db.withTransaction = async (fn) => {
+      settingsPutCallCount++;
+      return origWithTx(fn);
+    };
+
+    try {
+      // Open /settings while GET /api/settings returns 500
+      await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/settings`, 2000);
+      const r17FailedLoadState = await cdp.eval(`({
+        errorBanner: document.querySelector('[data-testid="settings-error-banner"]')?.innerText || '',
+        hasRetryBtn: Boolean(document.querySelector('[data-testid="settings-retry-btn"]')),
+        saveDisabled: Boolean(document.querySelector('[data-testid="settings-save-btn"]')?.disabled),
+        maxOtValue: document.querySelector('[data-testid="input-max-ot-per-month"]')?.value ?? '',
+        maxOtDisabled: Boolean(document.querySelector('[data-testid="input-max-ot-per-month"]')?.disabled),
+      })`);
+      assert.ok(r17FailedLoadState.errorBanner.length > 0, 'R17: GET /api/settings 500 must render error banner');
+      assert.equal(r17FailedLoadState.hasRetryBtn, true, 'R17: Must render retry button when GET /api/settings fails');
+      assert.equal(r17FailedLoadState.saveDisabled, true, 'R17: Save button must be disabled when baseline has not loaded');
+      assert.equal(r17FailedLoadState.maxOtDisabled, true, 'R17: Inputs must be disabled when baseline has not loaded');
+      assert.equal(r17FailedLoadState.maxOtValue, '', 'R17: Input must NOT initialize with sample default 40 when GET failed');
+
+      // Backend recovers (GET /api/settings will now succeed), but user has NOT clicked Retry yet!
+      simulateSettingsGet500 = false;
+      settingsPutCallCount = 0;
+
+      // Attempt forced DOM click on Save button before Retry -> must remain disabled and send 0 PUT requests!
+      const saveStillDisabledBeforeRetry = await cdp.eval(`(() => {
+        const btn = document.querySelector('[data-testid="settings-save-btn"]');
+        const wasDisabled = Boolean(btn?.disabled);
+        if (btn) btn.click();
+        return wasDisabled;
+      })()`);
+      await new Promise((r) => setTimeout(r, 600));
+      const putCallsBeforeRetry = settingsPutCallCount;
+      assert.equal(saveStillDisabledBeforeRetry, true, 'R17: Save button must stay disabled after backend recovery until Retry succeeds');
+      assert.equal(putCallsBeforeRetry, 0, 'R17: 0 PUT transactions may execute when Save is clicked before baseline load');
+
+      const dbBeforeRetry = await settingsService.getSettings();
+      assert.equal(Number(dbBeforeRetry.personal_income_tax_deduction), 14200000, 'R17: DB pit_deduction must remain 14200000 (not overwritten by 11000000)');
+      assert.equal(Number(dbBeforeRetry.max_ot_per_month), 34, 'R17: DB max_ot_per_month must remain 34');
+
+      // Click Retry button (`Thử tải lại dữ liệu`) -> loads real server baseline
+      await cdp.click('[data-testid="settings-retry-btn"]', 1200);
+      const r17AfterRetryState = await cdp.eval(`({
+        hasErrorBanner: Boolean(document.querySelector('[data-testid="settings-error-banner"]')),
+        saveDisabled: Boolean(document.querySelector('[data-testid="settings-save-btn"]')?.disabled),
+        maxOtValue: document.querySelector('[data-testid="input-max-ot-per-month"]')?.value ?? '',
+      })`);
+      assert.equal(r17AfterRetryState.hasErrorBanner, false, 'R17: Error banner must clear after Retry succeeds');
+      assert.equal(r17AfterRetryState.saveDisabled, false, 'R17: Save button must be enabled after Retry loads baseline');
+      assert.equal(r17AfterRetryState.maxOtValue, '34', 'R17: Retry must populate actual server value 34');
+
+      // Edit 1 field (max_ot_per_month = 32) and click Save -> must succeed and preserve all unedited fields
+      await cdp.fillInput('[data-testid="input-max-ot-per-month"]', '32');
+      await cdp.click('[data-testid="settings-save-btn"]', 1200);
+      const dbAfterR17Save = await settingsService.getSettings();
+      assert.equal(Number(dbAfterR17Save.max_ot_per_month), 32, 'R17: Edited field max_ot_per_month must update to 32');
+      assert.equal(Number(dbAfterR17Save.personal_income_tax_deduction), 14200000, 'R17: Unedited field pit_deduction must remain 14200000');
+
+      // Now test reload failure after baseline was loaded: click `Tải lại` while GET fails -> must clear baseline and disable Save
+      simulateSettingsGet500 = true;
+      await cdp.click('[data-testid="settings-reload-btn"]', 1000);
+      const r17AfterFailedReload = await cdp.eval(`({
+        hasErrorBanner: Boolean(document.querySelector('[data-testid="settings-error-banner"]')),
+        saveDisabled: Boolean(document.querySelector('[data-testid="settings-save-btn"]')?.disabled),
+      })`);
+      assert.equal(r17AfterFailedReload.hasErrorBanner, true, 'R17: Failed reload must display error banner');
+      assert.equal(r17AfterFailedReload.saveDisabled, true, 'R17: Failed reload must disable Save button to prevent stale overwrite');
+
+      // Restore GET and click Retry
+      simulateSettingsGet500 = false;
+      await cdp.click('[data-testid="settings-retry-btn"]', 1000);
+      console.log(
+        `[ASSERT 3c (R17) PASS] Settings Load Failure Guard & Retry: failedLoadDisabled=true, putCallsBeforeRetry=${putCallsBeforeRetry}, retryLoadedMaxOt=${r17AfterRetryState.maxOtValue}, savedMaxOt=${dbAfterR17Save.max_ot_per_month}, preservedPit=${dbAfterR17Save.personal_income_tax_deduction}, failedReloadBlockedSave=${r17AfterFailedReload.saveDisabled}`
+      );
+    } finally {
+      simulateSettingsGet500 = false;
+      db.query = origQuery;
+      db.withTransaction = origWithTx;
+      await db.query("DELETE FROM system_policy_versions WHERE effective_from = '2026-06'").catch(() => {});
+      await settingsService.updateSettings({ employeeId: null, role: 'HR_DIRECTOR' }, originalSettings, null);
     }
 
     // =========================================================================
@@ -549,42 +661,167 @@ async function main() {
     );
 
     // =========================================================================
-    // SCENARIO 5: UI Payroll Period Selection, UI Lock Modal (409 -> Check -> Lock), and Real CSV Download
+    // SCENARIO 5 (R18 + R19): Multi-Employee, Multi-Period Payroll Stale Guard, Lock, and Strict CSV Reconciliation
     // =========================================================================
-    const paidEmp = await createRoleAccount({
+    const paidEmp1 = await createRoleAccount({
       role: 'EMPLOYEE',
       departmentId: 'DEPT-IT',
-      fullName: 'Phạm Thực Lĩnh CSV E2E',
+      fullName: 'Phạm Thực Lĩnh CSV 1',
       baseSalary: 22000000,
+      bankAccount: '0071001111111',
+      bankName: 'Vietcombank',
     });
+    const paidEmp2 = await createRoleAccount({
+      role: 'EMPLOYEE',
+      departmentId: 'DEPT-IT',
+      fullName: 'Lê Thực Lĩnh CSV 2',
+      baseSalary: 33000000,
+      bankAccount: '1903002222222',
+      bankName: 'Techcombank',
+    });
+    const paidEmp3 = await createRoleAccount({
+      role: 'EMPLOYEE',
+      departmentId: 'DEPT-SALES',
+      fullName: 'Hoàng Thực Lĩnh CSV 3',
+      baseSalary: 16500000,
+      bankAccount: '8888003333333',
+      bankName: 'MB Bank',
+    });
+    const noBankEmp = await createRoleAccount({
+      role: 'EMPLOYEE',
+      departmentId: 'DEPT-HR',
+      fullName: 'Đỗ Thiếu Ngân Hàng CSV',
+      baseSalary: 18000000,
+      bankAccount: null,
+      bankName: null,
+    });
+
+    // Period 2028-09 attendance (distinct workdays & OT for each employee)
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-09-04'::date + g), 'DUNG_GIO', CASE WHEN g = 0 THEN 4 ELSE 0 END FROM generate_series(0, 21) g`,
+      [paidEmp1.emp.id]
+    );
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-09-04'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 19) g`,
+      [paidEmp2.emp.id]
+    );
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-09-04'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 21) g`,
+      [paidEmp3.emp.id]
+    );
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-09-04'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 21) g`,
+      [noBankEmp.emp.id]
+    );
+
+    // Period 2028-10 attendance (distinct from 2028-09!)
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-10-02'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 20) g`,
+      [paidEmp1.emp.id]
+    );
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-10-02'::date + g), 'DUNG_GIO', CASE WHEN g = 0 THEN 2 ELSE 0 END FROM generate_series(0, 20) g`,
+      [paidEmp2.emp.id]
+    );
+    await db.query(
+      `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
+       SELECT $1, ('2028-10-02'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 18) g`,
+      [paidEmp3.emp.id]
+    );
     await db.query(
       `INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours)
        SELECT $1, ('2028-10-02'::date + g), 'DUNG_GIO', 0 FROM generate_series(0, 21) g`,
-      [paidEmp.emp.id]
+      [noBankEmp.emp.id]
     );
 
-    // Calculate draft payroll for 2028-10 so it appears in the UI selector (other employees have 0 attendance -> NO_ATTENDANCE anomaly!)
     const payrollServiceBackend = require('../src/modules/payroll/service');
-    await payrollServiceBackend.calculate({ userId: hrAcc.user.id, employeeId: hrAcc.emp.id, role: 'HR_DIRECTOR' }, '2028-10', null);
+    const hrActor = { userId: hrAcc.user.id, employeeId: hrAcc.emp.id, role: 'HR_DIRECTOR' };
+
+    // Calculate and lock 2028-09 first
+    await payrollServiceBackend.calculate(hrActor, '2028-09', null);
+    const period09Row = (await db.query("SELECT * FROM payroll_periods WHERE period = '2028-09'")).rows[0];
+    await payrollServiceBackend.lock(hrActor, period09Row.id, {
+      acknowledgeAnomalies: true,
+      note: 'Chốt kỳ 2028-09 đối chiếu đa kỳ R19',
+    });
+
+    // Calculate 2028-10, apply HR manual adjustment (bonus = 1,500,000) to paidEmp1, then add 1 more attendance day so 2028-10 becomes STALE (R18)
+    await payrollServiceBackend.calculate(hrActor, '2028-10', null);
+    const period10Row = (await db.query("SELECT * FROM payroll_periods WHERE period = '2028-10'")).rows[0];
+    const slip10Emp1Before = (
+      await db.query('SELECT * FROM payslips WHERE period_id = $1 AND employee_id = $2', [period10Row.id, paidEmp1.emp.id])
+    ).rows[0];
+    await payrollServiceBackend.updatePayslip(
+      hrActor,
+      slip10Emp1Before.id,
+      { bonus: 1500000, note: 'Thưởng E2E R18 bảo toàn khi tính lại' },
+      null
+    );
+
+    // Mutate attendance source AFTER calculate() -> makes 2028-10 PAYROLL_STALE
+    await db.query(
+      "INSERT INTO attendance_logs (employee_id, work_date, status, ot_hours) VALUES ($1, '2028-10-25', 'DUNG_GIO', 0)",
+      [paidEmp1.emp.id]
+    );
 
     await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 2400);
     await cdp.waitForSelector('[data-testid="payroll-period-select"]');
-
-    // Select 'Tháng 10/2028' in the UI <select>
     await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 10/2028');
     await new Promise((r) => setTimeout(r, 1000));
 
-    // Open PayrollLockModal by clicking the button in DOM
+    // Open PayrollLockModal while 2028-10 is STALE -> verify R18 stale banner & disabled submit button
+    await cdp.click('[data-testid="open-payroll-lock-modal-btn"]', 1200);
+    await cdp.waitForSelector('[data-testid="payroll-lock-modal"]');
+    const staleModalState = await cdp.eval(`({
+      staleBannerText: document.querySelector('[data-testid="payroll-lock-stale-banner"]')?.innerText || '',
+      submitDisabledBeforeCheck: Boolean(document.querySelector('[data-testid="payroll-lock-submit-btn"]')?.disabled),
+    })`);
+    assert.match(staleModalState.staleBannerText, /PAYROLL_STALE/i, 'R18: PayrollLockModal must display PAYROLL_STALE banner when source changed');
+    assert.equal(staleModalState.submitDisabledBeforeCheck, true, 'R18: Submit button must be disabled when PAYROLL_STALE');
+
+    // Even if user checks acknowledge-anomalies-checkbox, submit button MUST remain disabled while PAYROLL_STALE!
+    await cdp.click('[data-testid="acknowledge-anomalies-checkbox"]', 300);
+    const submitDisabledAfterCheckWhenStale = await cdp.eval(
+      `Boolean(document.querySelector('[data-testid="payroll-lock-submit-btn"]')?.disabled)`
+    );
+    assert.equal(
+      submitDisabledAfterCheckWhenStale,
+      true,
+      'R18: Checking acknowledgeAnomalies MUST NOT enable locking when PAYROLL_STALE'
+    );
+
+    // Now recalculate 2028-10 -> clears stale state AND preserves HR manual bonus (1,500,000)!
+    await payrollServiceBackend.calculate(hrActor, '2028-10', null);
+    const slip10Emp1AfterRecalc = (
+      await db.query('SELECT * FROM payslips WHERE period_id = $1 AND employee_id = $2', [period10Row.id, paidEmp1.emp.id])
+    ).rows[0];
+    assert.equal(Number(slip10Emp1AfterRecalc.actual_work_days), 22, 'R18: Recalculation must pick up new attendance day (21 -> 22)');
+    assert.equal(Number(slip10Emp1AfterRecalc.bonus), 1500000, 'R18: Recalculation must preserve HR manual bonus 1,500,000');
+
+    // Reload /payroll for 2028-10 and open PayrollLockModal again
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 2400);
+    await cdp.waitForSelector('[data-testid="payroll-period-select"]');
+    await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 10/2028');
+    await new Promise((r) => setTimeout(r, 1000));
+
     await cdp.click('[data-testid="open-payroll-lock-modal-btn"]', 1200);
     await cdp.waitForSelector('[data-testid="payroll-lock-modal"]');
 
-    // Verify modal displays real anomalies, has no password input, and checkbox defaults to false
+    // Verify modal displays real anomalies, has no stale banner now, has no password input, and checkbox defaults to false
     const modalInitialState = await cdp.eval(`({
+      hasStaleBanner: Boolean(document.querySelector('[data-testid="payroll-lock-stale-banner"]')),
       anomalyCount: document.querySelectorAll('[data-testid="payroll-lock-anomaly-item"]').length,
       anomalyListText: document.querySelector('[data-testid="payroll-lock-anomaly-list"]')?.innerText || '',
       checkboxChecked: document.querySelector('[data-testid="acknowledge-anomalies-checkbox"]')?.checked,
       hasPasswordInput: Boolean(document.querySelector('[data-testid="payroll-lock-modal"] input[type="password"]'))
     })`);
+    assert.equal(modalInitialState.hasStaleBanner, false, 'R18: Stale banner must clear after recalculation');
     assert.ok(modalInitialState.anomalyCount > 0, 'PayrollLockModal must render actual NO_ATTENDANCE anomalies in DOM');
     assert.match(modalInitialState.anomalyListText, /NO_ATTENDANCE/, 'PayrollLockModal DOM must display NO_ATTENDANCE anomaly type');
     assert.match(modalInitialState.anomalyListText, /Không có dữ liệu chấm công trong kỳ/, 'PayrollLockModal DOM must display anomaly message');
@@ -607,44 +844,97 @@ async function main() {
     const dbPeriodAfterLock = (await db.query("SELECT * FROM payroll_periods WHERE period = '2028-10'")).rows[0];
     assert.equal(dbPeriodAfterLock.status, 'DA_CHOT', 'Period 2028-10 must be DA_CHOT after UI acknowledgement & lock');
 
-    // Click 'Tải Báo Cáo Quỹ Lương (.csv)' button on /payroll and verify downloaded CSV file on disk
-    await cdp.click('[data-testid="export-payroll-csv-btn"]', 600);
-    const payrollReportCsv = await waitForDownloadedCsv(downloadDir, 'Bao_Cao_Tong_Hop_Quy_Luong_');
+    // Helper to query full DB payslips with employee metadata for a period
+    const queryDbPayslipsForReconciliation = async (periodId) => {
+      const { rows } = await db.query(
+        `SELECT ps.*, e.full_name, e.job_title
+           FROM payslips ps
+           JOIN employees e ON e.id = ps.employee_id
+          WHERE ps.period_id = $1
+          ORDER BY ps.net_salary DESC, ps.employee_id ASC`,
+        [periodId]
+      );
+      return rows;
+    };
 
-    // Also open BankTransferModal on /payroll and click 'Xuất File CSV Lệnh Chi Ngân Hàng'
+    // 5a. R19 Reconciliation for Period 2028-10: Download both CSVs via UI and reconcile every row/column/sum against DB
+    await cdp.click('[data-testid="export-payroll-csv-btn"]', 600);
+    const reportCsv10 = await waitForDownloadedCsv(downloadDir, 'Bao_Cao_Tong_Hop_Quy_Luong_Tháng_10_2028');
+
     await cdp.click('[data-testid="open-bank-transfer-modal-btn"]', 1000);
     await cdp.click('[data-testid="bank-transfer-export-csv-btn"]', 600);
-    const bankTransferCsv = await waitForDownloadedCsv(downloadDir, 'Lenh_Chi_Luong_Vietcombank_');
+    const bankCsv10 = await waitForDownloadedCsv(downloadDir, 'Lenh_Chi_Luong_Vietcombank_Th_ng_10_2028');
 
-    const dbPaidSlip = (
-      await db.query('SELECT * FROM payslips WHERE period_id = $1 AND employee_id = $2', [dbPeriodAfterLock.id, paidEmp.emp.id])
-    ).rows[0];
-    const dbSlipAgg = (
-      await db.query('SELECT COUNT(*)::int AS n, COALESCE(SUM(net_salary), 0) AS net FROM payslips WHERE period_id = $1', [dbPeriodAfterLock.id])
-    ).rows[0];
+    const dbSlips10 = await queryDbPayslipsForReconciliation(dbPeriodAfterLock.id);
+    const recReport10 = reconcilePayrollReportCsv(reportCsv10.content, dbSlips10);
+    const recBank10 = reconcileBankTransferCsv(bankCsv10.content, dbSlips10);
 
-    assert.match(payrollReportCsv.filename, /10_2028/);
-    assert.ok(payrollReportCsv.content.includes(paidEmp.emp.id), 'Downloaded payroll report CSV must contain paidEmp ID');
-    assert.ok(payrollReportCsv.content.includes('Phạm Thực Lĩnh CSV E2E'), 'Downloaded payroll report CSV must contain paidEmp name');
-    assert.ok(
-      payrollReportCsv.content.includes(String(Number(dbPaidSlip.net_salary))),
-      'Downloaded payroll report CSV must contain exact net_salary from DB'
+    assert.equal(recReport10.rowCount, dbSlips10.length, '2028-10 report CSV must contain all DB payslips');
+    assert.equal(recBank10.payableRowCount, 3, '2028-10 bank transfer CSV must contain exactly the 3 payable employees with bank accounts and net > 0');
+    assert.ok(recBank10.excludedRowCount >= 50, '2028-10 bank transfer CSV must exclude 0-net and missing-bank employees');
+
+    // 5b. R19 Reconciliation for Period 2028-09: Switch period selector in UI and download 2028-09 CSVs
+    await cdp.navigate(`http://127.0.0.1:${FRONTEND_PORT}/payroll`, 2200);
+    await cdp.waitForSelector('[data-testid="payroll-period-select"]');
+    await cdp.fillInput('[data-testid="payroll-period-select"]', 'Tháng 09/2028');
+    await new Promise((r) => setTimeout(r, 1200));
+
+    await cdp.click('[data-testid="export-payroll-csv-btn"]', 600);
+    const reportCsv09 = await waitForDownloadedCsv(downloadDir, 'Bao_Cao_Tong_Hop_Quy_Luong_Tháng_09_2028');
+
+    await cdp.click('[data-testid="open-bank-transfer-modal-btn"]', 1000);
+    await cdp.click('[data-testid="bank-transfer-export-csv-btn"]', 600);
+    const bankCsv09 = await waitForDownloadedCsv(downloadDir, 'Lenh_Chi_Luong_Vietcombank_Th_ng_09_2028');
+
+    const dbSlips09 = await queryDbPayslipsForReconciliation(period09Row.id);
+    const recReport09 = reconcilePayrollReportCsv(reportCsv09.content, dbSlips09);
+    const recBank09 = reconcileBankTransferCsv(bankCsv09.content, dbSlips09);
+
+    assert.equal(recReport09.rowCount, dbSlips09.length, '2028-09 report CSV must contain all DB payslips');
+    assert.equal(recBank09.payableRowCount, 3, '2028-09 bank transfer CSV must contain the 3 payable employees');
+    assert.notEqual(recReport09.sums.netSalary, recReport10.sums.netSalary, '2028-09 and 2028-10 must have distinct total net salaries');
+
+    // 5c. R19 Negative Tests on Downloaded CSVs (MUST FAIL when amounts are swapped, row is dropped, or period mismatches)
+    // Negative 1: Cross-period reconciliation (2028-10 CSV vs 2028-09 DB) must fail
+    assert.throws(
+      () => reconcilePayrollReportCsv(reportCsv10.content, dbSlips09),
+      /mismatch/i,
+      'R19 Negative: Reconciling 2028-10 CSV against 2028-09 DB payslips must fail'
     );
 
-    assert.match(bankTransferCsv.filename, /10_2028/);
-    assert.ok(bankTransferCsv.content.includes(paidEmp.emp.id), 'Downloaded bank transfer CSV must contain paidEmp ID');
-    assert.ok(
-      bankTransferCsv.content.includes(String(Number(dbPaidSlip.net_salary))),
-      'Downloaded bank transfer CSV must contain exact net_salary from DB'
+    // Negative 2: Swap net_salary between paidEmp1 and paidEmp2 in downloaded 2028-10 CSV (preserving total column sum!)
+    const slip1NetStr = String(Number(dbSlips10.find((s) => s.employee_id === paidEmp1.emp.id).net_salary));
+    const slip2NetStr = String(Number(dbSlips10.find((s) => s.employee_id === paidEmp2.emp.id).net_salary));
+    assert.notEqual(slip1NetStr, slip2NetStr, 'paidEmp1 and paidEmp2 must have distinct net salaries');
+
+    const swappedBankCsv10 = bankCsv10.content
+      .replace(slip1NetStr, '__SWAP_TMP__')
+      .replace(slip2NetStr, slip1NetStr)
+      .replace('__SWAP_TMP__', slip2NetStr);
+    assert.throws(
+      () => reconcileBankTransferCsv(swappedBankCsv10, dbSlips10),
+      /Bank transfer net amount mismatch/,
+      'R19 Negative: Swapping net amounts between 2 employees in Bank CSV must fail even when total sum is unchanged'
+    );
+
+    // Negative 3: Drop paidEmp3 row from downloaded 2028-10 Report CSV
+    const droppedRowReportCsv10 = reportCsv10.content
+      .split(/\r?\n/)
+      .filter((line) => !line.includes(paidEmp3.emp.id))
+      .join('\n');
+    assert.throws(
+      () => reconcilePayrollReportCsv(droppedRowReportCsv10, dbSlips10),
+      /Payroll report CSV row count/,
+      'R19 Negative: Dropping 1 employee row from Payroll Report CSV must fail'
     );
 
     console.log(
-      `[ASSERT 5 PASS] UI Lock & Real CSV Export ('2028-10'): anomaliesRendered=${modalInitialState.anomalyCount}, unacknowledgedBlocked=true, lockedStatus=${dbPeriodAfterLock.status}, reportCsv=${payrollReportCsv.filename}, bankCsv=${bankTransferCsv.filename}, paidEmpNet=${Number(dbPaidSlip.net_salary)}, periodTotalNet=${Number(dbSlipAgg.net)}`
+      `[ASSERT 5 (R18+R19) PASS] Multi-Period Stale Guard & Full CSV Reconciliation: R18StaleBlocked=true, R18BonusPreserved=${Number(slip10Emp1AfterRecalc.bonus)}, 2028-10(reportRows=${recReport10.rowCount}, bankPayable=${recBank10.payableRowCount}, bankExcluded=${recBank10.excludedRowCount}, netSum=${recReport10.sums.netSalary}), 2028-09(reportRows=${recReport09.rowCount}, bankPayable=${recBank09.payableRowCount}, netSum=${recReport09.sums.netSalary}), NegativeTests(crossPeriod+swappedAmounts+droppedRow)=3/3 FAILED_AS_EXPECTED`
     );
 
-    console.log('=== [ALL 5 R14 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
+    console.log('=== [ALL R14-R19 UI-DRIVEN E2E ASSERTIONS PASSED] ===');
   } finally {
-    await db.query("DELETE FROM system_policy_versions WHERE effective_from LIKE '2028-%'").catch(() => {});
+    await db.query("DELETE FROM system_policy_versions WHERE effective_from LIKE '2028-%' OR effective_from = '2026-06'").catch(() => {});
     await settingsService.updateSettings({ employeeId: null, role: 'HR_DIRECTOR' }, originalSettings, null).catch(() => {});
     await db.query("DELETE FROM audit_logs WHERE action IN ('CALCULATE_PAYROLL', 'LOCK_PAYROLL', 'UPDATE_PAYSLIP', 'UPDATE_SETTINGS')").catch(() => {});
     await db.query("DELETE FROM payroll_periods WHERE period LIKE '2028-%'").catch(() => {});
@@ -663,6 +953,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[R14 UI-DRIVEN E2E VERIFICATION FAILED]', err);
+  console.error('[R14-R19 UI-DRIVEN E2E VERIFICATION FAILED]', err);
   process.exit(1);
 });

@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeLeaveRequest, normalizePayslip, formatVND } from '../src/utils/dataAdapters.js';
+import {
+  normalizeServerSettingsBaseline,
+  canSubmitSettingsSave,
+  buildSettingsPatch,
+} from '../src/utils/settingsPatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -62,5 +67,80 @@ describe('Leave and Payroll Logic Tests', () => {
     assert.doesNotMatch(modalSrc, /Nhập mật khẩu hoặc mã xác nhận quản trị/);
     assert.doesNotMatch(modalSrc, /sendPush/);
     assert.doesNotMatch(modalSrc, /openPortal/);
+  });
+
+  it('R17: settingsPatch blocks saving when server baseline is not loaded or loadError is active, and builds partial diff patch with expectedUpdatedAt', () => {
+    // 1. Cannot submit save when hasLoadedBaseline is false or loadError exists
+    assert.equal(
+      canSubmitSettingsSave({
+        canEditSettings: true,
+        loading: false,
+        saving: false,
+        hasLoadedBaseline: false,
+        loadError: null,
+        serverBaseline: null,
+      }),
+      false
+    );
+    assert.equal(
+      canSubmitSettingsSave({
+        canEditSettings: true,
+        loading: false,
+        saving: false,
+        hasLoadedBaseline: true,
+        loadError: 'Không tải được cấu hình',
+        serverBaseline: { personalIncomeTaxDeduction: 11000000 },
+      }),
+      false
+    );
+
+    const baseline = normalizeServerSettingsBaseline({
+      personal_income_tax_deduction: 14000000,
+      dependent_deduction: 5500000,
+      max_ot_per_month: 35,
+      policy_effective_from: '2026-06',
+      updated_at: '2026-10-20T12:00:00.000Z',
+    });
+
+    assert.equal(
+      canSubmitSettingsSave({
+        canEditSettings: true,
+        loading: false,
+        saving: false,
+        hasLoadedBaseline: true,
+        loadError: null,
+        serverBaseline: baseline,
+      }),
+      true
+    );
+
+    // 2. Transient saveError does NOT permanently block retry save once baseline is loaded
+    const patch = buildSettingsPatch(baseline, {
+      ...baseline,
+      maxOtPerMonth: 32,
+    });
+    assert.deepEqual(patch, {
+      maxOtPerMonth: 32,
+      expectedUpdatedAt: '2026-10-20T12:00:00.000Z',
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(patch, 'personalIncomeTaxDeduction'), false);
+
+    // 3. Verify SettingsPage.jsx does not initialize form state with sample defaults and provides Retry button
+    const settingsPageSrc = fs.readFileSync(path.resolve(__dirname, '../src/pages/SettingsPage.jsx'), 'utf8');
+    assert.doesNotMatch(settingsPageSrc, /useState\(11000000\)/);
+    assert.doesNotMatch(settingsPageSrc, /useState\('2020-01'\)/);
+    assert.match(settingsPageSrc, /data-testid="settings-retry-btn"/);
+    assert.match(settingsPageSrc, /canSubmitSettingsSave/);
+    assert.match(settingsPageSrc, /buildSettingsPatch/);
+  });
+
+  it('R18 & R19: PayrollLockModal blocks stale payroll from being bypassed by acknowledgeAnomalies, and BankTransferModal excludes zero-net payslips', () => {
+    const lockModalSrc = fs.readFileSync(path.resolve(__dirname, '../src/modals/payroll/PayrollLockModal.jsx'), 'utf8');
+    assert.match(lockModalSrc, /PAYROLL_STALE/);
+    assert.match(lockModalSrc, /staleItems/);
+    assert.match(lockModalSrc, /data-testid="payroll-lock-stale-banner"/);
+
+    const bankModalSrc = fs.readFileSync(path.resolve(__dirname, '../src/modals/payroll/BankTransferModal.jsx'), 'utf8');
+    assert.match(bankModalSrc, /hasBank\s*&&\s*rawNet\s*>\s*0/);
   });
 });

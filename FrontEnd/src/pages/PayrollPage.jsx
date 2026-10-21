@@ -56,6 +56,15 @@ export default function PayrollPage() {
   // Tab for CEO and HRD: 'company' | 'personal'
   const [adminTab, setAdminTab] = useState('company');
 
+  const getPeriodCode = (periodStr) => {
+    if (!periodStr) return new Date().toISOString().slice(0, 7);
+    const m = String(periodStr).match(/(\d{2})\/(\d{4})/);
+    if (m) return `${m[2]}-${m[1]}`;
+    const m2 = String(periodStr).match(/(\d{4})-(\d{2})/);
+    if (m2) return `${m2[1]}-${m2[2]}`;
+    return new Date().toISOString().slice(0, 7);
+  };
+
   useEffect(() => {
     let isMounted = true;
     async function fetchPayroll() {
@@ -72,30 +81,22 @@ export default function PayrollPage() {
 
         // Fetch company-level data for non-employee roles
         if (roleKey !== 'EMPLOYEE') {
-          const [periodsRes, payslipsRes, empRes] = await Promise.all([
+          const [periodsRes, empRes] = await Promise.all([
             payrollService.getPeriods().catch(() => null),
-            payrollService.getPayslips().catch(() => null),
             employeeService.getAll().catch(() => null),
           ]);
           if (periodsRes?.success && Array.isArray(periodsRes.data) && isMounted) {
             setApiPeriods(periodsRes.data);
             if (periodsRes.data.length > 0) {
-              const pCode = periodsRes.data[0].period;
-              const parts = pCode ? pCode.split('-') : [];
-              if (parts.length === 2) {
-                setSelectedPeriod(`Tháng ${parts[1]}/${parts[0]}`);
-              }
+              setSelectedPeriod((prevSelected) => {
+                const prevCode = getPeriodCode(prevSelected);
+                const exists = periodsRes.data.some((p) => p.period === prevCode);
+                if (exists) return prevSelected;
+                const pCode = periodsRes.data[0].period;
+                const parts = pCode ? pCode.split('-') : [];
+                return parts.length === 2 ? `Tháng ${parts[1]}/${parts[0]}` : prevSelected;
+              });
             }
-          }
-          if (payslipsRes?.success && Array.isArray(payslipsRes.data) && isMounted) {
-            let slips = payslipsRes.data;
-            if (roleKey === 'LINE_MANAGER') {
-              slips = slips.filter(s =>
-                (s.department_name && (s.department_name.includes('Kỹ thuật') || s.department_name.includes('Phần mềm'))) ||
-                s.department_id === 'DEPT-IT'
-              );
-            }
-            setApiPayslips(slips);
           }
           if (empRes?.success && Array.isArray(empRes.data) && isMounted) {
             let emps = empRes.data;
@@ -132,21 +133,28 @@ export default function PayrollPage() {
     };
   }, [roleKey]);
 
-  const getPeriodCode = (periodStr) => {
-    if (!periodStr) return new Date().toISOString().slice(0, 7);
-    const m = String(periodStr).match(/(\d{2})\/(\d{4})/);
-    if (m) return `${m[2]}-${m[1]}`;
-    const m2 = String(periodStr).match(/(\d{4})-(\d{2})/);
-    if (m2) return `${m2[1]}-${m2[2]}`;
-    return new Date().toISOString().slice(0, 7);
-  };
-
   const currentPeriodCode = getPeriodCode(selectedPeriod);
   const currentPeriodObj = apiPeriods.find(p => p.period === currentPeriodCode) || apiPeriods[0] || null;
   const isPeriodLocked = currentPeriodObj?.status === 'DA_CHOT' || currentPeriodObj?.status === 'DA_CHUYEN_KHOAN';
 
   useEffect(() => {
     let isMounted = true;
+    if (roleKey !== 'EMPLOYEE' && currentPeriodCode) {
+      payrollService.getPayslips({ period: currentPeriodCode, limit: 500 })
+        .then(res => {
+          if (res?.success && Array.isArray(res.data) && isMounted) {
+            let slips = res.data;
+            if (roleKey === 'LINE_MANAGER') {
+              slips = slips.filter(sl =>
+                (sl.department_name && (sl.department_name.includes('Kỹ thuật') || sl.department_name.includes('Phần mềm'))) ||
+                sl.department_id === 'DEPT-IT'
+              );
+            }
+            setApiPayslips(slips);
+          }
+        })
+        .catch(() => {});
+    }
     if (currentPeriodObj?.id) {
       payrollService.getAnomalies(currentPeriodObj.id)
         .then(res => {
@@ -160,7 +168,7 @@ export default function PayrollPage() {
       setAnomalies([]);
     }
     return () => { isMounted = false; };
-  }, [currentPeriodObj?.id, selectedPeriod]);
+  }, [currentPeriodObj?.id, currentPeriodCode, selectedPeriod, roleKey]);
 
   const handleCeoApprove = async () => {
     try {
@@ -198,7 +206,7 @@ export default function PayrollPage() {
     const filteredByPeriod = apiPayslips.filter(
       (p) => !p.period || p.period === currentPeriodCode || String(p.period_id) === String(currentPeriodObj?.id)
     );
-    return filteredByPeriod.length > 0 ? filteredByPeriod : apiPayslips;
+    return filteredByPeriod;
   }, [apiPayslips, currentPeriodCode, currentPeriodObj?.id]);
 
   const totalNet = periodPayslips.length > 0
@@ -235,7 +243,7 @@ export default function PayrollPage() {
       p.full_name || p.name,
       p.job_title || p.role,
       Number(p.base_salary ?? 0),
-      `${p.actual_work_days ?? 0}/22`,
+      `${Number(p.actual_work_days ?? 0)}/${Number(p.standard_work_days ?? 22)}`,
       Number(p.ot_pay ?? 0),
       Number(p.allowances ?? 0) + Number(p.bonus ?? 0),
       Number(p.bhxh_amount ?? 0) + Number(p.bhyt_amount ?? 0) + Number(p.bhtn_amount ?? 0),

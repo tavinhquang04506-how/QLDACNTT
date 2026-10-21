@@ -101,9 +101,9 @@ function extractSnakePolicy(obj = {}) {
   return out;
 }
 
-async function getSettings(executor = db) {
+async function getSettings(executor = db, { forUpdate = false } = {}) {
   const { rows } = await executor.query(
-    'SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key'
+    `SELECT key, value, category, description, updated_by, updated_at FROM system_settings ORDER BY key${forUpdate ? ' FOR UPDATE' : ''}`
   );
   if (!rows || rows.length === 0) {
     throw new AppError(500, 'SETTINGS_NOT_INITIALIZED', 'Bảng cấu hình hệ thống system_settings chưa được khởi tạo');
@@ -195,7 +195,7 @@ function normalizeAndValidatePatch(body = {}) {
   }
   const updates = {};
   for (const [rawKey, rawVal] of Object.entries(body)) {
-    if (rawVal === undefined) continue;
+    if (rawVal === undefined || rawKey === 'expectedUpdatedAt' || rawKey === 'expected_updated_at') continue;
     const snakeKey = CAMEL_TO_SNAKE[rawKey] || rawKey;
     const meta = KEY_META[snakeKey];
     if (!meta) continue;
@@ -240,10 +240,26 @@ function normalizeAndValidatePatch(body = {}) {
 
 async function updateSettings(actor, body, req = null) {
   const updates = normalizeAndValidatePatch(body);
+  const expectedUpdatedAt = body?.expectedUpdatedAt ?? body?.expected_updated_at ?? null;
   const actorEmpId = actor?.employeeId || actor?.employee_id || null;
 
   return db.withTransaction(async (client) => {
-    const before = await getSettings(client);
+    // Serialize against any concurrent draft payroll lock in lock order (payroll_periods -> system_settings)
+    await client.query("SELECT id FROM payroll_periods WHERE status = 'DU_THAO' ORDER BY id FOR UPDATE");
+    const before = await getSettings(client, { forUpdate: true });
+
+    if (expectedUpdatedAt && before.updated_at) {
+      const dbTime = new Date(before.updated_at).getTime();
+      const clientTime = new Date(expectedUpdatedAt).getTime();
+      if (!Number.isFinite(clientTime) || Math.abs(dbTime - clientTime) > 5) {
+        throw new AppError(
+          409,
+          'SETTINGS_STALE',
+          'Cấu hình hệ thống đã được cập nhật bởi phiên làm việc khác. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.'
+        );
+      }
+    }
+
     const beforeEffectiveFrom = String(before.policy_effective_from || '2020-01');
     const beforePolicy = extractSnakePolicy(before);
 
