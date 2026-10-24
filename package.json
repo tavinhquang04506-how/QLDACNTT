@@ -10,6 +10,7 @@
     "dev:frontend": "npm run dev --prefix FrontEnd",
     "build:frontend": "npm run build --prefix FrontEnd",
     "db:test": "npm run db:test --prefix Backend",
+    "attachments:reconcile": "npm run attachments:reconcile --prefix Backend",
     "seed": "npm run seed --prefix Backend",
     "test:smoke": "npm run test:smoke --prefix Backend",
     "docker:dev": "docker compose -f docker-compose.dev.yml up -d --build",
