@@ -131,7 +131,7 @@ after(async () => {
   app.locals.aiTestOptions = undefined;
   await db.query("DELETE FROM leave_requests WHERE id = 'LR-V1-PEND'");
   await db.query("DELETE FROM handbook_docs WHERE id = 'HB-V1-INJ'");
-  await db.query("DELETE FROM payroll_periods WHERE period IN ('2025-12', '2026-01', '2026-02', '2026-03')");
+  await db.query("DELETE FROM payroll_periods WHERE period IN ('2025-12', '2026-01', '2026-02', '2026-03', '2026-06', '2026-08', '2026-10')");
   await deleteTestUsers();
   await deleteTestEmployees();
   await closeDb();
@@ -968,4 +968,428 @@ test('V1-30: Resetting conversation via /api/ai/copilot/reset while request is i
   assert.equal(res.body.refused, true);
   assert.equal(res.body.scopeChangedDuringRequest, true);
   assert.ok(res.body.refusalCodes.includes('SCOPE_CHANGED_DURING_REQUEST'));
+});
+
+test('AI-V1-F02: "So sánh lương hai kỳ gần nhất" in 2026-10 with draft 2026-10 and published 2026-08 & 2026-06 resolves 2026-08 vs 2026-06 from DB (and locks model tool args)', async () => {
+  const f02Emp = await createTestEmployee({ departmentId: 'DEPT-IT' });
+  const f02User = await createTestUser({ role: 'EMPLOYEE', employeeId: f02Emp.id });
+  const f02Login = await loginUser(f02User);
+
+  const f02Periods = [
+    { period: '2026-06', status: 'DA_CHUYEN_KHOAN', base: 20000000, allow: 1000000, ot: 0, gross: 21000000, pit: 540000, ded: 2640000, net: 18360000 },
+    { period: '2026-08', status: 'DA_CHOT', base: 20000000, allow: 1500000, ot: 800000, gross: 22300000, pit: 690000, ded: 2790000, net: 19510000 },
+    { period: '2026-10', status: 'DU_THAO', base: 20000000, allow: 1500000, ot: 0, gross: 21500000, pit: 590000, ded: 2690000, net: 18810000 },
+  ];
+
+  for (const p of f02Periods) {
+    const { rows: ppRows } = await db.query(
+      `INSERT INTO payroll_periods (period, status) VALUES ($1, $2)
+       ON CONFLICT (period) DO UPDATE SET status = EXCLUDED.status RETURNING id`,
+      [p.period, p.status]
+    );
+    await db.query(
+      `INSERT INTO payslips (
+         period_id, employee_id, base_salary, standard_work_days, actual_work_days,
+         allowances, ot_pay, gross_income,
+         bhxh_amount, bhyt_amount, bhtn_amount, pit_taxable, pit_deduction,
+         pit_amount, total_deductions, net_salary, status
+       ) VALUES ($1, $2, $3, 22, 22, $4, $5, $6, 1600000, 300000, 200000, 8400000, 11000000, $7, $8, $9, $10)
+       ON CONFLICT (period_id, employee_id) DO UPDATE SET
+         allowances = EXCLUDED.allowances,
+         ot_pay = EXCLUDED.ot_pay,
+         gross_income = EXCLUDED.gross_income,
+         pit_amount = EXCLUDED.pit_amount,
+         total_deductions = EXCLUDED.total_deductions,
+         net_salary = EXCLUDED.net_salary,
+         status = EXCLUDED.status`,
+      [ppRows[0].id, f02Emp.id, p.base, p.allow, p.ot, p.gross, p.pit, p.ded, p.net, p.status]
+    );
+  }
+
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-10-20T09:00:00+07:00',
+    fetchImpl: createV1StubTransport(({ round, toolResults }) => {
+      if (round === 0) {
+        // Even if model tries to ask for 2026-10 (draft) or 2026-09, server locks to ['2026-08', '2026-06']
+        return { functionCalls: [{ name: 'get_my_payslip', args: { period: '2026-10' } }] };
+      }
+      assert.equal(toolResults.length, 2);
+      const periodsReturned = toolResults.map((r) => r.period).sort();
+      assert.deepEqual(periodsReturned, ['2026-06', '2026-08']);
+      return {
+        text: 'So sánh hai kỳ lương đã công bố gần nhất 2026-06 và 2026-08: lương thực lĩnh tăng từ 18360000 đồng lên 19510000 đồng (chênh lệch +1150000 đồng).',
+      };
+    }),
+  };
+
+  const res = await callWith(f02Login.accessToken, 'post', '/api/ai/copilot', {
+    message: 'So sánh lương hai kỳ gần nhất của tôi',
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.responseType, 'answer');
+  assert.equal(res.body.verified, true);
+  assert.deepEqual(res.body.slots.comparisonPeriods, ['2026-08', '2026-06']);
+  assert.ok(res.body.payslipComparison);
+  assert.equal(res.body.payslipComparison.earlierPeriod, '2026-06');
+  assert.equal(res.body.payslipComparison.laterPeriod, '2026-08');
+  assert.equal(res.body.payslipComparison.deltas.netSalary.delta, 1150000);
+
+  // Follow-up after latest payslip explanation on non-consecutive published periods (2026-08 -> 2026-06)
+  const convId = `conv-f02-followup-${f02User.id}`;
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-10-20T09:00:00+07:00',
+    fetchImpl: createV1StubTransport(({ round, toolResults }) => {
+      if (round === 0) {
+        return { functionCalls: [{ name: 'get_my_payslip', args: {} }] };
+      }
+      const p = toolResults[0];
+      return { text: `Kỳ công bố gần nhất ${p.period}: thực lĩnh ${p.netSalary} đồng.` };
+    }),
+  };
+
+  const turn1 = await callWith(f02Login.accessToken, 'post', '/api/ai/copilot', {
+    message: 'Giải thích lương kỳ gần nhất của tôi',
+    conversationId: convId,
+  });
+  assert.equal(turn1.status, 200);
+  assert.match(turn1.body.answer, /2026-08/);
+
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-10-20T09:00:00+07:00',
+    fetchImpl: createV1StubTransport(({ round, toolResults }) => {
+      if (round === 0) {
+        return { functionCalls: [{ name: 'get_my_payslip', args: { period: '2026-06' } }] };
+      }
+      const p = toolResults[0];
+      return { text: `Kỳ công bố liền trước ${p.period}: thực lĩnh ${p.netSalary} đồng.` };
+    }),
+  };
+
+  const turn2 = await callWith(f02Login.accessToken, 'post', '/api/ai/copilot', {
+    message: 'Còn tháng trước?',
+    conversationId: convId,
+  });
+  assert.equal(turn2.status, 200);
+  assert.equal(turn2.body.slots.period, '2026-06');
+  assert.match(turn2.body.answer, /2026-06.*18360000/);
+
+  // Explicit calendar comparison "tháng này và tháng trước" in 2026-10 preserves ['2026-09', '2026-10'] and returns empty
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-10-20T09:00:00+07:00',
+    fetchImpl: createV1StubTransport(({ round }) => {
+      if (round === 0) {
+        return {
+          functionCalls: [
+            { name: 'get_my_payslip', args: { period: '2026-09' } },
+            { name: 'get_my_payslip', args: { period: '2026-10' } },
+          ],
+        };
+      }
+      return { text: 'Kỳ 2026-10 đang ở trạng thái DU_THAO và kỳ 2026-09 chưa có dữ liệu nên chưa thể so sánh.' };
+    }),
+  };
+
+  const explicitRes = await callWith(f02Login.accessToken, 'post', '/api/ai/copilot', {
+    message: 'So sánh lương tháng này và tháng trước',
+  });
+  assert.equal(explicitRes.status, 200);
+  assert.deepEqual(explicitRes.body.slots.comparisonPeriods, ['2026-09', '2026-10']);
+  assert.equal(explicitRes.body.responseType, 'empty');
+  assert.equal(explicitRes.body.verified, false);
+  assert.equal(explicitRes.body.payslipComparison, null);
+});
+
+test('AI-V1-F02: Employee with only 1 published payslip asking "So sánh lương hai kỳ gần nhất" returns responseType="empty" without calling model to fabricate second period', async () => {
+  const singleEmp = await createTestEmployee({ departmentId: 'DEPT-IT' });
+  const singleUser = await createTestUser({ role: 'EMPLOYEE', employeeId: singleEmp.id });
+  const singleLogin = await loginUser(singleUser);
+
+  const { rows: ppRows } = await db.query(
+    `INSERT INTO payroll_periods (period, status) VALUES ('2026-08', 'DA_CHOT')
+     ON CONFLICT (period) DO UPDATE SET status = 'DA_CHOT' RETURNING id`
+  );
+  await db.query(
+    `INSERT INTO payslips (
+       period_id, employee_id, base_salary, standard_work_days, actual_work_days,
+       allowances, ot_pay, gross_income,
+       bhxh_amount, bhyt_amount, bhtn_amount, pit_taxable, pit_deduction,
+       pit_amount, total_deductions, net_salary, status
+     ) VALUES ($1, $2, 20000000, 22, 22, 1500000, 800000, 22300000, 1600000, 300000, 200000, 8400000, 11000000, 690000, 2790000, 19510000, 'DA_CHOT')
+     ON CONFLICT (period_id, employee_id) DO UPDATE SET status = 'DA_CHOT'`,
+    [ppRows[0].id, singleEmp.id]
+  );
+
+  let providerCalled = false;
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-10-20T09:00:00+07:00',
+    fetchImpl: async () => {
+      providerCalled = true;
+      throw new Error('Should not call provider when < 2 published periods exist');
+    },
+  };
+
+  const res = await callWith(singleLogin.accessToken, 'post', '/api/ai/copilot', {
+    message: 'So sánh lương hai kỳ gần nhất',
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(providerCalled, false);
+  assert.equal(res.body.responseType, 'empty');
+  assert.equal(res.body.verified, false);
+  assert.equal(res.body.payslipComparison, null);
+  assert.match(res.body.answer, /chỉ ghi nhận 01 kỳ lương đã công bố chính thức \(2026-08\)/);
+});
+
+test('AI-V1-F03: Service/API payslip comparison preserves null field (bonus=null in DB) as unavailable without turning it into 0 or NaN', async () => {
+  // Set bonus = NULL explicitly on 2026-01 and 2026-02 for empSession.employeeId
+  await db.query(
+    `UPDATE payslips
+        SET bonus = NULL
+      WHERE employee_id = $1
+        AND period_id IN (SELECT id FROM payroll_periods WHERE period IN ('2026-01', '2026-02'))`,
+    [empSession.employeeId]
+  );
+
+  app.locals.aiTestOptions = {
+    apiKey: 'test-v1-key',
+    model: 'gemini-2.5-flash',
+    now: '2026-03-05T09:00:00+07:00',
+    fetchImpl: createV1StubTransport(({ round, toolResults }) => {
+      if (round === 0) {
+        return {
+          functionCalls: [
+            { name: 'get_my_payslip', args: { period: '2026-02' } },
+            { name: 'get_my_payslip', args: { period: '2026-01' } },
+          ],
+        };
+      }
+      assert.equal(toolResults[0].bonus, null);
+      assert.equal(toolResults[1].bonus, null);
+      return {
+        text: 'So sánh kỳ 2026-01 và 2026-02: thực lĩnh kỳ 2026-01 là 18810000 đồng, kỳ 2026-02 là 19510000 đồng, tăng 700000 đồng (lương tăng ca tăng 800000 đồng, thuế TNCN tăng 100000 đồng).',
+      };
+    }),
+  };
+
+  const res = await callWith(empSession.token, 'post', '/api/ai/copilot', {
+    message: 'So sánh lương tháng 02/2026 và 01/2026 của tôi',
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.verified, true);
+  assert.ok(res.body.payslipComparison);
+  // bonus is null in DB -> preserved as unavailable (never 0!)
+  assert.equal(res.body.payslipComparison.deltas.bonus.earlierValue, null);
+  assert.equal(res.body.payslipComparison.deltas.bonus.laterValue, null);
+  assert.equal(res.body.payslipComparison.deltas.bonus.delta, null);
+  assert.equal(res.body.payslipComparison.deltas.bonus.available, false);
+  assert.equal(res.body.payslipComparison.deltas.bonus.unavailable, true);
+  // otPay is 0 -> 800000 -> preserved as finite numbers with exact delta
+  assert.equal(res.body.payslipComparison.deltas.otPay.earlierValue, 0);
+  assert.equal(res.body.payslipComparison.deltas.otPay.laterValue, 800000);
+  assert.equal(res.body.payslipComparison.deltas.otPay.delta, 800000);
+  assert.equal(res.body.payslipComparison.deltas.otPay.available, true);
+  assert.equal(JSON.stringify(res.body).includes('NaN'), false);
+  const compSection = res.body.answerSections.find((s) => s.type === 'comparison');
+  assert.ok(compSection);
+  assert.ok(compSection.items.some((it) => it.label.includes('Thưởng') && it.value.includes('Chưa đủ dữ liệu đối chiếu')));
+});
+
+test('AI-V1-F01: Live evaluation runner preflight, non-test DB guard, full key-present mock execution, wrong-fact FAIL detection, and retry budget cap', async () => {
+  const {
+    LIVE_SCENARIOS,
+    runPreflightChecks,
+    runLiveEvaluation,
+  } = require('../../scripts/run-ai-v1-live-eval');
+
+  // 1. Preflight check passes without network or API key
+  const preflight = await runPreflightChecks({ executor: db });
+  assert.equal(preflight.passed, true);
+  assert.equal(preflight.verifiedDatabase, 'nexus_hrms_test');
+
+  // 2. Non-test DB environment is rejected BEFORE any user/tool query
+  await assert.rejects(
+    () =>
+      runLiveEvaluation({
+        apiKey: 'mock-key',
+        executor: db,
+        envOverrides: { DB_NAME: 'nexus_hrms' },
+      }),
+    (err) => err.code === 'TEST_DB_GUARD_FORBIDDEN'
+  );
+
+  // 3. Key-present mock execution runs all 18 scenarios (including reuseConvFrom and resetFirst) and passes when facts match
+  const mockLiveTransport = createV1StubTransport(({ round, body, toolResults }) => {
+    const userText = body.contents[body.contents.length - 1]?.parts?.[0]?.text || '';
+    if (round === 0) {
+      if (/phép.*2031/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_leave_balance', args: { year: 2031 } }] };
+      }
+      if (/phép|ngay phep/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_leave_balance', args: { year: 2026, leaveType: 'PHEP_NAM' } }] };
+      }
+      if (/Vinmec/i.test(userText)) {
+        return { functionCalls: [{ name: 'search_policies', args: { query: 'bảo hiểm Vinmec' } }] };
+      }
+      if (/2019-06/i.test(userText)) {
+        return { functionCalls: [{ name: 'search_policies', args: { query: 'giờ làm việc', period: '2019-06' } }] };
+      }
+      if (/GPS/i.test(userText)) {
+        return { functionCalls: [{ name: 'search_policies', args: { query: 'bán kính GPS chấm công' } }] };
+      }
+      if (/chấm công/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_attendance', args: { month: '2026-09' } }] };
+      }
+      if (/So sánh lương tháng 02\/2026 và 01\/2026/i.test(userText)) {
+        return {
+          functionCalls: [
+            { name: 'get_my_payslip', args: { period: '2026-02' } },
+            { name: 'get_my_payslip', args: { period: '2026-01' } },
+          ],
+        };
+      }
+      if (/NV-LIVE-OTHER/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_payslip', args: { period: '2026-02', employeeId: 'NV-LIVE-OTHER' } }] };
+      }
+      if (/Giải thích lương kỳ gần nhất/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_payslip', args: {} }] };
+      }
+      if (/Còn tháng trước/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_my_payslip', args: { period: '2026-01' } }] };
+      }
+      if (/DEPT-HR/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_scoped_dashboard', args: { departmentId: 'DEPT-HR' } }] };
+      }
+      if (/Tóm tắt nhân sự phòng ban/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_scoped_dashboard', args: { departmentId: 'DEPT-IT' } }] };
+      }
+      if (/rủi ro nghỉ việc/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_scoped_performance', args: { employeeId: 'NV-LIVE-EMP' } }] };
+      }
+      if (/Xem phiếu lương và điểm 9-Box/i.test(userText)) {
+        return { functionCalls: [{ name: 'get_scoped_performance', args: {} }] };
+      }
+    }
+
+    const r0 = toolResults[0] || {};
+    if (r0.ok === false) {
+      return { text: `Từ chối (${r0.errorCode}): ${r0.message}` };
+    }
+    if (r0.balances) {
+      if (r0.hasRecord === false || r0.balances.length === 0) {
+        return { text: `Chưa có bản ghi quỹ phép năm ${r0.year}.` };
+      }
+      const b = r0.balances[0];
+      return {
+        text: `Năm ${b.year}: tổng định mức ${b.entitlement} ngày, đã dùng ${b.used} ngày, còn lại ${b.remaining} ngày, đang chờ duyệt ${b.pending} ngày, khả dụng ${b.available} ngày.`,
+      };
+    }
+    if (r0.summary) {
+      return {
+        text: `Tháng 2026-09 có ${r0.summary.totalLogs} bản ghi chấm công, đúng giờ ${r0.summary.presentDays} ngày, tổng giờ làm việc ${r0.summary.totalWorkHours} giờ.`,
+      };
+    }
+    if (toolResults.length === 2 && r0.period) {
+      return {
+        text: 'So sánh lương kỳ 2026-01 và 2026-02: thực lĩnh tăng từ 18810000 đồng lên 19510000 đồng (+700000 đồng).',
+      };
+    }
+    if (r0.period) {
+      return { text: `Phiếu lương kỳ ${r0.period}: thực lĩnh ${r0.netSalary} đồng.` };
+    }
+    if (r0.departmentId && r0.overview) {
+      return { text: `Tổng hợp nhân sự phòng ban ${r0.departmentId}: đã xác minh.` };
+    }
+    if (r0.employeeId && r0.turnoverRisk !== undefined) {
+      return { text: `Chỉ báo rủi ro nghỉ việc của ${r0.employeeId} tại ${r0.departmentId}: đã xác minh.` };
+    }
+    if (r0.matches) {
+      if (r0.found === false || r0.matches.length === 0) {
+        return { text: 'Không tìm thấy văn bản quy chế phù hợp.' };
+      }
+      const gps = (r0.systemSettings || []).find((s) => s.key === 'gps_radius_meters');
+      return { text: `Theo quy chế ${r0.matches[0].id}, bán kính GPS chấm công là ${gps?.value || 100}m.` };
+    }
+    return { text: 'Đã xử lý.' };
+  });
+
+  const fullReport = await runLiveEvaluation({
+    apiKey: 'mock-live-key',
+    fetchImpl: mockLiveTransport,
+    executor: db,
+    envOverrides: { NODE_ENV: 'test', DB_NAME_TEST: 'nexus_hrms_test' },
+  });
+
+  assert.equal(
+    fullReport.status,
+    'PASS',
+    `Failed scenarios: ${JSON.stringify(fullReport.results.filter((r) => !r.pass))}`
+  );
+  assert.equal(fullReport.totalExecuted, LIVE_SCENARIOS.length);
+  assert.equal(fullReport.passedCount, LIVE_SCENARIOS.length);
+  const v107 = fullReport.results.find((r) => r.id === 'V1-07');
+  assert.equal(v107.reusedConversationFrom, 'V1-06');
+  assert.equal(v107.pass, true);
+  const v110 = fullReport.results.find((r) => r.id === 'V1-10');
+  assert.equal(v110.resetFirst, true);
+  assert.equal(v110.actualType, 'clarification');
+  assert.equal(v110.pass, true);
+
+  // 4. Wrong facts in an 'answer' response MUST make the runner FAIL even when responseType === 'answer'
+  const wrongFactScenario = [
+    {
+      ...LIVE_SCENARIOS[0],
+      verify(res) {
+        // Expect 999 days so that actual 7.5 days fails domain verification
+        return {
+          pass: String(res.answer || '').includes('999 ngày'),
+          reasons: ['expected 999 ngày in answer'],
+        };
+      },
+    },
+  ];
+  const wrongFactReport = await runLiveEvaluation({
+    apiKey: 'mock-live-key',
+    fetchImpl: mockLiveTransport,
+    scenarios: wrongFactScenario,
+    executor: db,
+    envOverrides: { NODE_ENV: 'test', DB_NAME_TEST: 'nexus_hrms_test' },
+  });
+  assert.equal(wrongFactReport.results[0].actualType, 'answer');
+  assert.equal(wrongFactReport.results[0].pass, false);
+  assert.equal(wrongFactReport.status, 'FAIL');
+
+  // 5. Pre-call retry budget cap: with maxTotalRetries=0, callMaxRetries=0 is passed so a 429 fails without retrying
+  let retryCalls = 0;
+  const budgetReport = await runLiveEvaluation({
+    apiKey: 'mock-live-key',
+    maxTotalRetries: 0,
+    scenarios: [LIVE_SCENARIOS[0]],
+    executor: db,
+    envOverrides: { NODE_ENV: 'test', DB_NAME_TEST: 'nexus_hrms_test' },
+    fetchImpl: async () => {
+      retryCalls += 1;
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: () => '0' },
+        text: async () => 'Rate limited',
+      };
+    },
+  });
+  assert.equal(retryCalls, 1);
+  assert.equal(budgetReport.retriesUsed, 0);
+  assert.equal(budgetReport.status, 'BLOCKED');
+  assert.match(budgetReport.abortedReason, /AI_RATE_LIMITED/);
 });
