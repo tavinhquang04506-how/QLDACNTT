@@ -77,10 +77,10 @@ function extractPeriodFromQuery(rawQuery = '') {
 }
 
 const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+|previous\s+|prior\s+)?instructions/gi,
-  /bỏ\s+qua\s+(mọi\s+|tất\s+cả\s+)?(quy\s+tắc|hướng\s+dẫn|phân\s+quyền)/gi,
-  /đọc\s+lương\s+toàn\s+công\s+ty/gi,
-  /tiết\s+lộ\s+(api\s+key|mật\s+khẩu|cccd|số\s+tài\s+khoản)/gi,
+  /ignore\s+(?:all\s+|previous\s+|prior\s+)*(?:instructions|prompts?|rules?)(?:\s+and\s+[^.!?\n]*)?/gi,
+  /bỏ\s+qua\s+(?:mọi\s+|tất\s+cả\s+)*(?:quy\s+tắc|hướng\s+dẫn|phân\s+quyền)(?:\s+và\s+[^.!?\n]*)?/gi,
+  /(?:đọc|xuất)\s+(?:toàn\s+bộ\s+)?lương(?:\s+toàn\s+công\s+ty)?/gi,
+  /tiết\s+lộ\s+(?:api\s+key|mật\s+khẩu|cccd|số\s+tài\s+khoản)/gi,
   /system\s*prompt\s*override/gi,
 ];
 
@@ -88,8 +88,10 @@ function sanitizePolicyText(text = '') {
   let cleaned = String(text || '');
   let filtered = false;
   for (const rx of INJECTION_PATTERNS) {
+    rx.lastIndex = 0;
     if (rx.test(cleaned)) {
       filtered = true;
+      rx.lastIndex = 0;
       cleaned = cleaned.replace(rx, '[NỘI DUNG KHÔNG TIN CẬY ĐÃ ĐƯỢC LỌC BỞI HỆ THỐNG]');
     }
   }
@@ -258,6 +260,7 @@ async function getMyLeaveBalance(actor, args = {}, executor = db) {
     source: {
       id: `leave-balance:${actor.employeeId}:${year}`,
       title: `Quỹ phép cá nhân năm ${year} (${actor.employeeId})`,
+      period: String(year),
       asOf: nowIso,
     },
   };
@@ -394,6 +397,7 @@ async function getMyAttendance(actor, args = {}, executor = db) {
     source: {
       id: `attendance:${actor.employeeId}:${from}..${to}`,
       title: `Bảng chấm công cá nhân (${from} đến ${to})`,
+      period: `${from}..${to}`,
       asOf: nowIso,
     },
   };
@@ -419,28 +423,55 @@ async function getMyPayslip(actor, args = {}, executor = db) {
 
   const params = [actor.employeeId];
   let periodWhere = '';
-  if (args.period !== undefined && args.period !== null && String(args.period).trim() !== '') {
-    const rawPeriod = String(args.period).trim();
-    if (!isValidPeriodMonth(rawPeriod) && !/^\d+$/.test(rawPeriod)) {
+  const rawPeriodInput =
+    args.period !== undefined && args.period !== null ? String(args.period).trim() : '';
+  const isLatestAlias =
+    !rawPeriodInput ||
+    ['latest', 'latest_published', 'gan_nhat', 'gần nhất', 'moi_nhat', 'mới nhất'].includes(
+      rawPeriodInput.toLowerCase()
+    );
+
+  if (!isLatestAlias) {
+    if (!isValidPeriodMonth(rawPeriodInput) && !/^\d+$/.test(rawPeriodInput)) {
       return {
         ok: false,
         errorCode: 'INVALID_ARGUMENT',
         message: 'Tham số period không hợp lệ (cần định dạng kỳ lương YYYY-MM).',
       };
     }
-    params.push(rawPeriod);
+    params.push(rawPeriodInput);
     periodWhere = 'AND (pp.period = $2 OR pp.id::text = $2)';
   }
 
-  const { rows } = await executor.query(
-    `SELECT ps.*, pp.period AS period_code, pp.status AS period_status
-       FROM payslips ps
-       JOIN payroll_periods pp ON pp.id = ps.period_id
-      WHERE ps.employee_id = $1 ${periodWhere}
-      ORDER BY pp.period DESC
-      LIMIT 1`,
-    params
-  );
+  let rows = [];
+  if (isLatestAlias) {
+    // Phase C & Case 11: "gần nhất" resolves to the latest PUBLISHED payslip (DA_CHOT / DA_CHUYEN_KHOAN),
+    // never defaulting to an unpublished draft in the current calendar month.
+    const pubRes = await executor.query(
+      `SELECT ps.*, pp.period AS period_code, pp.status AS period_status
+         FROM payslips ps
+         JOIN payroll_periods pp ON pp.id = ps.period_id
+        WHERE ps.employee_id = $1
+          AND pp.status IN ('DA_CHOT', 'DA_CHUYEN_KHOAN')
+        ORDER BY pp.period DESC
+        LIMIT 1`,
+      [actor.employeeId]
+    );
+    rows = pubRes?.rows || [];
+  }
+
+  if (rows.length === 0) {
+    const anyRes = await executor.query(
+      `SELECT ps.*, pp.period AS period_code, pp.status AS period_status
+         FROM payslips ps
+         JOIN payroll_periods pp ON pp.id = ps.period_id
+        WHERE ps.employee_id = $1 ${periodWhere}
+        ORDER BY pp.period DESC
+        LIMIT 1`,
+      params
+    );
+    rows = anyRes?.rows || [];
+  }
 
   if (rows.length === 0) {
     return {
@@ -513,6 +544,7 @@ async function getMyPayslip(actor, args = {}, executor = db) {
     source: {
       id: `payslip:${r.id}`,
       title: `Phiếu lương chính thức kỳ ${periodLabel} (#${r.id})`,
+      period: periodLabel,
       asOf: nowIso,
     },
   };
@@ -555,7 +587,8 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
         message: `Trưởng phòng chỉ được phép tra cứu số liệu của phòng ban mình (${myDept}), không được xem phòng ban ${args.departmentId}.`,
       };
     }
-    const data = await dashboardService.getDashboard(actor, 'department');
+    const getDashFn = dashboardService.get || dashboardService.getDashboard;
+    const data = await getDashFn.call(dashboardService, actor, 'department');
     return {
       ok: true,
       scope: 'department',
@@ -570,7 +603,8 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
     };
   }
 
-  const data = await dashboardService.getDashboard(actor, 'all');
+  const getDashFn = dashboardService.get || dashboardService.getDashboard;
+  const data = await getDashFn.call(dashboardService, actor, 'all');
   return {
     ok: true,
     scope: 'all',
@@ -855,6 +889,9 @@ async function searchPolicies(actor, args = {}, executor = db) {
     resolvedPolicySource = {
       id: `policy-version:${resolvedEffectiveFrom}:v${resolvedPolicyVersionId}`,
       title: `Phiên bản cấu hình chính sách hiệu lực từ kỳ ${resolvedEffectiveFrom} (tra cứu kỳ ${targetPeriod})`,
+      period: targetPeriod,
+      effectiveFrom: resolvedEffectiveFrom,
+      version: `v${resolvedPolicyVersionId}`,
       asOf: periodPolicy.updated_at ? new Date(periodPolicy.updated_at).toISOString() : nowIso,
     };
   } else {
@@ -948,6 +985,9 @@ async function searchPolicies(actor, args = {}, executor = db) {
   const sources = matches.map((m) => ({
     id: `policy:${m.id}:v${m.version}`,
     title: `${m.title} (${m.id} v${m.version})`,
+    version: `v${m.version}`,
+    effectiveFrom: resolvedEffectiveFrom,
+    period: targetPeriod || resolvedEffectiveFrom,
     asOf: m.updatedAt,
   }));
   if (resolvedPolicySource) {
