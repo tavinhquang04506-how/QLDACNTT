@@ -7,6 +7,16 @@ const DEFAULT_BASE_URL =
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) ||
   'http://localhost:8000/api';
 
+// R44: Synchronize file size limits across UI, Nginx proxy (client_max_body_size 10m), and Express (10mb JSON body)
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB raw binary limit
+export const MAX_PROXY_BODY_BYTES = 10 * 1024 * 1024; // 10MB Nginx + Express JSON body limit
+
+export function estimateBase64JsonBytes(rawByteLength, fileName = '') {
+  const base64Len = Math.ceil(Number(rawByteLength || 0) / 3) * 4;
+  const envelopeOverhead = 512 + String(fileName || '').length * 4;
+  return base64Len + envelopeOverhead;
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -21,6 +31,9 @@ function fileToBase64(file) {
 }
 
 const noticeService = {
+  MAX_ATTACHMENT_BYTES,
+  MAX_PROXY_BODY_BYTES,
+  estimateBase64JsonBytes,
   getAll: (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return api.get(`/notices${query ? '?' + query : ''}`);
@@ -35,6 +48,16 @@ const noticeService = {
   uploadAttachment: async (fileOrPayload) => {
     if (fileOrPayload && typeof fileOrPayload.contentBase64 === 'string') {
       return api.post('/notices/attachments', fileOrPayload);
+    }
+    const rawSize = Number(fileOrPayload?.size || 0);
+    const estimatedBodyBytes = estimateBase64JsonBytes(rawSize, fileOrPayload?.name);
+    if (rawSize > MAX_ATTACHMENT_BYTES || estimatedBodyBytes > MAX_PROXY_BODY_BYTES) {
+      const err = new Error(
+        `Dung lượng tệp vượt quá giới hạn tối đa 5MB (kích thước truyền tải base64 dự kiến ${(estimatedBodyBytes / (1024 * 1024)).toFixed(2)}MB / giới hạn proxy 10MB).`
+      );
+      err.status = 413;
+      err.code = 'ATTACHMENT_TOO_LARGE';
+      throw err;
     }
     const contentBase64 = await fileToBase64(fileOrPayload);
     return api.post('/notices/attachments', {

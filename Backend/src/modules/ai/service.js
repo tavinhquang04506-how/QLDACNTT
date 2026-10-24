@@ -1351,6 +1351,342 @@ function buildVerifiedClaimsFromEvidence(structuredEvidence = []) {
   return claims;
 }
 
+/**
+ * R41: Positive vocabulary allowlist per tool + server-owned deterministic template rendering.
+ * Prevents any model-hallucinated clause outside the called tools' evidence domain (e.g. contract status,
+ * termination, request approval/rejection, office badge, probation, disciplinary actions, uncalled domains)
+ * from ever being emitted under `verified: true`.
+ */
+const COMMON_GRAMMAR_TOKENS = new Set([
+  // English grammar & conversational connectors
+  'a', 'an', 'the', 'is', 'are', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
+  'your', 'you', 'my', 'me', 'we', 'our', 'it', 'its', 'this', 'that', 'these', 'those',
+  'in', 'on', 'at', 'of', 'for', 'to', 'from', 'with', 'by', 'as', 'into', 'after', 'before',
+  'and', 'or', 'if', 'so', 'than', 'then', 'there', 'here', 'current', 'currently', 'now',
+  'summary', 'detail', 'details', 'information', 'record', 'records', 'data', 'system',
+  'verified', 'source', 'according', 'based', 'check', 'checked', 'status', 'result', 'results',
+  'actor', 'ok', 'true', 'false', 'null', 'none',
+  // Vietnamese grammar & conversational connectors (accent-stripped)
+  'cua', 'ban', 'toi', 'minh', 'chung', 'ta', 'anh', 'chi', 'em', 'la', 'co', 'khong', 'chua',
+  'da', 'dang', 'se', 'duoc', 'bi', 'trong', 'ngoai', 'tren', 'duoi', 'tai', 'tu', 'den', 'voi',
+  'cho', 've', 'theo', 'khi', 'sau', 'truoc', 'neu', 'thi', 'ma', 'va', 'hoac', 'nhung', 'con',
+  'lai', 'nua', 'them', 'rat', 'nhieu', 'it', 'moi', 'cu', 'nay', 'do', 'kia', 'day',
+  'hien', 'nam', 'thang', 'ky', 'ngay', 'gio', 'phut', 'tuan', 'quy', 'dau', 'cuoi',
+  'tong', 'so', 'muc', 'loai', 'bang', 'phieu', 'ghi', 'du', 'lieu', 'he', 'thong',
+  'tin', 'ket', 'qua', 'kiem', 'tra', 'cuu', 'xac', 'nguon', 'ca', 'nhan',
+  'vien', 'su', 'dung', 'tinh', 'trang', 'thai', 'chi', 'tiet', 'tom', 'tat', 'bao', 'mat', 'header',
+  'noi', 'tru', 'cong', 'le', 'linh', 'muoi', 'tram', 'nghin', 'ngan', 'trieu', 'ty',
+  'mot', 'hai', 'ba', 'bon', 'lam', 'sau', 'bay', 'tam', 'chin', 'ruoi',
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen',
+  'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+  'hundred', 'thousand', 'million', 'half',
+]);
+
+const TOOL_SCHEMA_VOCABULARY = {
+  get_my_leave_balance: new Set([
+    'leave', 'leaves', 'vacation', 'annual', 'sick', 'medical', 'unpaid', 'paid', 'pto',
+    'day', 'days', 'balance', 'balances', 'remaining', 'left', 'available', 'used', 'taken',
+    'entitlement', 'entitled', 'total', 'pending', 'off', 'year', 'hasrecord', 'leavetypecode',
+    'leavetypename', 'leavetypeid', 'deducting',
+    'phep', 'nghi', 'om', 'dau', 'luong', 'huong', 'kha', 'dinh', 'cap', 'duyet', 'quy',
+  ]),
+  get_my_attendance: new Set([
+    'attendance', 'log', 'logs', 'totallogs', 'present', 'presentdays', 'late', 'latedays',
+    'early', 'earlyleavedays', 'absent', 'absentdays', 'leavedays', 'work', 'workhours',
+    'totalworkhours', 'ot', 'othours', 'totalothours', 'overtime', 'gps', 'hasgps',
+    'missinggps', 'missinggpscount', 'appeal', 'appeals', 'appealscount', 'pendingappeals',
+    'checkin', 'checkout', 'hour', 'hours', 'date', 'month',
+    'cham', 'cong', 'di', 'muon', 've', 'som', 'vang', 'mat', 'tang', 'giai', 'trinh', 'don',
+    'thieu', 'toa', 'do', 'hop', 'buoi', 'sang', 'chieu',
+  ]),
+  get_my_payslip: new Set([
+    'payslip', 'payroll', 'salary', 'income', 'base', 'basesalary', 'gross', 'grossincome',
+    'net', 'netsalary', 'take', 'home', 'allowance', 'allowances', 'totalallowances',
+    'bonus', 'ot', 'otpay', 'overtime', 'bhxh', 'bhxhemp', 'bhyt', 'bhytemp', 'bhtn', 'bhtnemp',
+    'insurance', 'tax', 'taxable', 'taxableincome', 'pit', 'pitamount', 'deduction', 'deductions',
+    'personaldeduction', 'totaldeductions', 'workdays', 'standardworkdays', 'actualworkdays',
+    'workdayssalary', 'actualdays', 'published', 'period', 'periodstatus', 'vnd', 'dong',
+    'luong', 'thuc', 'linh', 'thu', 'nhap', 'co', 'phu', 'cap', 'thuong', 'tang', 'bao', 'hiem',
+    'thue', 'tncn', 'khau', 'giam', 'chuan', 'chot', 'chi', 'thanh', 'toan', 'chuyen', 'khoan',
+  ]),
+  search_policies: new Set([
+    'policy', 'policies', 'handbook', 'doc', 'docs', 'found', 'expired', 'expiredmatch',
+    'filtered', 'promptinjectionfiltered', 'excerpt', 'version', 'effective', 'effectivefrom',
+    'radius', 'meters', 'm', 'setting', 'settings', 'systemsettings', 'matches', 'msg', 'message',
+    'chinh', 'sach', 'quy', 'che', 'dinh', 'noi', 'so', 'tay', 'cam', 'nang', 'ban', 'kinh',
+    'hieu', 'luc', 'ap', 'dung', 'phien', 'trang', 'phuc', 'lich', 'xang', 'xe', 'loi',
+  ]),
+  get_scoped_dashboard: new Set([
+    'dashboard', 'scope', 'department', 'departmentid', 'company', 'headcount', 'active',
+    'employees', 'total', 'attendance', 'leave', 'payroll', 'overview', 'rate', 'percent',
+    'phong', 'khoi', 'quan', 'nhan', 'su', 'bien', 'dong', 'ty', 'le', 'cham', 'cong', 'phep',
+  ]),
+  get_scoped_performance: new Set([
+    'performance', 'performancescore', 'potential', 'potentialscore', 'turnover', 'turnoverrisk',
+    'turnoverscore', 'turnoverlevel', 'risk', 'score', 'level', 'low', 'medium', 'high',
+    'review', 'latestreview', 'missingreview', 'latest', 'readonly', 'readonlymvp',
+    'disclaimer', 'hasdisclaimer', 'signal', 'signals', 'paygap', 'paygapdetail', 'scope',
+    'department', 'company', 'box', 'kpi', 'pip',
+    'hieu', 'suat', 'tiem', 'nang', 'rui', 'ro', 'nghi', 'viec', 'diem', 'danh', 'gia',
+    'thap', 'trung', 'binh', 'cao', 'tin', 'cung', 'cap', 'chi', 'doc', 'luu', 'y',
+  ]),
+};
+
+function collectEvidenceTokensFromValue(val, tokenSet) {
+  if (val === null || val === undefined) return;
+  if (typeof val === 'number' || typeof val === 'boolean') {
+    tokenSet.add(String(val).toLowerCase());
+    return;
+  }
+  if (typeof val === 'string') {
+    const norm = normalizeTextAscii(val);
+    for (const tk of norm.split(/[^a-z0-9]+/).filter(Boolean)) {
+      tokenSet.add(tk);
+    }
+    return;
+  }
+  if (Array.isArray(val)) {
+    for (const item of val) collectEvidenceTokensFromValue(item, tokenSet);
+    return;
+  }
+  if (typeof val === 'object') {
+    for (const [k, v] of Object.entries(val)) {
+      const normKey = normalizeTextAscii(k);
+      for (const tk of normKey.split(/[^a-z0-9]+/).filter(Boolean)) {
+        tokenSet.add(tk);
+      }
+      collectEvidenceTokensFromValue(v, tokenSet);
+    }
+  }
+}
+
+function extractEvidenceTokensFromToolResults(rawToolResults = [], structuredEvidence = []) {
+  const tokenSet = new Set();
+  for (const tr of rawToolResults) {
+    if (isVerifiedToolDataResult(tr)) {
+      collectEvidenceTokensFromValue(tr, tokenSet);
+    }
+  }
+  for (const ev of structuredEvidence) {
+    collectEvidenceTokensFromValue(ev, tokenSet);
+  }
+  return tokenSet;
+}
+
+function splitIntoClausesForGrounding(text = '') {
+  return String(text || '')
+    .split(
+      /(?:(?<!\d)\.(?!\d)|[!?;\n]+|\s+(?:and|but|while|whereas|however|moreover|furthermore|nhung|tuy\s+nhien|dong\s+thoi|ben\s+canh\s+do|ngoai\s+ra)\s+(?=(?:your|you|my|the|his|her|hop\s+dong|hợp\s+đồng|don|đơn|yeu\s+cau|yêu\s+cầu|tai\s+khoan|tài\s+khoản|luong|lương|ban|bạn|nghi\s+om|nghỉ\s+ốm|phep|phép|ky\s+luat|kỷ\s+luật)\b))/i
+    )
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * R41: Render a deterministic, server-owned verified answer strictly from `structuredEvidence` / `verifiedClaims`.
+ * Used whenever an ungrounded clause is stripped or when canonical rendering is required, guaranteeing
+ * that no unverified free-text claim from the LLM can ever be published under `verified: true`.
+ */
+function renderServerVerifiedTemplate(userMessage = '', structuredEvidence = []) {
+  const normMsg = normalizeTextAscii(userMessage);
+  const isEnglish =
+    /\b(how many|how much|what|which|check|show|my|vacation|leave|balance|salary|payslip|attendance|policy|performance|dashboard)\b/i.test(
+      normMsg
+    ) && !/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(userMessage);
+
+  const parts = [];
+  for (const ev of structuredEvidence) {
+    if (ev.tool === 'get_my_leave_balance') {
+      const year = ev.period?.year;
+      const balances = ev.fields?.balances || [];
+      for (const b of balances) {
+        const label = b.leaveTypeCode || b.leaveTypeName || 'LEAVE';
+        if (isEnglish) {
+          parts.push(
+            `Verified leave balance (${year}, ${label}): remaining ${b.remaining} days (available: ${b.available} days, used: ${b.used} days, total entitlement: ${b.entitlement} days, pending: ${b.pending} days).`
+          );
+        } else {
+          parts.push(
+            `Số dư phép đã xác minh năm ${year} (${b.leaveTypeName || label}): còn lại ${b.remaining} ngày (khả dụng: ${b.available} ngày, đã dùng: ${b.used} ngày, tổng định mức: ${b.entitlement} ngày, chờ duyệt: ${b.pending} ngày).`
+          );
+        }
+      }
+    } else if (ev.tool === 'get_my_payslip') {
+      const f = ev.fields || {};
+      const period = ev.period?.period;
+      const status = ev.period?.periodStatus;
+      if (isEnglish) {
+        parts.push(
+          `Verified payslip (${period}, status ${status}): net salary ${f.netSalary} VND, gross income ${f.grossIncome} VND, base salary ${f.baseSalary} VND, PIT ${f.pitAmount} VND, total deductions ${f.totalDeductions} VND.`
+        );
+      } else {
+        parts.push(
+          `Phiếu lương đã xác minh kỳ ${period} (trạng thái ${status}): lương thực lĩnh ${f.netSalary} đồng, tổng thu nhập ${f.grossIncome} đồng, lương cơ bản ${f.baseSalary} đồng, thuế TNCN ${f.pitAmount} đồng, tổng khấu trừ ${f.totalDeductions} đồng.`
+        );
+      }
+    } else if (ev.tool === 'get_my_attendance') {
+      const f = ev.fields || {};
+      if (isEnglish) {
+        parts.push(
+          `Verified attendance (${ev.period?.from} to ${ev.period?.to}): total logs ${f.totalLogs ?? 0}, present ${f.presentDays ?? 0} days, late ${f.lateDays ?? 0} days, work hours ${f.totalWorkHours ?? 0}.`
+        );
+      } else {
+        parts.push(
+          `Chấm công đã xác minh (${ev.period?.from} đến ${ev.period?.to}): tổng số bản ghi ${f.totalLogs ?? 0}, đúng giờ ${f.presentDays ?? 0} ngày, đi muộn ${f.lateDays ?? 0} ngày, tổng giờ công ${f.totalWorkHours ?? 0}.`
+        );
+      }
+    } else if (ev.tool === 'search_policies') {
+      const docIds = (ev.fields?.matchIds || []).join(', ');
+      const settingsPairs = Object.entries(ev.fields?.settings || {})
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      parts.push(
+        isEnglish
+          ? `Verified policy evidence: documents [${docIds || 'N/A'}]${settingsPairs ? `, settings (${settingsPairs})` : ''}.`
+          : `Dữ liệu chính sách đã xác minh: văn bản [${docIds || 'N/A'}]${settingsPairs ? `, tham số (${settingsPairs})` : ''}.`
+      );
+    } else if (ev.tool === 'get_scoped_performance') {
+      const f = ev.fields || {};
+      parts.push(
+        isEnglish
+          ? `Verified performance (${ev.entity?.employeeId || ev.entity?.scope}): performanceScore=${f.performanceScore ?? 'N/A'}, potentialScore=${f.potentialScore ?? 'N/A'}, turnoverScore=${f.turnoverScore ?? 'N/A'}, turnoverLevel=${f.turnoverLevel ?? 'N/A'}.`
+          : `Đánh giá hiệu suất đã xác minh (${ev.entity?.employeeId || ev.entity?.scope}): điểm hiệu suất=${f.performanceScore ?? 'N/A'}, điểm tiềm năng=${f.potentialScore ?? 'N/A'}, rủi ro nghỉ việc=${f.turnoverScore ?? 'N/A'} (${f.turnoverLevel ?? 'N/A'}).`
+      );
+    } else if (ev.tool === 'get_scoped_dashboard') {
+      const f = ev.fields || {};
+      const kv = Object.entries(f)
+        .filter(([, v]) => v !== null && typeof v !== 'object')
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      parts.push(
+        isEnglish
+          ? `Verified dashboard (${ev.entity?.departmentId || ev.entity?.scope}): ${kv}.`
+          : `Thống kê dashboard đã xác minh (${ev.entity?.departmentId || ev.entity?.scope}): ${kv}.`
+      );
+    }
+  }
+  return parts.join(' ');
+}
+
+function isClauseFullyGroundedInToolEvidence(clause = '', structuredEvidence = [], rawToolResults = []) {
+  const normClause = normalizeTextAscii(clause);
+  if (!normClause) return false;
+
+  const calledTools = new Set(structuredEvidence.map((e) => e.tool));
+  const evidenceTokens = extractEvidenceTokensFromToolResults(rawToolResults, structuredEvidence);
+
+  if (!calledTools.has('search_policies')) {
+    if (
+      /\b(contract|employment|terminated|termination|probation|fired|dismissed|suspended|resigned|promoted|demoted|disciplined|penalized|revoked|deactivated|hop dong|lao dong|cham dut|thanh ly|sa thai|buoc thoi viec|thoi viec|dinh chi|tam dinh chi|ky luat|canh cao|khiem trach|thu viec)\b/i.test(
+        normClause
+      )
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    !calledTools.has('get_my_attendance') &&
+    /\b(approved|rejected|denied|cancelled|canceled|da duyet|duoc duyet|da phe duyet|bi tu choi|da tu choi|bi huy|da huy)\b/i.test(
+      normClause
+    )
+  ) {
+    return false;
+  }
+
+  const allowedVocab = new Set(COMMON_GRAMMAR_TOKENS);
+  for (const tk of evidenceTokens) allowedVocab.add(tk);
+  for (const toolName of calledTools) {
+    const toolVocab = TOOL_SCHEMA_VOCABULARY[toolName];
+    if (toolVocab) {
+      for (const tk of toolVocab) allowedVocab.add(tk);
+    }
+  }
+
+  const clauseClean = stripIdentifierAndDateTokens(clause);
+  const tokens = normalizeTextAscii(clauseClean)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+
+  let hasDomainOrEvidenceAnchor = false;
+  const clauseNums = extractNumbersFromText(clause);
+  if (clauseNums.length > 0) {
+    hasDomainOrEvidenceAnchor = true;
+  }
+
+  for (const tk of tokens) {
+    if (/^\d+(?:m|km|mb|kb|gb|h|d|ngay|dong|vnd|tr|trieu)?$/i.test(tk)) {
+      hasDomainOrEvidenceAnchor = true;
+      continue;
+    }
+    if (!allowedVocab.has(tk)) {
+      return false;
+    }
+    if (!COMMON_GRAMMAR_TOKENS.has(tk)) {
+      hasDomainOrEvidenceAnchor = true;
+    }
+  }
+
+  return hasDomainOrEvidenceAnchor;
+}
+
+function filterAndVerifyGroundedClauses(
+  userMessage = '',
+  finalAnswer = '',
+  structuredEvidence = [],
+  rawToolResults = []
+) {
+  const clauses = splitIntoClausesForGrounding(finalAnswer);
+  if (clauses.length === 0) {
+    return {
+      allGrounded: false,
+      hasGroundedClause: false,
+      groundedClauses: [],
+      ungroundedClauses: [],
+      sanitizedAnswer: '',
+    };
+  }
+
+  const groundedClauses = [];
+  const ungroundedClauses = [];
+  for (const clause of clauses) {
+    if (isClauseFullyGroundedInToolEvidence(clause, structuredEvidence, rawToolResults)) {
+      groundedClauses.push(clause);
+    } else {
+      ungroundedClauses.push(clause);
+    }
+  }
+
+  if (groundedClauses.length === 0) {
+    return {
+      allGrounded: false,
+      hasGroundedClause: false,
+      groundedClauses: [],
+      ungroundedClauses,
+      sanitizedAnswer: '',
+    };
+  }
+
+  if (ungroundedClauses.length > 0) {
+    return {
+      allGrounded: false,
+      hasGroundedClause: true,
+      groundedClauses,
+      ungroundedClauses,
+      sanitizedAnswer: renderServerVerifiedTemplate(userMessage, structuredEvidence),
+    };
+  }
+
+  return {
+    allGrounded: true,
+    hasGroundedClause: true,
+    groundedClauses,
+    ungroundedClauses: [],
+    sanitizedAnswer: finalAnswer,
+  };
+}
+
 function buildSystemInstruction(actor, clock) {
   return [
     'Bạn là Trợ lý Nhân sự AI NEXUS (chế độ chỉ đọc - Read-only MVP).',
@@ -1651,6 +1987,31 @@ async function runCopilot({
           structuredEvidence.length = 0;
           finalAnswer =
             'Phản hồi từ mô hình chứa số liệu hoặc trường thông tin không khớp với nguồn dữ liệu hệ thống đã xác minh (ANSWER_SOURCE_MISMATCH) nên đã bị chặn để bảo đảm tính chính xác.';
+        } else {
+          // R41: Verify every clause against the positive evidence allowlist of the executed tools.
+          // If no clause is grounded in tool evidence, refuse with UNGROUNDED_ANSWER_REJECTED + ANSWER_SOURCE_MISMATCH.
+          // If the model appended ungrounded/out-of-scope claims alongside valid grounded claims (e.g. "Your remaining balance is 5 days. Your employment contract is terminated."),
+          // strip the ungrounded clauses and render finalAnswer from the server-owned deterministic template so only sourced facts are ever published under VERIFIED.
+          const clauseGrounding = filterAndVerifyGroundedClauses(
+            rawMsg,
+            finalAnswer,
+            structuredEvidence,
+            rawToolResults
+          );
+          if (!clauseGrounding.hasGroundedClause) {
+            if (!refusalCodes.includes('UNGROUNDED_ANSWER_REJECTED')) {
+              refusalCodes.push('UNGROUNDED_ANSWER_REJECTED');
+            }
+            if (!refusalCodes.includes('ANSWER_SOURCE_MISMATCH')) {
+              refusalCodes.push('ANSWER_SOURCE_MISMATCH');
+            }
+            verifiedSourcesMap.clear();
+            structuredEvidence.length = 0;
+            finalAnswer =
+              'Phản hồi từ mô hình chứa khẳng định ngoài phạm vi công cụ hoặc không khớp nguồn dữ liệu đã xác minh (UNGROUNDED_ANSWER_REJECTED) nên đã bị chặn.';
+          } else if (!clauseGrounding.allGrounded) {
+            finalAnswer = clauseGrounding.sanitizedAnswer;
+          }
         }
       }
     }
@@ -1866,4 +2227,7 @@ module.exports = {
   validateSemanticFieldBindings,
   isAllowedToollessExchange,
   buildVerifiedClaimsFromEvidence,
+  isClauseFullyGroundedInToolEvidence,
+  filterAndVerifyGroundedClauses,
+  renderServerVerifiedTemplate,
 };

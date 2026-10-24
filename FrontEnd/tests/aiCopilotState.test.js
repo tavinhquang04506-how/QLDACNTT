@@ -165,6 +165,15 @@ describe('R35, R36, R39 & Phase B — AI Copilot UI State, Notice Attachment & L
     );
     assert.equal(detailNoticeSource.includes('Không khả dụng — cần tải lên lại'), true);
     assert.equal(detailNoticeSource.includes('noticeService.downloadAttachment'), true);
+    assert.equal(/noticeService\s*\.\s*getById/.test(detailNoticeSource), true);
+    assert.equal(detailNoticeSource.includes('data-testid="notice-access-denied"'), true);
+    const noticeServiceSource = fs.readFileSync(
+      path.join(__dirname, '../src/services/noticeService.js'),
+      'utf8'
+    );
+    assert.equal(noticeServiceSource.includes('MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024'), true);
+    assert.equal(noticeServiceSource.includes('MAX_PROXY_BODY_BYTES = 10 * 1024 * 1024'), true);
+    assert.equal(noticeServiceSource.includes('estimateBase64JsonBytes'), true);
     assert.ok(
       detailNoticeSource.indexOf('React.useEffect') <
         detailNoticeSource.indexOf('if (!isOpen || !payload) return null;'),
