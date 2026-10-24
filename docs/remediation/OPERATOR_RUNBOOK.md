@@ -1,6 +1,6 @@
 # OPERATOR DEPLOYMENT & MIGRATION RUNBOOK (`nexus_hrms`)
 
-Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`), đồng thời sao lưu/khôi phục đồng bộ **Cơ sở dữ liệu PostgreSQL + Kho lưu trữ tệp đính kèm thông báo (`notice_attachments`)** và kiểm chứng tính bền vững của Docker Volume qua thao tác **recreate container**.
+Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`), đồng thời sao lưu/khôi phục đồng bộ **Cơ sở dữ liệu PostgreSQL + Kho lưu trữ tệp đính kèm thông báo (`notice_attachments`)** và kiểm chứng tính bền vững của Docker Volume trên **stack test cô lập hoàn toàn (`docker-compose.test.yml` — `R49`)**.
 
 > **LƯU Ý QUAN TRỌNG VỀ CLI (`R23`)**:
 > Script `Backend/scripts/migrate.js` hiện **chỉ nhận tên cơ sở dữ liệu qua biến môi trường `DB_NAME`** (hoặc giá trị mặc định trong `Backend/.env`). Script này chỉ xử lý cờ `--down` và **không xử lý tham số `--target-db`**. Luôn truyền `$env:DB_NAME='...'` (trên PowerShell) hoặc `DB_NAME=...` (trên Bash) khi chạy `migrate.js` và `check-schema-readiness.js`.
@@ -45,7 +45,7 @@ if (Test-Path "Backend/storage/notice_attachments") {
   Compress-Archive -Path "Backend/storage/notice_attachments\*" -DestinationPath "docs/remediation/backups/notice_attachments-pre-cutover-$timestamp.zip" -Force
 }
 
-# 1C. (Nếu chạy Docker) Sao lưu persistent volume `nexus-storage-data`
+# 1C. (Nếu chạy Docker Production) Sao lưu persistent volume `nexus-storage-data`
 # docker run --rm -v nexus-storage-data:/source:ro -v "${PWD}/docs/remediation/backups:/backup" alpine tar czf "/backup/nexus-storage-data-$timestamp.tar.gz" -C /source .
 ```
 
@@ -79,7 +79,7 @@ Nếu phát hiện bất kỳ sự cố nào trong khung giờ bảo trì:
      New-Item -ItemType Directory -Force -Path "Backend/storage/notice_attachments" | Out-Null
      Expand-Archive -Path "docs/remediation/backups/notice_attachments-pre-cutover-$timestamp.zip" -DestinationPath "Backend/storage/notice_attachments" -Force
    }
-   # (Nếu chạy Docker):
+   # (Nếu chạy Docker Production):
    # docker run --rm -v nexus-storage-data:/target -v "${PWD}/docs/remediation/backups:/backup:ro" alpine sh -c "rm -rf /target/* && tar xzf /backup/nexus-storage-data-$timestamp.tar.gz -C /target"
    ```
 4. Chạy đối soát đồng bộ trạng thái file (`reconcileAttachmentStorage`) và kiểm tra baseline:
@@ -106,20 +106,48 @@ Cơ chế `reconcileAttachmentStorage` sử dụng PostgreSQL (`company_notices.
 
 ---
 
-## 5. Quy Trình Kiểm Chứng Docker + Nginx Persistence Bằng Recreate Container Test (`Gate G2`)
+## 5. Quy Trình Kiểm Chứng Docker + Nginx Persistence Trên Stack Test Cô Lập (`Gate G2` — `R49`)
 
-Khi Docker Desktop daemon sẵn sàng trên máy vận hành, thực hiện kiểm chứng trên **stack test cô lập** (`-p nexus-test`, không tác động container đang chạy của người dùng):
-1. Khởi tạo stack test riêng:
-   ```powershell
-   docker compose -p nexus-test up -d --build
-   ```
-2. Đăng nhập tài khoản `HR_DIRECTOR` qua cổng Nginx của stack test, tải lên tệp đính kèm gần `5MB` (`201 Created`, ghi nhận mã `NATT-*` và `sha256`), thử tải lên tệp `> 5MB` (`413 Payload Too Large`), và phát hành thông báo công ty gắn tệp `NATT-*`.
-3. **Bắt buộc xóa và tạo mới lại (recreate) container `backend`** (lưu ý: chỉ dùng `docker compose restart backend` là chưa đủ vì `restart` giữ nguyên lớp filesystem của container cũ):
-   ```powershell
-   docker compose -p nexus-test up -d --force-recreate backend
-   ```
-4. Sau khi container `backend` mới khởi động xong, tải lại tệp đính kèm qua `GET /api/notices/:id/attachments/:attachmentId/download` từ tài khoản nhân viên thuộc phạm vi nhận (`200 OK` và khớp `SHA-256`) và ngoài phạm vi nhận (`403 Forbidden`).
-5. Dọn dẹp stack test sau khi nghiệm thu:
-   ```powershell
-   docker compose -p nexus-test down -v
-   ```
+> **CẢNH BÁO AN TOÀN TUYỆT ĐỐI (`R49`)**:
+> - File `docker-compose.yml` là cấu hình Production có đặt tên cố định (`container_name: nexus-postgres/nexus-backend/nexus-frontend`, `network: nexus-network`, `volumes: nexus-db-data/nexus-storage-data`). **TUYỆT ĐỐI KHÔNG** chạy `docker compose -p nexus-test ...` hoặc `down -v` trực tiếp trên `docker-compose.yml`, vì cờ `-p` không đổi tên các volume đã đặt `name:` tường minh và `down -v` có thể xóa mất volume chính.
+> - Mọi thao tác kiểm thử Docker **BẮT BUỘC** đi qua cấu hình riêng **`docker-compose.test.yml`** và công cụ kiểm tra/bảo vệ **`Backend/scripts/verify-docker-test-isolation.js`** (`npm run docker:test:verify --prefix Backend`).
+
+Khi Docker Desktop daemon sẵn sàng trên máy vận hành, thực hiện tuần tự 5 bước an toàn sau:
+
+### Bước 1: Kiểm tra tĩnh cấu hình đã resolve & xác nhận cô lập 100% trước khi chạy (`R49`)
+```powershell
+node Backend/scripts/verify-docker-test-isolation.js --action=verify --project=nexus-test-uat --run-id=uat1
+```
+- Guard tự động gọi `docker compose -p nexus-test-uat -f docker-compose.test.yml config --format json`, ẩn toàn bộ secret (`[REDACTED]`), và xác nhận:
+  - Containers: `nexus-test-uat-uat1-db`, `nexus-test-uat-uat1-backend`, `nexus-test-uat-uat1-frontend`
+  - Network: `nexus-test-uat_test-network`
+  - Volumes: `nexus-test-uat_test-db-data`, `nexus-test-uat_test-storage-data` (gắn nhãn `com.nexus.hrms.scope=isolated-test`)
+  - Host Ports: `127.0.0.1:15432->5432`, `127.0.0.1:18000->8000`, `127.0.0.1:13000->80`
+  - Database & Storage: `nexus_hrms_docker_test` và `/app/storage_test/notice_attachments`
+  - Không trùng bất kỳ tài nguyên nào của `docker-compose.yml` (`status: "VERIFIED_SAFE"`, exit code `0`).
+
+### Bước 2: Khởi tạo stack test cô lập qua Guard
+```powershell
+node Backend/scripts/verify-docker-test-isolation.js --action=up --project=nexus-test-uat --run-id=uat1
+```
+
+### Bước 3: Kiểm chứng Upload qua Nginx Reverse Proxy (`http://localhost:13000`)
+- Đăng nhập tài khoản `HR_DIRECTOR` tại `http://localhost:13000`:
+  1. Tải lên tệp PDF gần `5MB` (`~4.85MB`) -> kỳ vọng `201 Created`, ghi nhận mã `NATT-*` và `sha256`.
+  2. Thử tải lên tệp `> 5MB` (`~5.2MB`) -> kỳ vọng `413 Payload Too Large`.
+  3. Tạo thông báo công ty gắn tệp `NATT-*` (`201 Created`).
+
+### Bước 4: Recreate Container Backend Test & Kiểm chứng Độ Bền Lưu Trữ (`--force-recreate`)
+- Xóa và tạo lại container `backend` của stack test (bắt buộc dùng `--force-recreate`, không chỉ `restart`):
+  ```powershell
+  node Backend/scripts/verify-docker-test-isolation.js --action=recreate-backend --project=nexus-test-uat --run-id=uat1
+  ```
+- Sau khi container `nexus-test-uat-uat1-backend` mới khởi động xong, tải lại tệp qua `GET http://localhost:13000/api/notices/:id/attachments/:attachmentId/download`:
+  - Tài khoản thuộc phạm vi nhận: trả `200 OK`, nội dung nhị phân khớp 100% `SHA-256` trước khi recreate.
+  - Tài khoản ngoài phạm vi nhận: trả `403 Forbidden`.
+
+### Bước 5: Dọn dẹp duy nhất các tài nguyên thuộc Stack Test Đã Xác Minh
+```powershell
+node Backend/scripts/verify-docker-test-isolation.js --action=down --project=nexus-test-uat --run-id=uat1
+```
+- Lệnh này kiểm tra lại guard trước khi đóng stack `nexus-test-uat` (`docker compose -p nexus-test-uat -f docker-compose.test.yml down -v --remove-orphans`), chỉ xóa `nexus-test-uat_test-db-data` và `nexus-test-uat_test-storage-data`, tuyệt đối không chạy `docker volume prune` và không chạm vào `nexus-db-data` hay `nexus-storage-data`.
