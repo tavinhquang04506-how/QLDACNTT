@@ -1,6 +1,6 @@
 # OPERATOR DEPLOYMENT & MIGRATION RUNBOOK (`nexus_hrms`)
 
-Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`), đồng thời sao lưu/khôi phục đồng bộ **Cơ sở dữ liệu PostgreSQL + Kho lưu trữ tệp đính kèm thông báo (`notice_attachments`)**.
+Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`), đồng thời sao lưu/khôi phục đồng bộ **Cơ sở dữ liệu PostgreSQL + Kho lưu trữ tệp đính kèm thông báo (`notice_attachments`)** và kiểm chứng tính bền vững của Docker Volume qua thao tác **recreate container**.
 
 > **LƯU Ý QUAN TRỌNG VỀ CLI (`R23`)**:
 > Script `Backend/scripts/migrate.js` hiện **chỉ nhận tên cơ sở dữ liệu qua biến môi trường `DB_NAME`** (hoặc giá trị mặc định trong `Backend/.env`). Script này chỉ xử lý cờ `--down` và **không xử lý tham số `--target-db`**. Luôn truyền `$env:DB_NAME='...'` (trên PowerShell) hoặc `DB_NAME=...` (trên Bash) khi chạy `migrate.js` và `check-schema-readiness.js`.
@@ -90,16 +90,36 @@ Nếu phát hiện bất kỳ sự cố nào trong khung giờ bảo trì:
 
 ---
 
-## 4. Quy Trình Đối Soát Tệp Đính Kèm Định Kỳ / Sau Sự Cố (`R47`)
+## 4. Quy Trình Đối Soát Tệp Đính Kèm Định Kỳ / Sau Sự Cố (`R47` & `R48`)
 
-Cơ chế `reconcileAttachmentStorage` sử dụng PostgreSQL (`company_notices.attachments`) làm nguồn sự thật duy nhất (Single Source of Truth):
+Cơ chế `reconcileAttachmentStorage` sử dụng PostgreSQL (`company_notices.attachments`) làm nguồn sự thật duy nhất (Single Source of Truth) và đồng bộ khóa liên tiến trình (`pg_try_advisory_xact_lock`):
 - **Tự động khi khởi động & định kỳ**: Khi `Backend/server.js` khởi động, hệ thống tự động chạy `reconcileAttachmentStorage(db)` một lần và kích hoạt tiến trình nền định kỳ (`startAttachmentReconciliationJob`, mặc định mỗi 15 phút).
 - **Chạy thủ công qua CLI**:
   ```powershell
   $env:DB_NAME='nexus_hrms'; npm run attachments:reconcile --prefix Backend
   ```
-- **Nguyên tắc an toàn (Fail-Closed)**:
-  - Tệp ở trạng thái `staged` hoặc `deletion-pending` nhưng **đã được tham chiếu trong DB** (ví dụ: crash sau khi DB commit nhưng trước khi cập nhật `.meta.json`) sẽ **không bao giờ bị xóa** mà được tự động nâng cấp/khôi phục sang `bound`.
-  - Tệp `deletion-pending` không còn được bất kỳ bản ghi `company_notices` nào tham chiếu sẽ được xóa vật lý (`.bin` và `.meta.json`).
-  - Tệp `staged` quá hạn (`STAGED_TTL_MS = 2 giờ`) và không được DB tham chiếu sẽ được thu dọn.
+- **Nguyên tắc an toàn (Fail-Closed & Cross-Process Advisory Lock — `R47`, `R48`)**:
+  - Mọi thao tác gắn (`create`/`update`), thu dọn TTL (`cleanupExpiredOrphanAttachments`), đối soát (`reconcileAttachmentStorage`) và xóa tạm (`deleteAttachment`) đều mở giao dịch trên dedicated PostgreSQL client và lấy cùng khóa tư vấn `pg_try_advisory_xact_lock(hashtext('nexus_notice_att:' || id))` trước khi đọc tham chiếu DB hoặc xóa tệp.
+  - Nếu một tiến trình khác đang giữ khóa để gắn tệp vào thông báo (chưa `COMMIT`), tiến trình dọn dẹp/CLI sẽ tự động bỏ qua (`skippedInFlight`) và `deleteAttachment` trả về `409 ATTACHMENT_CONCURRENT_CONFLICT` mà không xóa tệp.
+  - Tệp ở trạng thái `staged` hoặc `deletion-pending` nhưng **đã được tham chiếu trong DB** sẽ **không bao giờ bị xóa** mà được tự động nâng cấp/khôi phục sang `bound`.
   - Nếu truy vấn PostgreSQL gặp lỗi hoặc mất kết nối, tiến trình đối soát/dọn dẹp sẽ **Fail-Closed** (giữ nguyên toàn bộ tệp trên đĩa, trả về `status: "FAIL_CLOSED_DB_ERROR"` và exit code `1`).
+
+---
+
+## 5. Quy Trình Kiểm Chứng Docker + Nginx Persistence Bằng Recreate Container Test (`Gate G2`)
+
+Khi Docker Desktop daemon sẵn sàng trên máy vận hành, thực hiện kiểm chứng trên **stack test cô lập** (`-p nexus-test`, không tác động container đang chạy của người dùng):
+1. Khởi tạo stack test riêng:
+   ```powershell
+   docker compose -p nexus-test up -d --build
+   ```
+2. Đăng nhập tài khoản `HR_DIRECTOR` qua cổng Nginx của stack test, tải lên tệp đính kèm gần `5MB` (`201 Created`, ghi nhận mã `NATT-*` và `sha256`), thử tải lên tệp `> 5MB` (`413 Payload Too Large`), và phát hành thông báo công ty gắn tệp `NATT-*`.
+3. **Bắt buộc xóa và tạo mới lại (recreate) container `backend`** (lưu ý: chỉ dùng `docker compose restart backend` là chưa đủ vì `restart` giữ nguyên lớp filesystem của container cũ):
+   ```powershell
+   docker compose -p nexus-test up -d --force-recreate backend
+   ```
+4. Sau khi container `backend` mới khởi động xong, tải lại tệp đính kèm qua `GET /api/notices/:id/attachments/:attachmentId/download` từ tài khoản nhân viên thuộc phạm vi nhận (`200 OK` và khớp `SHA-256`) và ngoài phạm vi nhận (`403 Forbidden`).
+5. Dọn dẹp stack test sau khi nghiệm thu:
+   ```powershell
+   docker compose -p nexus-test down -v
+   ```

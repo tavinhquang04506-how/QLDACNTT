@@ -1,0 +1,14 @@
+{
+  "baselineCommit": "984ac62",
+  "finding": "R48",
+  "attachmentId": "NATT-1792832927546-dc7bf300",
+  "committedNoticeId": "NT-0028",
+  "dbReferencesAttachmentAfterCommit": true,
+  "cliDeletedInProcessB": [
+    "NATT-1792832927546-dc7bf300"
+  ],
+  "cliSkippedInFlightInProcessB": [],
+  "fileExistsOnDiskAfterCommit": false,
+  "bugReproduced": true
+}
+EXIT_CODE=0

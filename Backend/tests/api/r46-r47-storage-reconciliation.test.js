@@ -519,6 +519,226 @@ describe('R46–R47 Storage Ownership Guard & Post-Commit Attachment Reconciliat
       null
     );
     await noticesService.remove(hrActor, createdAfterUnlock.id, null);
+  });
+
+  it('R48: synchronizes PostgreSQL transaction advisory locks across bind, TTL cleanup, reconciliation, and deleteAttachment across separate OS processes/CLI with explicit barriers', async () => {
+    const r48Bytes = Buffer.from('%PDF-1.4 R48 CROSS PROCESS BARRIER TEST\n', 'utf8');
+    const r48ExpectedSha = crypto.createHash('sha256').update(r48Bytes).digest('hex');
+
+    const uploadRes = await call('HR_DIRECTOR', 'post', '/api/notices/attachments', {
+      name: 'r48-barrier-interleaved.pdf',
+      type: 'application/pdf',
+      contentBase64: r48Bytes.toString('base64'),
+    });
+    assert.equal(uploadRes.status, 201);
+    const r48Att = uploadRes.body.data;
+
+    // Age staged file > 2h TTL so Process B cleanup/reconcile would delete it if not protected by DB advisory lock
+    const initialMeta = noticesService.readAttachmentMeta(r48Att.id);
+    fs.writeFileSync(
+      initialMeta.metaPath,
+      JSON.stringify(
+        {
+          ...initialMeta,
+          binPath: undefined,
+          metaPath: undefined,
+          createdAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          state: 'staged',
+          noticeId: null,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    let notifyEnteredTx;
+    const enteredTxBarrier = new Promise((resolve) => {
+      notifyEnteredTx = resolve;
+    });
+    let releaseCommitBarrier;
+    const commitBarrier = new Promise((resolve) => {
+      releaseCommitBarrier = resolve;
+    });
+
+    // 1. Process A: Bind `r48Att` inside a transaction and hold at `beforeCommitHook` BEFORE `COMMIT`
+    const createPromise = noticesService.create(
+      hrActor,
+      {
+        title: '[R48-BARRIER] Notice Holding Advisory Lock Before Commit',
+        content: 'Process A holds pg_try_advisory_xact_lock while Process B runs cleanup/reconcile/delete',
+        category: 'policy',
+        priority: 'high',
+        targetRole: null,
+        targetDepartmentId: 'DEPT-IT',
+        isPinned: false,
+        attachments: [{ id: r48Att.id, name: r48Att.name }],
+      },
+      null,
+      {
+        beforeCommitHook: async () => {
+          notifyEnteredTx();
+          await commitBarrier;
+        },
+      }
+    );
+
+    await enteredTxBarrier;
+
+    const childEnv = {
+      ...process.env,
+      NODE_ENV: 'test',
+      DB_NAME: 'nexus_hrms_test',
+      TEST_NOTICE_ATTACHMENTS_DIR: isolatedTestDir,
+    };
+
+    // 1A. Process B (separate OS process with its own Set & DB connection): Run CLI `reconcile-attachments.js`
+    const cliWhileLockedOut = execFileSync(
+      process.execPath,
+      [path.join(__dirname, '../../scripts/reconcile-attachments.js')],
+      { env: childEnv, encoding: 'utf8' }
+    );
+    const cliWhileLockedJson = JSON.parse(cliWhileLockedOut);
+    assert.equal(cliWhileLockedJson.status, 'OK');
+    assert.equal(cliWhileLockedJson.reconciliation.deleted.length, 0);
+    assert.ok(
+      cliWhileLockedJson.reconciliation.skippedInFlight.includes(r48Att.id),
+      'CLI reconcile in Process B must skip attachment locked by Process A transaction'
+    );
+    assert.ok(noticesService.readAttachmentMeta(r48Att.id), 'File must remain on disk');
+
+    // 1B. Process B (separate OS process): Run `cleanupExpiredOrphanAttachments` AND `deleteAttachment`
+    const childWorkerScript = `
+      const db = require('./src/config/db');
+      const noticesService = require('./src/modules/notices/service');
+      (async () => {
+        const attId = process.argv[1];
+        const hrUserId = process.argv[2];
+        const cleanupSummary = await noticesService.cleanupExpiredOrphanAttachments(noticesService.STAGED_TTL_MS, db);
+        let deleteResult = null;
+        try {
+          await noticesService.deleteAttachment({ userId: hrUserId, roleCode: 'HR_DIRECTOR' }, attId, { executor: db });
+          deleteResult = { status: 200 };
+        } catch (err) {
+          deleteResult = { status: err.status || 500, code: err.code || null, message: err.message };
+        }
+        await db.pool.end().catch(() => {});
+        console.log(JSON.stringify({ cleanupSummary, deleteResult }));
+      })();
+    `;
+    const workerOut = execFileSync(
+      process.execPath,
+      ['-e', childWorkerScript, r48Att.id, String(hrActor.userId)],
+      {
+        cwd: path.join(__dirname, '../..'),
+        env: childEnv,
+        encoding: 'utf8',
+      }
+    );
+    const workerJson = JSON.parse(workerOut);
+    assert.equal(workerJson.cleanupSummary.deleted.length, 0);
+    assert.ok(
+      workerJson.cleanupSummary.skippedInFlight.includes(r48Att.id),
+      'TTL cleanup in Process B must skip attachment locked by Process A transaction'
+    );
+    assert.equal(workerJson.deleteResult.status, 409);
+    assert.equal(
+      workerJson.deleteResult.code,
+      'ATTACHMENT_CONCURRENT_CONFLICT',
+      'deleteAttachment in Process B must conflict with 409 while Process A holds DB advisory lock'
+    );
+    assert.ok(noticesService.readAttachmentMeta(r48Att.id), 'File must still exist on disk');
+
+    // 2. Release Process A commit barrier -> A commits -> download matches SHA-256!
+    releaseCommitBarrier();
+    const committedNotice = await createPromise;
+    try {
+      const dlRes = await request(app)
+        .get(`/api/notices/${committedNotice.id}/attachments/${r48Att.id}/download`)
+        .set('Authorization', `Bearer ${itEmpSession.token}`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+      assert.equal(dlRes.status, 200);
+      assert.equal(
+        crypto.createHash('sha256').update(dlRes.body).digest('hex'),
+        r48ExpectedSha
+      );
+    } finally {
+      await noticesService.remove(hrActor, committedNotice.id, null);
+    }
+
+    // 3. Process A rolls back before COMMIT -> unreferenced expired file is legitimately cleaned up afterwards by Process B CLI
+    const rbUploadRes = await call('HR_DIRECTOR', 'post', '/api/notices/attachments', {
+      name: 'r48-rollback-then-clean.pdf',
+      type: 'application/pdf',
+      contentBase64: Buffer.from('%PDF-1.4 R48 ROLLBACK THEN CLEAN\n').toString('base64'),
+    });
+    assert.equal(rbUploadRes.status, 201);
+    const rbAtt = rbUploadRes.body.data;
+    const rbMeta = noticesService.readAttachmentMeta(rbAtt.id);
+    fs.writeFileSync(
+      rbMeta.metaPath,
+      JSON.stringify(
+        {
+          ...rbMeta,
+          binPath: undefined,
+          metaPath: undefined,
+          createdAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          state: 'staged',
+          noticeId: null,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    await assert.rejects(
+      () =>
+        noticesService.create(
+          hrActor,
+          {
+            title: '[R48-ROLLBACK] Notice Rolling Back Before Commit',
+            content: 'Will rollback after CLI check',
+            category: 'general',
+            priority: 'normal',
+            isPinned: false,
+            attachments: [{ id: rbAtt.id, name: rbAtt.name }],
+          },
+          null,
+          {
+            beforeCommitHook: async () => {
+              // While locked in Process A, CLI in Process B must skip it
+              const midCli = JSON.parse(
+                execFileSync(
+                  process.execPath,
+                  [path.join(__dirname, '../../scripts/reconcile-attachments.js')],
+                  { env: childEnv, encoding: 'utf8' }
+                )
+              );
+              assert.ok(midCli.reconciliation.skippedInFlight.includes(rbAtt.id));
+              throw new Error('INJECTED_R48_PRE_COMMIT_ROLLBACK');
+            },
+          }
+        ),
+      /INJECTED_R48_PRE_COMMIT_ROLLBACK/
+    );
+
+    // Now that Process A rolled back and released the DB advisory lock, CLI in Process B legitimately cleans up `rbAtt`
+    const postRbCli = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(__dirname, '../../scripts/reconcile-attachments.js')],
+        { env: childEnv, encoding: 'utf8' }
+      )
+    );
+    assert.equal(postRbCli.status, 'OK');
+    assert.ok(postRbCli.reconciliation.deletedExpiredStaged.includes(rbAtt.id));
+    assert.equal(noticesService.readAttachmentMeta(rbAtt.id), null);
 
     // Confirm production storage directory remains untouched
     if (fs.existsSync(noticesService.PROD_DEFAULT_STORAGE_DIR)) {
