@@ -1990,6 +1990,94 @@ async function main() {
       assert.equal(r41UiState.msgText.toLowerCase().includes('contract'), false, 'R41 UI: Ungrounded contract claim must never render');
       assert.equal(r41UiState.hasSources, true, 'R41 UI: Verified answer must retain tool sources');
 
+      // 10h. AI V1 UI Upgrade Verification: answerSections, followUpSuggestions, navigationActions, clarification choices, reset button, and 390px/1440px viewports
+      const v1VerifiedExtras = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        const msgList = document.querySelector('[data-testid="ai-copilot-messages"]');
+        const composer = document.querySelector('[data-testid="ai-copilot-input"]');
+        return {
+          hasSections: Boolean(lastBot?.querySelector('[data-testid="ai-msg-sections"]')),
+          hasFollowups: Boolean(lastBot?.querySelector('[data-testid="ai-msg-followups"]')),
+          hasNavActions: Boolean(lastBot?.querySelector('[data-testid="ai-msg-nav-actions"]')),
+          ariaLive: msgList?.getAttribute('aria-live') || '',
+          isTextarea: composer?.tagName === 'TEXTAREA',
+        };
+      })()`);
+      assert.equal(v1VerifiedExtras.hasSections, true, 'AI V1 UI: Verified answer must render structured answerSections');
+      assert.equal(v1VerifiedExtras.hasFollowups, true, 'AI V1 UI: Verified answer must render followUpSuggestions chips');
+      assert.equal(v1VerifiedExtras.hasNavActions, true, 'AI V1 UI: Verified answer must render allowlisted navigationActions');
+      assert.equal(v1VerifiedExtras.ariaLive, 'polite', 'AI V1 UI: Message list must have aria-live="polite"');
+      assert.equal(v1VerifiedExtras.isTextarea, true, 'AI V1 UI: Composer must be a multi-line textarea');
+
+      // Trigger clarification in UI ("So sánh lương cho tôi" without periods)
+      await cdp.fillInput('[data-testid="ai-copilot-input"]', 'So sánh lương cho tôi');
+      await cdp.click('[data-testid="ai-copilot-send-btn"]', 1000);
+      const v1ClarificationState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const lastBot = bots[bots.length - 1];
+        const choices = Array.from(lastBot?.querySelectorAll('[data-testid="ai-clarification-choice"]') || []);
+        return {
+          responseType: lastBot?.getAttribute('data-response-type') || '',
+          hasClarificationBox: Boolean(lastBot?.querySelector('[data-testid="ai-msg-clarification"]')),
+          choiceCount: choices.length,
+        };
+      })()`);
+      assert.equal(v1ClarificationState.responseType, 'clarification', 'AI V1 UI: Ambiguous comparison must render clarification');
+      assert.equal(v1ClarificationState.hasClarificationBox, true, 'AI V1 UI: Must render clarification choice container');
+      assert.ok(
+        v1ClarificationState.choiceCount >= 1 && v1ClarificationState.choiceCount <= 3,
+        'AI V1 UI: Clarification choices must be between 1 and 3'
+      );
+
+      // Desktop 1440x900 screenshot of AI Copilot V1
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: 1440,
+        height: 900,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      await cdp.captureScreenshot(path.join(screenshotDir, 'ai-v1-copilot-desktop-1440.png'));
+
+      // Mobile 390x844 screenshot & overflow check of AI Copilot V1
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: 390,
+        height: 844,
+        deviceScaleFactor: 1,
+        mobile: true,
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const mobileDrawerOverflow = await cdp.eval(`(() => {
+        const drawer = document.querySelector('[data-testid="ai-copilot-drawer"]');
+        const rect = drawer ? drawer.getBoundingClientRect() : { width: 0 };
+        return {
+          drawerWidth: Math.round(rect.width),
+          innerWidth: window.innerWidth,
+          fitsViewport: rect.width <= window.innerWidth + 1 && rect.width > 0,
+        };
+      })()`);
+      assert.equal(mobileDrawerOverflow.fitsViewport, true, 'AI V1 UI Mobile 390px: Drawer must fit 390px viewport without overflow');
+      await cdp.captureScreenshot(path.join(screenshotDir, 'ai-v1-copilot-mobile-390.png'));
+      await cdp.send('Emulation.clearDeviceMetricsOverride');
+
+      // Click "Làm mới" reset button and verify conversation resets to 1 welcome message with dynamic chips (no hardcoded 2026-08)
+      await cdp.click('[data-testid="ai-copilot-reset-btn"]', 700);
+      const afterResetState = await cdp.eval(`(() => {
+        const bots = Array.from(document.querySelectorAll('[data-testid="ai-copilot-msg-bot"]'));
+        const chips = Array.from(document.querySelectorAll('[data-testid="ai-welcome-chip"]')).map((c) => c.innerText);
+        return {
+          botCount: bots.length,
+          chipCount: chips.length,
+          hasHardcoded202608: chips.some((t) => t.includes('2026-08')),
+          hasDynamicRelativeChip: chips.some((t) => t.includes('năm nay') || t.includes('kỳ gần nhất')),
+        };
+      })()`);
+      assert.equal(afterResetState.botCount, 1, 'AI V1 UI Reset: Must reset message list to single welcome message');
+      assert.ok(afterResetState.chipCount >= 3, 'AI V1 UI Reset: Welcome message must display role-scoped welcome chips');
+      assert.equal(afterResetState.hasHardcoded202608, false, 'AI V1 UI Reset: Welcome chips must not contain old hardcoded 2026-08');
+      assert.equal(afterResetState.hasDynamicRelativeChip, true, 'AI V1 UI Reset: Welcome chips must include dynamic relative time phrasing');
+
       await cdp.captureScreenshot(path.join(screenshotDir, 'r37-r38-ai-copilot-drawer.png'));
     } finally {
       delete app.locals.aiTestOptions;
@@ -1997,7 +2085,7 @@ async function main() {
     }
 
     console.log(
-      '[ASSERT 10 (R35+R36+R37+R38+R41) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, R41MixedClauseSanitizedVerified=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true'
+      '[ASSERT 10 (R35+R36+R37+R38+R41+AI_V1) PASS] AiCopilotRefusedDomRendered=true, R37Case1Refused=true, R37Case2Refused=true, R38CanTake12Refused=true, R41MixedClauseSanitizedVerified=true, AiCopilotUnverifiedDomRendered=true, AiCopilotVerifiedDomWithSourcesRendered=true, AiV1SectionsFollowupsNavClarificationResetVerified=true, AiV1Responsive390And1440Verified=true'
     );
 
     // =========================================================================
