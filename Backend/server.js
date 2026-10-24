@@ -7,6 +7,7 @@ const app = require('./src/app');
 const db = require('./src/config/db');
 const { initSocket } = require('./src/socket');
 const { checkSchemaReadiness } = require('./src/utils/schemaReadiness');
+const noticesService = require('./src/modules/notices/service');
 
 const server = http.createServer(app);
 initSocket(server);
@@ -45,6 +46,14 @@ server.listen(config.port, async () => {
       }
       console.warn('   Run `npm run db:preflight --prefix Backend` and follow docs/remediation/MIGRATION_RUNBOOK.md before serving production traffic.');
     }
+
+    const reconcileResult = await noticesService.reconcileAttachmentStorage(db);
+    if (!reconcileResult.dbError) {
+      console.log(
+        `📎 Notice Attachment Reconciliation: promotedStaged=${reconcileResult.promotedStaged.length}, recoveredPending=${reconcileResult.recoveredPending.length}, deletedPending=${reconcileResult.deletedPending.length}, deletedExpiredStaged=${reconcileResult.deletedExpiredStaged.length}`
+      );
+    }
+    noticesService.startAttachmentReconciliationJob(db);
   } catch (error) {
     console.error('❌ Database connection failed:', error.message);
   }
