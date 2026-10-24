@@ -3,13 +3,24 @@ const { authenticate } = require('../../middleware/auth');
 const { validate } = require('../../middleware/validate');
 const { requirePermission } = require('../../policies');
 const controller = require('./controller');
-const { idParam, listQuery, createBody, updateBody } = require('./schema');
+const {
+  idParam,
+  attachmentDownloadParam,
+  attachmentIdParam,
+  uploadAttachmentBody,
+  listQuery,
+  createBody,
+  updateBody,
+} = require('./schema');
 
 const router = express.Router();
 router.use(authenticate);
 
 router.get('/', requirePermission('notice.read'), validate({ query: listQuery }), controller.list);
+router.post('/attachments', requirePermission('notice.manage'), validate({ body: uploadAttachmentBody }), controller.uploadAttachment);
+router.delete('/attachments/:attachmentId', requirePermission('notice.manage'), validate({ params: attachmentIdParam }), controller.deleteAttachment);
 router.post('/', requirePermission('notice.manage'), validate({ body: createBody }), controller.create);
+router.get('/:id/attachments/:attachmentId/download', requirePermission('notice.read'), validate({ params: attachmentDownloadParam }), controller.downloadAttachment);
 router.get('/:id', requirePermission('notice.read'), validate({ params: idParam }), controller.get);
 router.get('/:id/readers', requirePermission('notice.manage'), validate({ params: idParam }), controller.getReaders);
 router.post('/:id/remind', requirePermission('notice.manage'), validate({ params: idParam }), controller.remindUnread);

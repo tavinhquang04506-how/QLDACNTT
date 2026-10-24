@@ -25,5 +25,41 @@ const remindUnread = asyncHandler(async (req, res) => {
   const result = await service.remindUnread(req.user, req.params.id, req);
   res.json({ success: true, ...result });
 });
+const uploadAttachment = asyncHandler(async (req, res) => {
+  const data = await service.uploadAttachment(req.user, req.body);
+  res.status(201).json({ success: true, message: 'Đã tải tệp đính kèm lên máy chủ', data });
+});
+const deleteAttachment = asyncHandler(async (req, res) => {
+  const data = await service.deleteAttachment(req.user, req.params.attachmentId);
+  res.json({ success: true, message: 'Đã xóa tệp đính kèm tạm thời', data });
+});
+const downloadAttachment = asyncHandler(async (req, res) => {
+  const { buffer, fileName, mimeType, sizeBytes, sha256 } = await service.downloadAttachment(
+    req.user,
+    req.params.id,
+    req.params.attachmentId
+  );
+  const encodedName = encodeURIComponent(fileName);
+  const asciiFallback = fileName.replace(/[^\x20-\x7E]/g, '_');
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Length', String(sizeBytes));
+  res.setHeader('X-Attachment-SHA256', sha256);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`
+  );
+  res.send(buffer);
+});
 
-module.exports = { list, get, create, update, remove, getReaders, remindUnread };
+module.exports = {
+  list,
+  get,
+  create,
+  update,
+  remove,
+  getReaders,
+  remindUnread,
+  uploadAttachment,
+  deleteAttachment,
+  downloadAttachment,
+};
