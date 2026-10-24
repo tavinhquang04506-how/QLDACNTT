@@ -1,0 +1,203 @@
+=== 1. R37, R38, R39 REPRODUCTION ===
+=== REPRODUCTION BEFORE FIX (R37, R38, R39, R40) ===
+[R37-CASE-1] Question + ungrounded assertion without tool: {"answer":"Your request was rejected. Would you like help?","verified":false,"refused":false,"refusalCodes":[],"toolsUsed":[]}
+[R37-CASE-2] Greeting + ungrounded termination claim without tool: {"answer":"Your employment contract is terminated.","verified":false,"refused":false,"refusalCodes":[],"toolsUsed":[]}
+[R38-CASE-1] Misattributed total_days=12 as available days off: {"answer":"You can take 12 days off; 5 is your balance.","verified":true,"refused":false,"refusalCodes":[],"toolsUsed":[{"name":"get_my_leave_balance","ok":true,"errorCode":null}]}
+[R39-INSPECT] Before fix state: {"hasBlobObjectUrl":true,"hasPresetDoc":true,"schemaAcceptsBlob":true}
+
+=== 2. R40 REPRODUCTION (test:unit with PostgreSQL stopped) ===
+
+> nexus-hrms-backend@1.0.0 test:unit
+> node --require ./tests/helpers/env.js --test "tests/unit/**/*.test.js"
+
+▶ AI Copilot Grounded Unit Test Suite (F22-F26)
+  ✔ getHrKnowledgeBase returns authoritative metadata without fabricated Vinmec/150m policies (3.2557ms)
+  ✔ isRetiredGeminiModel rejects retired 1.0/1.5/pro models and accepts current models (0.8215ms)
+  ✔ redactErrorText scrubs API keys from error messages (0.9113ms)
+  ✔ sanitizePolicyText neutralizes untrusted prompt injection directives in handbook docs (3.2888ms)
+  ✖ runCopilot throws 503 AI_NOT_CONFIGURED when GEMINI_API_KEY is missing (never fabricates 12 days) (116.667ms)
+  ✖ runCopilot throws 503 AI_MODEL_RETIRED when retired model gemini-1.5-flash is configured (25.4028ms)
+✖ AI Copilot Grounded Unit Test Suite (F22-F26) (166.4141ms)
+✔ initialStage: employees start at the manager, managers/HRD skip to the last step, the CEO is auto-approved (4.4737ms)
+✔ a manager of the same department approves step one and passes it to HR (0.4611ms)
+✔ a manager of another department (or without one) may not act (0.3119ms)
+✔ nobody acts on their own request, not even the CEO (41.6848ms)
+✔ HR_DIRECTOR approves the last step of an employee request, but not step one (0.3323ms)
+✔ requests of a manager or HR_DIRECTOR are approved only by the CEO (0.3831ms)
+✔ the CEO can approve any pending step directly (19.4323ms)
+✔ finished stages cannot be acted on, and plain employees never can (0.8124ms)
+✔ an actor without an employee record can never approve (0.749ms)
+✔ workingDays counts Monday to Friday inclusive (46.0868ms)
+▶ Attendance Appeal Service Unit Test Suite
+  ✔ createAppeal should register a new attendance explanation using actor employeeId (4.5855ms)
+  ✔ createAppeal should reject spoofed employee_id in payload (1.2379ms)
+  ✔ getAppeals should return list of appeals within scope (0.5562ms)
+  ✔ reviewAppeal should reject self-approval and cross-department approval (1.2436ms)
+  ✔ reviewAppeal should return 404 for unknown appeal id (0.5511ms)
+  ✔ reviewAppeal should approve explanation and prevent re-review (409) (0.9271ms)
+✔ Attendance Appeal Service Unit Test Suite (13.6621ms)
+✔ dashboardCache builds distinct keys per user, employee, role, scope, path, and sorted query (1.8923ms)
+✔ dashboardCache with cache enabled isolates two managers and two employees with identical URL (1.4159ms)
+✔ CEO and HR_DIRECTOR see every sensitive field, but never face_encoding (1.8535ms)
+✔ the owner sees their own sensitive fields whatever their role (0.5463ms)
+✔ everyone else loses the sensitive fields but keeps public ones (0.7871ms)
+✔ shapeEmployee does not mutate its input (1.9484ms)
+✔ canViewEmployee follows the scope (0.7283ms)
+✔ NODE_ENV=test with a non-_test database name refuses to load (553.3189ms)
+✔ NODE_ENV=test with a *_test database name loads (871.953ms)
+✔ AppError maps to its status, code and message (8.8282ms)
+✔ AppError without details omits the details key (2.1324ms)
+✔ ZodError maps to 400 VALIDATION_ERROR with field paths (4.2776ms)
+✔ malformed JSON body maps to 400 INVALID_JSON (0.3367ms)
+✔ oversized body maps to 413 (0.3924ms)
+✔ Postgres unique violation maps to 409 (3.202ms)
+✔ Postgres foreign key violation maps to 409 (0.7416ms)
+✔ Postgres check violation and invalid text representation map to 400 (0.4803ms)
+✔ deadlock and serialization failures map to a retryable 409 (0.9074ms)
+✔ unknown errors map to 500 without leaking the message (36.3573ms)
+✔ notFoundHandler keeps the legacy Vietnamese message (0.7427ms)
+✔ F06: validateLocation enforces real Haversine geofencing across GREEN, YELLOW and RED zones (2.3181ms)
+✔ F06: validateLocation treats 0 latitude/longitude as valid numeric coordinates, not falsy (1.0383ms)
+✔ G3: workingDays excludes weekends and optional public holidays on weekdays (2.1858ms)
+✔ scores map to low/medium/high at 60 and 80 (1.9069ms)
+✔ cell = (potential level - 1) * 3 + performance level, from 1 (low/low) to 9 (high/high) (0.5911ms)
+✔ all nine cells have a title and a recommended action, in order (2.0283ms)
+✔ openapi.yaml declares the basics (1.9759ms)
+✔ every catalog endpoint of the documented modules is described in openapi.yaml (13.6521ms)
+✔ openapi.yaml is valid YAML and every $ref resolves (4.8018ms)
+✔ every operation has tags, a summary and at least one response (1.7907ms)
+✔ path parameters used in a path are declared on each operation (1.5265ms)
+✔ every response and operation description is a string (1.3364ms)
+✔ defaults to page 1, limit 50 (7.5973ms)
+✔ computes offset from page and limit (0.4116ms)
+✔ clamps page below 1 to 1 (0.3328ms)
+✔ non-numeric values fall back to defaults (0.2232ms)
+✔ limit is clamped to [1, maxLimit] (0.2735ms)
+✔ paginationMeta computes totalPages (1.7032ms)
+✔ detects overtime exceeding statutory 40h limit as Cao violation (2.4471ms)
+✔ detects unapproved overtime as Trung bình anomaly (0.4986ms)
+✔ detects missing bank account as Trung bình payment anomaly (0.2924ms)
+✔ R02: detects missing attendance logs (att_days === 0) as Cao violation that blocks lock (0.2776ms)
+✔ R02: distinguishes logged attendance with 0 paid workdays (ZERO_WORKDAYS, Trung bình) from missing attendance (0.8239ms)
+✔ sorts anomalies by severity: Cao -> Trung bình (20.46ms)
+✔ personal income tax is progressive across the seven brackets (3.3772ms)
+✔ tax inside a bracket is proportional and rounded to whole dong (0.3251ms)
+✔ insurance is 8% + 1.5% + 1% of the salary, capped at the statutory ceilings (1.5802ms)
+✔ overtime pays 150% of the hourly rate (salary / 22 days / 8 hours) by default and honors policy overrides (2.5853ms)
+✔ a full month at 22 million: gross, deductions and net (3.0003ms)
+✔ fewer worked days lower the pay, and workDays above the standard are capped (0.6119ms)
+✔ R03: 0 workDays and 0 OT/bonus yields 0 allowances, 0 insurance, and 0 net even when base > 0 (0.4122ms)
+✔ R05: computePayslip honors policy personal_income_tax_deduction, dependent_deduction, employee_bhxh_rate, standard_work_days (1.8565ms)
+✔ a low salary pays no income tax and never yields a negative net (1.0503ms)
+✔ every matrix entry uses a valid scope and a real role code (4.9151ms)
+✔ scopeOf returns the scope for allowed roles and null otherwise (0.3999ms)
+✔ scopeOf throws on an unknown permission (no silent allow) (0.8102ms)
+✔ can mirrors scopeOf (0.2453ms)
+✔ requirePermission fails at startup for an unknown permission (0.3427ms)
+✔ requirePermission: no req.user -> 401 error (0.4161ms)
+✔ requirePermission: disallowed role -> 403 with allowed roles in details (1.738ms)
+✔ requirePermission: allowed role passes and sets req.scope (0.3397ms)
+✔ a signed token verifies and carries the employee id, a unique id and an expiry (103.1176ms)
+✔ expired, tampered, garbage and non-string tokens are rejected as INVALID_QR_TOKEN (5.3178ms)
+✔ an access token signed with the JWT secret is not a valid QR token (1.6887ms)
+✔ a QR token signed with the JWT secret but claiming to be a QR token is rejected (2.6835ms)
+✔ consumeQrToken accepts a token id once and then refuses it (2.5609ms)
+✔ createAuthLimiter answers 429 with a JSON body after the limit (162.716ms)
+✔ authLimiter is a no-op in the test environment (542.6307ms)
+✔ secrets are always redacted, for every role, at any depth (5.2964ms)
+✔ CEO and HR_DIRECTOR keep personal and salary data (0.5957ms)
+✔ ADMIN loses every personal and salary field (3.5476ms)
+✔ does not mutate its input and tolerates null, primitives and arrays (3.1331ms)
+✔ CEO can assign any role (6.4863ms)
+✔ ADMIN (a technical role) can only assign EMPLOYEE, LINE_MANAGER, KIOSK (1.1171ms)
+✔ HR_DIRECTOR can only assign EMPLOYEE, LINE_MANAGER, KIOSK (1.4292ms)
+✔ other roles cannot assign anything (5.2518ms)
+✔ HR_DIRECTOR cannot manage CEO or ADMIN accounts but can manage the rest (0.6605ms)
+✔ temporary passwords are strong and unique (1.3416ms)
+▶ WebSocket Server Unit Test Suite
+  ✔ setup HTTP and WebSocket server (11.3224ms)
+  ✔ unauthenticated client connection is rejected with 401 (118.477ms)
+  ✔ authenticated client connects, joins authorized squad, and ignores spoofed sender (37.0389ms)
+  ✔ broadcastNotification should send message without crashing (1.1226ms)
+  ✔ teardown server (6.1313ms)
+✔ WebSocket Server Unit Test Suite (201.7127ms)
+✔ accepts names ending in _test (2.0021ms)
+✔ refuses the development database (1.0367ms)
+✔ refuses names that could be SQL injection (0.4571ms)
+✔ refuses empty or undefined names (0.3061ms)
+✔ hashToken is a deterministic 64-char hex sha256 (29.2518ms)
+✔ signAccessToken carries the identity claims and an expiry (12.2446ms)
+✔ unset, empty and "false" mean no proxy trusted (24.6829ms)
+✔ a number is a hop count (5.4567ms)
+✔ anything else is passed through as a subnet / preset list (0.2239ms)
+✔ "true" is refused because it lets clients spoof X-Forwarded-For (1.3561ms)
+✔ a settled employee scores zero with no signals (3.4637ms)
+✔ pay below the peer average adds 1.2 points per percent, capped at 30 (1.3038ms)
+✔ overtime load counts from 10 hours and is capped at 15; a steep rise adds 5 (0.7158ms)
+✔ stagnation: 18 months is a mild signal, 24 months stronger, high performers get 5 more (1.9764ms)
+✔ performance signals: low score, and a drop of 10 points or more (0.6073ms)
+✔ attendance signals: three unpaid absences in 60 days, six late arrivals in 30 days (0.5373ms)
+✔ levels: below 30 low, 30-59 medium, 60 and above high; the score is bounded by 100 (0.5321ms)
+✔ every signal explains itself with points and a readable detail (0.3278ms)
+✔ the function is deterministic and does not mutate its input (0.4739ms)
+✔ valid input is replaced by the parsed value (coercion applied) (14.5882ms)
+✔ invalid body forwards a ZodError to next (3.2478ms)
+✔ missing body (undefined) is validated, not skipped (0.9492ms)
+ℹ tests 130
+ℹ suites 0
+ℹ pass 127
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3107.8697
+
+✖ failing tests:
+
+test at tests\unit\aiCopilot.test.js:51:11
+✖ runCopilot throws 503 AI_NOT_CONFIGURED when GEMINI_API_KEY is missing (never fabricates 12 days) (116.667ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  undefined !== 503
+  
+      at Object.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:60:16)
+      at expectedException (node:assert:578:17)
+      at expectsError (node:assert:703:21)
+      at strict.rejects (node:assert:769:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:52:5)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async TestContext.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:51:3)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 503,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\unit\aiCopilot.test.js:67:11
+✖ runCopilot throws 503 AI_MODEL_RETIRED when retired model gemini-1.5-flash is configured (25.4028ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  undefined !== 503
+  
+      at Object.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:76:16)
+      at expectedException (node:assert:578:17)
+      at expectsError (node:assert:703:21)
+      at strict.rejects (node:assert:769:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:68:5)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async TestContext.<anonymous> (C:\Users\tavin\Downloads\QLDACNTT\Backend\tests\unit\aiCopilot.test.js:67:3)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 503,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

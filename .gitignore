@@ -29,6 +29,7 @@ Desktop.ini
 .vscode/
 .idea/
 
-# Internal scratch folders
+# Internal scratch folders & runtime attachment storage
 FileTongHopCacTrangGiaoDien/
 FileTongHopLinhTinh/
+Backend/storage/

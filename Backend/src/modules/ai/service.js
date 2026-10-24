@@ -496,43 +496,89 @@ function parseSingleNumberExpression(expr = '') {
  * containing numbers/HR assertions without tools is rejected.
  */
 const FACTUAL_INTENT_KEYWORDS_ASCII =
-  /\b(ngay phep|quy phep|phep nam|nghi phep|nghi om|don nghi|so du|cham cong|bang cong|di muon|ve som|giai trinh|gps|phieu luong|bang luong|luong|thuc linh|gross|net|thue|tncn|pit|bhxh|bhyt|bhtn|bao hiem|phu cap|tang ca|ot|khau tru|giam tru|dashboard|thong ke|tong hop|bien dong|quan so|nhan su|hieu suat|9 box|nine box|kpi|pip|rui ro|nghi viec|turnover|danh gia|chinh sach|quy che|quy dinh|noi quy|so tay|cam nang|vinmec|duyet|phe duyet|hop dong|bao nhieu|may ngay|con may|con lai|da dung|kha dung|how many|how much|vacation|leave|balance|pto|salary|payslip|payroll|tax|deduction|allowance|overtime|attendance|check in|check out|policy|handbook|headcount|performance|approved|status|available|remaining|entitlement)\b/i;
+  /\b(ngay phep|quy phep|phep nam|nghi phep|nghi om|don nghi|so du|cham cong|bang cong|di muon|ve som|giai trinh|gps|phieu luong|bang luong|luong|thuc linh|gross|net|thue|tncn|pit|bhxh|bhyt|bhtn|bao hiem|phu cap|tang ca|ot|khau tru|giam tru|dashboard|thong ke|tong hop|bien dong|quan so|nhan su|hieu suat|9 box|nine box|kpi|pip|rui ro|nghi viec|turnover|danh gia|chinh sach|quy che|quy dinh|noi quy|so tay|cam nang|vinmec|duyet|phe duyet|tu choi|cham dut|hop dong|bao nhieu|may ngay|con may|con lai|da dung|kha dung|how many|how much|vacation|leave|balance|pto|salary|payslip|payroll|tax|deduction|allowance|overtime|attendance|check in|check out|policy|handbook|headcount|performance|approved|rejected|terminated|contract|leave request|my request|status|available|remaining|entitlement)\b/i;
 
 const PURE_GREETING_MESSAGE_ASCII =
   /^(xin chao|chao\b|hello\b|hi\b|hey\b|good morning|good afternoon|good evening|cam on|thank you|thanks|tiep tuc|ok\b)/i;
 
-const FACTUAL_ASSERTION_IN_ANSWER_ASCII =
-  /\b(ban con|you have|your balance|so du cua ban|luong cua ban|thuc linh la|gross la|da duoc duyet|da phe duyet|da duoc phe duyet|hoan tat|da chot|dang co hieu luc|chi tra|muc giam tru la|ban kinh la|tong so nhan su la|available|remaining|entitled to|approved)\b/i;
+const TOOL_LESS_FORBIDDEN_CLAIM_ASCII =
+  /\b(ban con|you have|your balance|your request|your leave|your contract|your employment|your salary|your payslip|your attendance|your account|your performance|your kpi|your pip|so du cua ban|luong cua ban|thuc linh la|gross la|hop dong|hop dong cua ban|don nghi|don cua ban|yeu cau cua ban|ho so cua ban|da duoc duyet|da phe duyet|da duoc phe duyet|da duyet|duoc duyet|bi tu choi|da tu choi|rejected|was rejected|is rejected|were rejected|approved|was approved|is approved|denied|was denied|is denied|terminated|was terminated|is terminated|termination|cancelled|canceled|expired|is expired|has expired|suspended|fired|dismissed|resigned|promoted|demoted|disbursed|finalized|violated|penalized|disciplined|employment contract|leave request|cham dut|ket thuc|thanh ly|bi huy|da huy|het han|het hieu luc|con hieu luc|dang co hieu luc|vo hieu|tam dinh chi|dinh chi|sa thai|buoc thoi viec|thoi viec|ky luat|canh cao|khiem trach|da thanh toan|da chi tra|chua thanh toan|hoan tat|da chot|chua chot|du dieu kien|khong du dieu kien|vi pham|xu phat|da ky|chua ky|muc giam tru la|ban kinh la|tong so nhan su la|available|remaining|entitled to)\b/i;
 
-const CLARIFICATION_QUESTION_ASCII =
-  /(\?|\b(ban muon tra cuu|vui long cho biet|ky nao|nam nao|loai phep nao|phong ban nao|which period|which year|please specify|clarify)\b)/i;
+const PURE_GREETING_OR_COURTESY_CLAUSE_ASCII =
+  /^(xin chao|chao\b|hello\b|hi\b|hey\b|good morning|good afternoon|good evening|cam on|thank you|thanks|da\b|ok\b|phan hoi|toi la tro ly|toi san sang ho tro|rat vui duoc ho tro|i am nexus|i am ready to help|how can i help|how may i assist)/i;
 
+const GREETING_CLAUSE_FORBIDDEN_HR_TERMS_ASCII =
+  /\b(hop dong|contract|employment|thu viec|probation|chinh thuc|nghi phep|leave|vacation|pto|don nghi|request|application|luong|salary|payslip|payroll|bang cong|cham cong|attendance|giai trinh|appeal|tang ca|overtime|kpi|pip|9 box|nine box|danh gia|review|chinh sach|quy che|policy|handbook|bao hiem|insurance|thue|tax|phu cap|allowance|khau tru|deduction|thuong|bonus|ky luat|sa thai|dinh chi|thoi viec|nghi viec|cham dut|tu choi|phe duyet|duyet|het han|hieu luc|rejected|approved|denied|terminated|expired|suspended|fired|dismissed|resigned|promoted|demoted|paid|unpaid|active|inactive|valid|invalid|pending|eligible|ineligible|violated|penalized)\b/i;
+
+const PURE_CLARIFICATION_CLAUSE_ASCII =
+  /\b(ban muon tra cuu|ban can tra cuu|toi co the ho tro tra cuu|toi co the giup ban tra cuu|ban can ho tro tra cuu|vui long cho biet|vui long cung cap|cho biet ky|ky nao|thang nao|nam nao|loai phep nao|loai thong tin|phong ban nao|thong tin gi|noi dung gi|noi dung nao|which period|which year|which month|which leave|which department|what information|please specify|please provide|could you specify|could you clarify)\b/i;
+
+function splitIntoClauses(text = '') {
+  return String(text || '')
+    .split(/(?:(?<!\d)\.(?!\d)|[!?;\n])+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * R37: Positive contract for tool-less exchanges (`toolsUsed.length === 0`).
+ * Never allows free-form declarative HR/contract/request/status claims to pass just because
+ * the user sent a greeting ("Hello" -> "Your employment contract is terminated.") or because
+ * the model appended a question mark ("Your request was rejected. Would you like help?").
+ */
 function isAllowedToollessExchange(userMessage = '', modelAnswer = '') {
   const normMsg = normalizeTextAscii(userMessage);
   const normAns = normalizeTextAscii(modelAnswer);
+  if (!normAns) return false;
 
   // 1. Model answer when toolsUsed.length === 0 must NEVER contain any numbers (digits or written words)
-  // or affirmative HR/policy factual claims.
+  // or any HR record/contract/approval/rejection/termination/policy assertion.
   const ansNumbers = extractNumbersFromText(modelAnswer);
   if (ansNumbers.length > 0) {
     return false;
   }
-  if (FACTUAL_ASSERTION_IN_ANSWER_ASCII.test(normAns)) {
+  if (TOOL_LESS_FORBIDDEN_CLAIM_ASCII.test(normAns)) {
     return false;
   }
 
-  // 2. Allow pure clarification questions from the assistant (e.g., asking which period YYYY-MM or year)
-  if (CLARIFICATION_QUESTION_ASCII.test(normAns) && normAns.includes('?')) {
-    return true;
+  const clauses = splitIntoClauses(modelAnswer);
+  if (clauses.length === 0) return false;
+
+  const isUserPureGreeting =
+    PURE_GREETING_MESSAGE_ASCII.test(normMsg) && !FACTUAL_INTENT_KEYWORDS_ASCII.test(normMsg);
+
+  // 2. If user sent a pure greeting/courtesy, EVERY clause in modelAnswer must be a pure greeting/courtesy
+  // (containing zero HR domain/record/status terms) or a pure parameter clarification prompt.
+  if (isUserPureGreeting) {
+    return clauses.every((c) => {
+      const nc = normalizeTextAscii(c);
+      if (PURE_CLARIFICATION_CLAUSE_ASCII.test(nc)) {
+        return true;
+      }
+      return (
+        PURE_GREETING_OR_COURTESY_CLAUSE_ASCII.test(nc) &&
+        !GREETING_CLAUSE_FORBIDDEN_HR_TERMS_ASCII.test(nc)
+      );
+    });
   }
 
-  // 3. Allow pure greeting / courtesy turns when the user message itself has no factual HR query intent
-  if (PURE_GREETING_MESSAGE_ASCII.test(normMsg) && !FACTUAL_INTENT_KEYWORDS_ASCII.test(normMsg)) {
-    return true;
+  // 3. If user did NOT send a pure greeting, modelAnswer is only allowed if it is purely asking the user
+  // to clarify missing lookup parameters (e.g. period YYYY-MM, year YYYY, leave type) with zero declarative statements.
+  let hasClarificationClause = false;
+  for (const c of clauses) {
+    const nc = normalizeTextAscii(c);
+    if (PURE_CLARIFICATION_CLAUSE_ASCII.test(nc)) {
+      hasClarificationClause = true;
+      continue;
+    }
+    if (/^(xin chao|chao\b|hello\b|hi\b|da\b)[^.!;]*$/i.test(nc) && !TOOL_LESS_FORBIDDEN_CLAIM_ASCII.test(nc)) {
+      continue;
+    }
+    // Any other declarative or non-parameter-clarification clause fails closed
+    return false;
   }
 
-  // Fail closed for everything else when no authorized tool was invoked
-  return false;
+  return hasClarificationClause;
 }
 
 function collectAllowedNumbersFromValue(value, allowedSet, keyName = '') {
@@ -616,7 +662,10 @@ function buildStructuredEvidenceFromTools(toolsUsed = [], rawToolResults = []) {
         period: { year: Number(tr.year) },
         fields: {
           balances: (tr.balances || []).map((b) => ({
+            leaveTypeId: b.leaveTypeId || null,
             leaveTypeCode: b.leaveTypeCode,
+            leaveTypeName: b.leaveTypeName || null,
+            paid: b.paid !== undefined ? Boolean(b.paid) : true,
             year: Number(b.year),
             entitlement: Number(b.entitlement),
             used: Number(b.used),
@@ -701,6 +750,7 @@ function buildStructuredEvidenceFromTools(toolsUsed = [], rawToolResults = []) {
           performanceScore: tr.latestReview?.performanceScore ?? null,
           potentialScore: tr.latestReview?.potentialScore ?? null,
           turnoverScore: tr.turnoverRisk?.score ?? null,
+          turnoverLevel: tr.turnoverRisk?.level ?? null,
         },
         sourceId: tr.source?.id || null,
       });
@@ -710,9 +760,10 @@ function buildStructuredEvidenceFromTools(toolsUsed = [], rawToolResults = []) {
 }
 
 /**
- * R35: Validate that field-specific claims, entity IDs, and periods in `answer` match the
- * exact fields/entities/periods in `structuredEvidence` (preventing total/used/remaining/year swaps
- * or gross/net/base swaps even when the numbers exist in the flat set).
+ * R35 & R38: Validate that field-specific claims, entity IDs, periods, leave types, and non-numeric
+ * attributes in `answer` match the exact `(tool, entity, period, field)` in `structuredEvidence`.
+ * Enforces positive field ownership so an `entitlement` or `used` number can never be stated as
+ * an `available`/`remaining` balance (e.g. "You can take 12 days off; 5 is your balance").
  */
 const NUM_EXPR_PATTERN =
   '((?:\\d+(?:[.,]\\d+)*)|(?:(?:mot|hai|ba|bon|tu|nam|lam|sau|bay|tam|chin|muoi|le|linh|tram|nghin|ngan|trieu|ty|ruoi|khong|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)(?:\\s+(?:mot|hai|ba|bon|tu|nam|lam|sau|bay|tam|chin|muoi|le|linh|tram|nghin|ngan|trieu|ty|ruoi|khong|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|and|a|half))*))';
@@ -734,151 +785,368 @@ function extractMatchedFieldValues(normText, regexList) {
   return values;
 }
 
+function stripIdentifierAndDateTokens(text = '') {
+  return String(text || '')
+    .replace(/\b(?:NV|DEPT|HB|POL|APL|LR|PS|LT)-[A-Za-z0-9-]+\b/gi, ' ')
+    .replace(/\b20\d{2}-(0[1-9]|1[0-2])(?:-\d{2})?\b/g, ' ');
+}
+
+function detectLeaveTypeCategory(normText = '') {
+  const hasSick = /\b(nghi om|phep om|om dau|sick|medical|lt-sl|nghi_om)\b/i.test(normText);
+  const hasUnpaid = /\b(khong luong|nghi khong luong|khong huong luong|unpaid|lt-ul|khong_luong)\b/i.test(normText);
+  const hasAnnual = /\b(phep nam|nghi phep nam|annual|vacation|pto|lt-al|phep_nam)\b/i.test(normText);
+  const types = [];
+  if (hasAnnual) types.push('ANNUAL');
+  if (hasSick) types.push('SICK');
+  if (hasUnpaid) types.push('UNPAID');
+  return types;
+}
+
+function matchesLeaveTypeCategory(balanceItem, category) {
+  const code = String(balanceItem?.leaveTypeCode || '').toUpperCase();
+  const id = String(balanceItem?.leaveTypeId || '').toUpperCase();
+  const name = normalizeTextAscii(balanceItem?.leaveTypeName || '');
+  if (category === 'ANNUAL') {
+    return code.includes('ANNUAL') || code.includes('PHEP_NAM') || id === 'LT-AL' || name.includes('phep nam');
+  }
+  if (category === 'SICK') {
+    return code.includes('SICK') || code.includes('NGHI_OM') || id === 'LT-SL' || name.includes('nghi om');
+  }
+  if (category === 'UNPAID') {
+    return code.includes('UNPAID') || code.includes('KHONG_LUONG') || id === 'LT-UL' || name.includes('khong luong');
+  }
+  return false;
+}
+
 function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', structuredEvidence = []) {
   const normMsg = normalizeTextAscii(userMessage);
   const normAns = normalizeTextAscii(finalAnswer);
 
-  for (const ev of structuredEvidence) {
-    // 1. Entity ID check (if answer cites an NV-* employeeId, it must match ev.entity.employeeId)
-    if (ev.entity?.employeeId) {
-      const empMatches = String(finalAnswer).match(/\bNV-[A-Za-z0-9-]+\b/g) || [];
-      for (const empId of empMatches) {
-        if (empId !== ev.entity.employeeId) {
+  // 1. Global Entity ID & Policy ID checks across all structuredEvidence
+  const allowedEmpIds = new Set(
+    structuredEvidence.map((e) => e.entity?.employeeId).filter(Boolean)
+  );
+  if (allowedEmpIds.size > 0) {
+    const empMatches = String(finalAnswer).match(/\bNV-[A-Za-z0-9-]+\b/g) || [];
+    for (const empId of empMatches) {
+      if (!allowedEmpIds.has(empId)) {
+        return {
+          valid: false,
+          reason: `ENTITY_MISMATCH: answer cited ${empId} not in [${Array.from(allowedEmpIds).join(',')}]`,
+        };
+      }
+    }
+  }
+
+  const allowedDeptIds = new Set(
+    structuredEvidence.map((e) => e.entity?.departmentId).filter(Boolean)
+  );
+  if (allowedDeptIds.size > 0) {
+    const deptMatches = String(finalAnswer).match(/\bDEPT-[A-Za-z0-9-]+\b/g) || [];
+    for (const deptId of deptMatches) {
+      if (!allowedDeptIds.has(deptId)) {
+        return {
+          valid: false,
+          reason: `DEPARTMENT_MISMATCH: answer cited ${deptId} not in [${Array.from(allowedDeptIds).join(',')}]`,
+        };
+      }
+    }
+  }
+
+  const policyEvs = structuredEvidence.filter((e) => e.tool === 'search_policies');
+  if (policyEvs.length > 0) {
+    const allowedDocIds = new Set();
+    for (const pe of policyEvs) {
+      for (const id of pe.fields?.matchIds || []) allowedDocIds.add(id);
+      if (pe.period?.policyVersionId) allowedDocIds.add(pe.period.policyVersionId);
+    }
+    const citedDocs = String(finalAnswer).match(/\b(?:HB|POL)-[A-Za-z0-9-]+\b/g) || [];
+    for (const docId of citedDocs) {
+      if (allowedDocIds.size > 0 && !allowedDocIds.has(docId)) {
+        return {
+          valid: false,
+          reason: `POLICY_ID_MISMATCH: answer cited ${docId} not in [${Array.from(allowedDocIds).join(',')}]`,
+        };
+      }
+    }
+  }
+
+  // 2. Leave Balance field-level, clause-level, multi-leave-type & non-numeric semantic checks
+  const leaveEvs = structuredEvidence.filter((e) => e.tool === 'get_my_leave_balance');
+  for (const ev of leaveEvs) {
+    const balances = ev.fields?.balances || [];
+    if (balances.length === 0) continue;
+
+    const msgLeaveTypes = detectLeaveTypeCategory(normMsg);
+    const clauses = String(finalAnswer)
+      .split(/(?:(?<!\d)\.(?!\d)|[;!\n]+|,(?!\d)\s*(?=[A-Za-zÀ-ỹ0-9]))/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    for (const clause of clauses) {
+      const normClause = normalizeTextAscii(clause);
+      const clauseLeaveTypes = detectLeaveTypeCategory(normClause);
+      const activeTypes = clauseLeaveTypes.length > 0 ? clauseLeaveTypes : msgLeaveTypes;
+
+      let targetBalances = balances;
+      if (activeTypes.length > 0) {
+        const matched = balances.filter((b) =>
+          activeTypes.some((cat) => matchesLeaveTypeCategory(b, cat))
+        );
+        if (clauseLeaveTypes.length > 0 && matched.length === 0) {
           return {
             valid: false,
-            reason: `ENTITY_MISMATCH: answer cited ${empId} instead of ${ev.entity.employeeId}`,
+            reason: `LEAVE_TYPE_NOT_IN_EVIDENCE: clause cited leave type ${clauseLeaveTypes.join(',')} not present in tool output`,
+          };
+        }
+        if (matched.length > 0) {
+          targetBalances = matched;
+        }
+      }
+
+      const remainingSet = new Set(targetBalances.map((b) => Number(b.remaining)));
+      const availableSet = new Set(targetBalances.map((b) => Number(b.available)));
+      const usedSet = new Set(targetBalances.map((b) => Number(b.used)));
+      const entitlementSet = new Set(targetBalances.map((b) => Number(b.entitlement)));
+      const pendingSet = new Set(targetBalances.map((b) => Number(b.pending)));
+      const yearSet = new Set(targetBalances.map((b) => Number(b.year)));
+
+      // Non-numeric check: paid vs unpaid claim
+      if (
+        /\b(khong huong luong|unpaid leave|not paid)\b/i.test(normClause) &&
+        targetBalances.every((b) => b.paid === true)
+      ) {
+        return {
+          valid: false,
+          reason: 'LEAVE_PAID_STATUS_MISMATCH: claimed unpaid leave for a paid leave type',
+        };
+      }
+      if (
+        /\b(co huong luong|huong nguyen luong|paid leave)\b/i.test(normClause) &&
+        targetBalances.every((b) => b.paid === false)
+      ) {
+        return {
+          valid: false,
+          reason: 'LEAVE_PAID_STATUS_MISMATCH: claimed paid leave for an unpaid leave type',
+        };
+      }
+
+      // Check explicit "remaining" claims in clause
+      const remainingClaims = extractMatchedFieldValues(normClause, [
+        new RegExp(`\\bremaining\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(
+          `(?:con lai|so du con lai|so du phep|phep nam con|phep con|nam\\s+\\d{4}\\s*:\\s*con|\\bcon\\b)\\s*(?:la\\s*)?${NUM_EXPR_PATTERN}\\s*(?:ngay|days?)?`,
+          'i'
+        ),
+        new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|sick\\s+|leave\\s+|pto\\s+)?days?\\s+(?:remaining|left)\\b`, 'i'),
+        new RegExp(`\\b(?:remaining|left)\\s*(?:days?|balance)?\\s*(?:is|are|:|=)?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`\\b${NUM_EXPR_PATTERN}\\s+is\\s+your\\s+(?:remaining\\s+)?balance\\b`, 'i'),
+        new RegExp(`\\byour\\s+(?:remaining\\s+|leave\\s+|vacation\\s+)?balance\\s+is\\s+${NUM_EXPR_PATTERN}`, 'i'),
+      ]);
+      for (const val of remainingClaims) {
+        if (!remainingSet.has(val)) {
+          return {
+            valid: false,
+            reason: `LEAVE_REMAINING_MISMATCH: claimed remaining=${val}, actual=${Array.from(remainingSet).join(',')}`,
+          };
+        }
+      }
+
+      // Check explicit "available / can take off" claims in clause
+      const availableClaims = extractMatchedFieldValues(normClause, [
+        new RegExp(`\\bavailable\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`(?:kha dung|co the nghi|co the su dung|nghi duoc|duoc nghi|dung duoc)\\s*(?:la\\s*|toi da\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|sick\\s+|leave\\s+|pto\\s+)?days?\\s+(?:available|off)\\b`, 'i'),
+        new RegExp(`\\b(?:can\\s+take|take|can\\s+use|use)\\s+${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|sick\\s+|leave\\s+|pto\\s+)?days?`, 'i'),
+      ]);
+      for (const val of availableClaims) {
+        if (!availableSet.has(val)) {
+          return {
+            valid: false,
+            reason: `LEAVE_AVAILABLE_MISMATCH: claimed available=${val}, actual=${Array.from(availableSet).join(',')}`,
+          };
+        }
+      }
+
+      // Check explicit "used" claims in clause
+      const usedClaims = extractMatchedFieldValues(normClause, [
+        new RegExp(`\\bused\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`(?:da dung|da nghi|da su dung)\\s*(?:la\\s*|het\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|sick\\s+|leave\\s+)?days?\\s+(?:used|taken)\\b`, 'i'),
+        new RegExp(`\\b(?:used|taken)\\s+${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|sick\\s+|leave\\s+)?days?`, 'i'),
+      ]);
+      for (const val of usedClaims) {
+        if (!usedSet.has(val)) {
+          return {
+            valid: false,
+            reason: `LEAVE_USED_MISMATCH: claimed used=${val}, actual=${Array.from(usedSet).join(',')}`,
+          };
+        }
+      }
+
+      // Check explicit "entitlement / total" claims in clause
+      const entitlementClaims = extractMatchedFieldValues(normClause, [
+        new RegExp(`\\b(?:entitlement|total_days|total)\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`(?:tong dinh muc|dinh muc|tong phep|duoc cap)\\s*(?:la\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`\\b(?:total entitlement|annual entitlement|entitled to)\\s*(?:is|are|:|=)?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+      ]);
+      for (const val of entitlementClaims) {
+        if (!entitlementSet.has(val)) {
+          return {
+            valid: false,
+            reason: `LEAVE_ENTITLEMENT_MISMATCH: claimed entitlement=${val}, actual=${Array.from(entitlementSet).join(',')}`,
+          };
+        }
+      }
+
+      // Check explicit "pending" claims in clause
+      const pendingClaims = extractMatchedFieldValues(normClause, [
+        new RegExp(`\\bpending\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`(?:cho duyet|dang cho)\\s*(?:la\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
+        new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:days?\\s+)?pending\\b`, 'i'),
+      ]);
+      for (const val of pendingClaims) {
+        if (!pendingSet.has(val)) {
+          return {
+            valid: false,
+            reason: `LEAVE_PENDING_MISMATCH: claimed pending=${val}, actual=${Array.from(pendingSet).join(',')}`,
+          };
+        }
+      }
+
+      // R38 Positive Field Ownership Check:
+      // Any number in this clause that belongs ONLY to `entitlement`, `used`, or `pending` (and NOT `remaining`/`available`/`year`)
+      // MUST have its corresponding field label in the same clause; it cannot be stated as a bare balance or attached to another field's phrasing.
+      const clauseClean = stripIdentifierAndDateTokens(clause);
+      const clauseNums = extractNumbersFromText(clauseClean);
+      const hasEntitlementLabel = /\b(entitlement|entitled|total_days|total|dinh muc|tong phep|tong so ngay|duoc cap)\b/i.test(normClause);
+      const hasUsedLabel = /\b(used|taken|da dung|da nghi|da su dung)\b/i.test(normClause);
+      const hasPendingLabel = /\b(pending|cho duyet|dang cho)\b/i.test(normClause);
+
+      for (const n of clauseNums) {
+        const isYear = yearSet.has(n);
+        const isRem = remainingSet.has(n);
+        const isAvail = availableSet.has(n);
+        const isEnt = entitlementSet.has(n);
+        const isUsed = usedSet.has(n);
+        const isPend = pendingSet.has(n);
+
+        if (!isYear && !isRem && !isAvail && !isEnt && !isUsed && !isPend) {
+          return {
+            valid: false,
+            reason: `LEAVE_CROSS_TYPE_OR_UNBOUND_NUMBER: number ${n} does not match any field of target leave type`,
+          };
+        }
+        if (isEnt && !isRem && !isAvail && !isUsed && !isPend && !isYear && !hasEntitlementLabel) {
+          return {
+            valid: false,
+            reason: `LEAVE_ENTITLEMENT_MISATTRIBUTED: entitlement value ${n} used without entitlement/total label in clause "${clause}"`,
+          };
+        }
+        if (isUsed && !isRem && !isAvail && !isEnt && !isPend && !isYear && !hasUsedLabel) {
+          return {
+            valid: false,
+            reason: `LEAVE_USED_MISATTRIBUTED: used value ${n} used without used label in clause "${clause}"`,
+          };
+        }
+        if (isPend && !isRem && !isAvail && !isEnt && !isUsed && !isYear && !hasPendingLabel) {
+          return {
+            valid: false,
+            reason: `LEAVE_PENDING_MISATTRIBUTED: pending value ${n} used without pending label in clause "${clause}"`,
           };
         }
       }
     }
 
-    // 2. Leave Balance field-level semantic checks (total/entitlement vs used vs remaining vs pending vs available vs year)
-    if (ev.tool === 'get_my_leave_balance') {
-      const balances = ev.fields?.balances || [];
-      if (balances.length > 0) {
-        const remainingSet = new Set(balances.map((b) => Number(b.remaining)));
-        const availableSet = new Set(balances.map((b) => Number(b.available)));
-        const usedSet = new Set(balances.map((b) => Number(b.used)));
-        const entitlementSet = new Set(balances.map((b) => Number(b.entitlement)));
-        const pendingSet = new Set(balances.map((b) => Number(b.pending)));
+    // Overall query-intent check for leave balance
+    const allRemainingSet = new Set(balances.map((b) => Number(b.remaining)));
+    const allAvailableSet = new Set(balances.map((b) => Number(b.available)));
+    const allUsedSet = new Set(balances.map((b) => Number(b.used)));
 
-        // Check explicit "remaining" claims
-        const remainingClaims = extractMatchedFieldValues(normAns, [
-          new RegExp(`\\bremaining\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(
-            `(?:con lai|so du con lai|so du phep|phep nam con|phep con|nam\\s+\\d{4}\\s*:\\s*con|\\bcon\\b)\\s*(?:la\\s*)?${NUM_EXPR_PATTERN}\\s*(?:ngay|days?)?`,
-            'i'
-          ),
-          new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|leave\\s+|pto\\s+)?days?\\s+(?:remaining|left)\\b`, 'i'),
-          new RegExp(`\\b(?:remaining|left)\\s*(?:days?|balance)?\\s*(?:is|are|:|=)?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-        ]);
-        for (const val of remainingClaims) {
-          if (!remainingSet.has(val)) {
-            return {
-              valid: false,
-              reason: `LEAVE_REMAINING_MISMATCH: claimed remaining=${val}, actual=${Array.from(remainingSet).join(',')}`,
-            };
-          }
-        }
-
-        // Check explicit "available" claims
-        const availableClaims = extractMatchedFieldValues(normAns, [
-          new RegExp(`\\bavailable\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`(?:kha dung|co the nghi|co the su dung)\\s*(?:la\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|leave\\s+|pto\\s+)?days?\\s+available\\b`, 'i'),
-        ]);
-        for (const val of availableClaims) {
-          if (!availableSet.has(val)) {
-            return {
-              valid: false,
-              reason: `LEAVE_AVAILABLE_MISMATCH: claimed available=${val}, actual=${Array.from(availableSet).join(',')}`,
-            };
-          }
-        }
-
-        // Check explicit "used" claims
-        const usedClaims = extractMatchedFieldValues(normAns, [
-          new RegExp(`\\bused\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`(?:da dung|da nghi|da su dung)\\s*(?:la\\s*|het\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:vacation\\s+|annual\\s+|leave\\s+)?days?\\s+used\\b`, 'i'),
-        ]);
-        for (const val of usedClaims) {
-          if (!usedSet.has(val)) {
-            return {
-              valid: false,
-              reason: `LEAVE_USED_MISMATCH: claimed used=${val}, actual=${Array.from(usedSet).join(',')}`,
-            };
-          }
-        }
-
-        // Check explicit "entitlement / total" claims
-        const entitlementClaims = extractMatchedFieldValues(normAns, [
-          new RegExp(`\\b(?:entitlement|total_days|total)\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`(?:tong dinh muc|dinh muc|tong phep|duoc cap)\\s*(?:la\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`\\b(?:total entitlement|annual entitlement|entitled to)\\s*(?:is|are|:|=)?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-        ]);
-        for (const val of entitlementClaims) {
-          if (!entitlementSet.has(val)) {
-            return {
-              valid: false,
-              reason: `LEAVE_ENTITLEMENT_MISMATCH: claimed entitlement=${val}, actual=${Array.from(entitlementSet).join(',')}`,
-            };
-          }
-        }
-
-        // Check explicit "pending" claims
-        const pendingClaims = extractMatchedFieldValues(normAns, [
-          new RegExp(`\\bpending\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`(?:cho duyet|dang cho)\\s*(?:la\\s*)?[:=]?\\s*${NUM_EXPR_PATTERN}`, 'i'),
-          new RegExp(`\\b${NUM_EXPR_PATTERN}\\s*(?:days?\\s+)?pending\\b`, 'i'),
-        ]);
-        for (const val of pendingClaims) {
-          if (!pendingSet.has(val)) {
-            return {
-              valid: false,
-              reason: `LEAVE_PENDING_MISMATCH: claimed pending=${val}, actual=${Array.from(pendingSet).join(',')}`,
-            };
-          }
-        }
-
-        // Query-intent check: if user asked specifically for remaining/available leave ("con bao nhieu", "con may", "remaining", "left", "how many ... have"),
-        // the answer MUST include the actual remaining or available value (cannot answer only with entitlement=12 or used=7 or year=2026).
-        const asksRemainingOrAvailable =
-          /\b(con bao nhieu|con may|so du|kha dung|remaining|left|available|how many .* (have|left|remaining|available))\b/i.test(
-            normMsg
-          );
-        if (asksRemainingOrAvailable) {
-          const allAnswerNums = extractNumbersFromText(finalAnswer);
-          const hasTrueRemainingOrAvailable = allAnswerNums.some(
-            (n) => remainingSet.has(n) || availableSet.has(n)
-          );
-          if (!hasTrueRemainingOrAvailable) {
-            return {
-              valid: false,
-              reason: 'LEAVE_INTENT_MISMATCH: query asked for remaining/available leave but answer omitted actual remaining/available balance',
-            };
-          }
-        }
-
-        const asksUsedLeave = /\b(da dung bao nhieu|da nghi bao nhieu|da nghi may|how many .* used)\b/i.test(normMsg);
-        if (asksUsedLeave) {
-          const allAnswerNums = extractNumbersFromText(finalAnswer);
-          const hasTrueUsed = allAnswerNums.some((n) => usedSet.has(n));
-          if (!hasTrueUsed) {
-            return {
-              valid: false,
-              reason: 'LEAVE_INTENT_MISMATCH: query asked for used leave but answer omitted actual used balance',
-            };
-          }
-        }
+    const asksRemainingOrAvailable =
+      /\b(con bao nhieu|con may|so du|kha dung|remaining|left|available|how many .* (have|left|remaining|available))\b/i.test(
+        normMsg
+      );
+    if (asksRemainingOrAvailable) {
+      const allAnswerNums = extractNumbersFromText(stripIdentifierAndDateTokens(finalAnswer));
+      const hasTrueRemainingOrAvailable = allAnswerNums.some(
+        (n) => allRemainingSet.has(n) || allAvailableSet.has(n)
+      );
+      if (!hasTrueRemainingOrAvailable) {
+        return {
+          valid: false,
+          reason: 'LEAVE_INTENT_MISMATCH: query asked for remaining/available leave but answer omitted actual remaining/available balance',
+        };
       }
     }
 
-    // 3. Payslip field-level semantic checks (net vs gross vs base vs pit vs workDays vs period)
-    if (ev.tool === 'get_my_payslip') {
-      const f = ev.fields || {};
-      const fillerBridge = '(?:\\s+(?:cua\\s+ban|ca\\s+nhan|nam\\s+\\d{4}|ky\\s+[\\d/-]+|thang\\s+[\\d/-]+|is|are|la))*\\s*[:=]?\\s*';
-      const netClaims = extractMatchedFieldValues(normAns, [
+    const asksUsedLeave = /\b(da dung bao nhieu|da nghi bao nhieu|da nghi may|how many .* used)\b/i.test(normMsg);
+    if (asksUsedLeave) {
+      const allAnswerNums = extractNumbersFromText(stripIdentifierAndDateTokens(finalAnswer));
+      const hasTrueUsed = allAnswerNums.some((n) => allUsedSet.has(n));
+      if (!hasTrueUsed) {
+        return {
+          valid: false,
+          reason: 'LEAVE_INTENT_MISMATCH: query asked for used leave but answer omitted actual used balance',
+        };
+      }
+    }
+  }
+
+  // 3. Payslip field-level, multi-period, positive field ownership & non-numeric status checks
+  const payslipEvs = structuredEvidence.filter((e) => e.tool === 'get_my_payslip');
+  if (payslipEvs.length > 0) {
+    const allowedPayslipPeriods = new Set(payslipEvs.map((e) => e.period?.period).filter(Boolean));
+    const citedPeriods = String(finalAnswer).match(/\b20\d{2}-(0[1-9]|1[0-2])\b/g) || [];
+    for (const p of citedPeriods) {
+      if (!allowedPayslipPeriods.has(p)) {
+        return {
+          valid: false,
+          reason: `PAYSLIP_PERIOD_MISMATCH: claimed period=${p}, allowed=[${Array.from(allowedPayslipPeriods).join(',')}]`,
+        };
+      }
+    }
+
+    const clauses = String(finalAnswer)
+      .split(/(?:(?<!\d)\.(?!\d)|[;!\n])+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let currentPayslipEv = payslipEvs[0];
+    const fillerBridge = '(?:\\s+(?:cua\\s+ban|ca\\s+nhan|nam\\s+\\d{4}|ky\\s+[\\d/-]+|thang\\s+[\\d/-]+|is|are|la))*\\s*[:=]?\\s*';
+
+    for (const clause of clauses) {
+      const normClause = normalizeTextAscii(clause);
+      const periodInClause = (clause.match(/\b20\d{2}-(0[1-9]|1[0-2])\b/) || [])[0];
+      if (periodInClause) {
+        const matchedEv = payslipEvs.find((e) => e.period?.period === periodInClause);
+        if (matchedEv) currentPayslipEv = matchedEv;
+      }
+
+      const f = currentPayslipEv.fields || {};
+      const pStatus = String(currentPayslipEv.period?.periodStatus || '').toUpperCase();
+
+      // Non-numeric periodStatus verification
+      if (
+        pStatus === 'DA_CHOT' &&
+        /\b(da chuyen khoan|da chi tra|da thanh toan|already paid|disbursed|du thao|chua chot|draft)\b/i.test(normClause)
+      ) {
+        return {
+          valid: false,
+          reason: `PAYSLIP_STATUS_MISMATCH: clause claimed paid/draft status when periodStatus=${pStatus}`,
+        };
+      }
+      if (
+        pStatus === 'DA_CHI' &&
+        /\b(chua chi tra|chua thanh toan|unpaid|du thao|chua chot|draft)\b/i.test(normClause)
+      ) {
+        return {
+          valid: false,
+          reason: `PAYSLIP_STATUS_MISMATCH: clause claimed unpaid/draft status when periodStatus=${pStatus}`,
+        };
+      }
+
+      const netClaims = extractMatchedFieldValues(normClause, [
         new RegExp(`\\bnet\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
         new RegExp(`(?:thuc linh|luong net|net salary|take home)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
@@ -886,12 +1154,12 @@ function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', struc
         if (val !== Number(f.netSalary)) {
           return {
             valid: false,
-            reason: `PAYSLIP_NET_MISMATCH: claimed net=${val}, actual=${f.netSalary}`,
+            reason: `PAYSLIP_NET_MISMATCH: claimed net=${val}, actual=${f.netSalary} for period ${currentPayslipEv.period?.period}`,
           };
         }
       }
 
-      const grossClaims = extractMatchedFieldValues(normAns, [
+      const grossClaims = extractMatchedFieldValues(normClause, [
         new RegExp(`\\bgross\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
         new RegExp(`(?:tong thu nhap|luong gross|gross income)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
@@ -899,12 +1167,12 @@ function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', struc
         if (val !== Number(f.grossIncome)) {
           return {
             valid: false,
-            reason: `PAYSLIP_GROSS_MISMATCH: claimed gross=${val}, actual=${f.grossIncome}`,
+            reason: `PAYSLIP_GROSS_MISMATCH: claimed gross=${val}, actual=${f.grossIncome} for period ${currentPayslipEv.period?.period}`,
           };
         }
       }
 
-      const baseClaims = extractMatchedFieldValues(normAns, [
+      const baseClaims = extractMatchedFieldValues(normClause, [
         new RegExp(`\\bbase\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
         new RegExp(`(?:luong co ban|base salary)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
@@ -912,12 +1180,12 @@ function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', struc
         if (val !== Number(f.baseSalary)) {
           return {
             valid: false,
-            reason: `PAYSLIP_BASE_MISMATCH: claimed base=${val}, actual=${f.baseSalary}`,
+            reason: `PAYSLIP_BASE_MISMATCH: claimed base=${val}, actual=${f.baseSalary} for period ${currentPayslipEv.period?.period}`,
           };
         }
       }
 
-      const pitClaims = extractMatchedFieldValues(normAns, [
+      const pitClaims = extractMatchedFieldValues(normClause, [
         new RegExp(`\\bpit\\s*[:=]\\s*${NUM_EXPR_PATTERN}`, 'i'),
         new RegExp(`(?:thue tncn|income tax)${fillerBridge}${NUM_EXPR_PATTERN}`, 'i'),
       ]);
@@ -925,30 +1193,115 @@ function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', struc
         if (val !== Number(f.pitAmount)) {
           return {
             valid: false,
-            reason: `PAYSLIP_PIT_MISMATCH: claimed pit=${val}, actual=${f.pitAmount}`,
+            reason: `PAYSLIP_PIT_MISMATCH: claimed pit=${val}, actual=${f.pitAmount} for period ${currentPayslipEv.period?.period}`,
           };
         }
       }
 
-      const asksNetSalary = /\b(thuc linh|luong net|net salary|take home)\b/i.test(normMsg);
-      if (asksNetSalary) {
-        const allAnswerNums = extractNumbersFromText(finalAnswer);
-        if (!allAnswerNums.includes(Number(f.netSalary))) {
-          return {
-            valid: false,
-            reason: 'PAYSLIP_INTENT_MISMATCH: query asked for netSalary but answer omitted actual netSalary',
-          };
-        }
-      }
-
-      if (ev.period?.period) {
-        const periodMatches = String(finalAnswer).match(/\b20\d{2}-(0[1-9]|1[0-2])\b/g) || [];
-        for (const p of periodMatches) {
-          if (p !== ev.period.period) {
+      // If multiple payslip periods exist and this clause explicitly names a period, every salary figure in this clause
+      // must belong to this period's fields (preventing cross-period number swaps even without field keywords).
+      if (periodInClause && payslipEvs.length > 1) {
+        const periodFieldValues = new Set(
+          Object.values(f)
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v))
+        );
+        const clauseSalaryNums = extractNumbersFromText(stripIdentifierAndDateTokens(clause));
+        for (const n of clauseSalaryNums) {
+          if (!periodFieldValues.has(n)) {
             return {
               valid: false,
-              reason: `PAYSLIP_PERIOD_MISMATCH: claimed period=${p}, actual=${ev.period.period}`,
+              reason: `PAYSLIP_CROSS_PERIOD_MISMATCH: number ${n} in clause for period ${periodInClause} belongs to another period`,
             };
+          }
+        }
+      }
+    }
+
+    const asksNetSalary = /\b(thuc linh|luong net|net salary|take home)\b/i.test(normMsg);
+    if (asksNetSalary) {
+      const allAnswerNums = extractNumbersFromText(stripIdentifierAndDateTokens(finalAnswer));
+      const allNetValues = new Set(payslipEvs.map((e) => Number(e.fields?.netSalary)));
+      if (!allAnswerNums.some((n) => allNetValues.has(n))) {
+        return {
+          valid: false,
+          reason: 'PAYSLIP_INTENT_MISMATCH: query asked for netSalary but answer omitted actual netSalary',
+        };
+      }
+    }
+  }
+
+  // 4. Multi-Entity & Non-Numeric checks for get_scoped_performance & get_scoped_dashboard
+  const perfEvs = structuredEvidence.filter((e) => e.tool === 'get_scoped_performance');
+  if (perfEvs.length > 0) {
+    const clauses = String(finalAnswer)
+      .split(/(?:(?<!\d)\.(?!\d)|[;!\n])+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const clause of clauses) {
+      const normClause = normalizeTextAscii(clause);
+      const empInClause = (clause.match(/\bNV-[A-Za-z0-9-]+\b/) || [])[0];
+      const targetPerfEv = empInClause
+        ? perfEvs.find((e) => e.entity?.employeeId === empInClause)
+        : perfEvs.length === 1
+          ? perfEvs[0]
+          : null;
+
+      if (targetPerfEv) {
+        const pf = targetPerfEv.fields || {};
+        if (pf.turnoverLevel === 'low' && /\b(rui ro cao|muc cao|high risk|level\s*[:=]\s*high)\b/i.test(normClause)) {
+          return {
+            valid: false,
+            reason: `PERFORMANCE_LEVEL_MISMATCH: claimed high risk when turnoverLevel=low`,
+          };
+        }
+        if (pf.turnoverLevel === 'high' && /\b(rui ro thap|muc thap|low risk|level\s*[:=]\s*low)\b/i.test(normClause)) {
+          return {
+            valid: false,
+            reason: `PERFORMANCE_LEVEL_MISMATCH: claimed low risk when turnoverLevel=high`,
+          };
+        }
+        if (empInClause && perfEvs.length > 1) {
+          const allowedPerfNums = new Set(
+            [pf.performanceScore, pf.potentialScore, pf.turnoverScore]
+              .filter((v) => v !== null && v !== undefined)
+              .map((v) => Number(v))
+          );
+          const clauseNums = extractNumbersFromText(stripIdentifierAndDateTokens(clause));
+          for (const n of clauseNums) {
+            if (!allowedPerfNums.has(n)) {
+              return {
+                valid: false,
+                reason: `PERFORMANCE_CROSS_ENTITY_MISMATCH: number ${n} attributed to ${empInClause} belongs to another employee`,
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const dashEvs = structuredEvidence.filter((e) => e.tool === 'get_scoped_dashboard');
+  if (dashEvs.length > 1) {
+    const clauses = String(finalAnswer)
+      .split(/(?:(?<!\d)\.(?!\d)|[;!\n])+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const clause of clauses) {
+      const deptInClause = (clause.match(/\bDEPT-[A-Za-z0-9-]+\b/) || [])[0];
+      if (deptInClause) {
+        const targetDashEv = dashEvs.find((e) => e.entity?.departmentId === deptInClause);
+        if (targetDashEv) {
+          const allowedDashNums = new Set();
+          collectAllowedNumbersFromValue(targetDashEv.fields, allowedDashNums);
+          const clauseNums = extractNumbersFromText(stripIdentifierAndDateTokens(clause));
+          for (const n of clauseNums) {
+            if (!allowedDashNums.has(n)) {
+              return {
+                valid: false,
+                reason: `DASHBOARD_CROSS_DEPT_MISMATCH: number ${n} attributed to ${deptInClause} belongs to another department`,
+              };
+            }
           }
         }
       }
@@ -956,6 +1309,46 @@ function validateSemanticFieldBindings(userMessage = '', finalAnswer = '', struc
   }
 
   return { valid: true, reason: null };
+}
+
+/**
+ * R38: Build deterministic server-verified claims (`{ sourceId, tool, entity, period, field, value }`)
+ * from `structuredEvidence` for responses that pass full semantic verification.
+ */
+function buildVerifiedClaimsFromEvidence(structuredEvidence = []) {
+  const claims = [];
+  for (const ev of structuredEvidence) {
+    if (ev.tool === 'get_my_leave_balance') {
+      for (const b of ev.fields?.balances || []) {
+        for (const field of ['entitlement', 'used', 'remaining', 'pending', 'available', 'paid']) {
+          if (b[field] !== undefined) {
+            claims.push({
+              sourceId: ev.sourceId,
+              tool: ev.tool,
+              entity: { ...ev.entity, leaveTypeCode: b.leaveTypeCode },
+              period: { year: b.year },
+              field,
+              value: b[field],
+            });
+          }
+        }
+      }
+    } else if (ev.fields && typeof ev.fields === 'object') {
+      for (const [field, value] of Object.entries(ev.fields)) {
+        if (value !== null && typeof value !== 'object') {
+          claims.push({
+            sourceId: ev.sourceId,
+            tool: ev.tool,
+            entity: ev.entity,
+            period: ev.period,
+            field,
+            value,
+          });
+        }
+      }
+    }
+  }
+  return claims;
 }
 
 function buildSystemInstruction(actor, clock) {
@@ -1411,6 +1804,12 @@ async function runCopilot({
     latencyMs: Date.now() - startTime,
   });
 
+  const isVerifiedResponse =
+    hasVerifiedToolData && uniqueRefusalCodes.length === 0 && !scopeInvalidatedBeforeRelease;
+  const verifiedClaims = isVerifiedResponse
+    ? buildVerifiedClaimsFromEvidence(structuredEvidence)
+    : [];
+
   return {
     success: true,
     answer: finalAnswer,
@@ -1418,8 +1817,9 @@ async function runCopilot({
     model,
     sources: verifiedSources,
     structuredEvidence,
+    verifiedClaims,
     toolsUsed,
-    verified: hasVerifiedToolData && uniqueRefusalCodes.length === 0 && !scopeInvalidatedBeforeRelease,
+    verified: isVerifiedResponse,
     refused: uniqueRefusalCodes.length > 0,
     refusalCodes: uniqueRefusalCodes,
     scopeChangedMidConversation: scopeChangedMidConversation || scopeInvalidatedBeforeRelease,
@@ -1464,4 +1864,6 @@ module.exports = {
   extractNumbersFromText,
   extractWrittenNumbersFromText,
   validateSemanticFieldBindings,
+  isAllowedToollessExchange,
+  buildVerifiedClaimsFromEvidence,
 };
