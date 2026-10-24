@@ -1,6 +1,6 @@
 # OPERATOR DEPLOYMENT & MIGRATION RUNBOOK (`nexus_hrms`)
 
-Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`).
+Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / DevOps / DBA) khi nâng cấp cơ sở dữ liệu ứng dụng **`nexus_hrms`** từ trạng thái `DEPLOYMENT_PENDING` (`32` bảng, migration `001..009`) lên `READY` (`34` bảng, bổ sung migration `010` và `011`), đồng thời sao lưu/khôi phục đồng bộ **Cơ sở dữ liệu PostgreSQL + Kho lưu trữ tệp đính kèm thông báo (`notice_attachments`)**.
 
 > **LƯU Ý QUAN TRỌNG VỀ CLI (`R23`)**:
 > Script `Backend/scripts/migrate.js` hiện **chỉ nhận tên cơ sở dữ liệu qua biến môi trường `DB_NAME`** (hoặc giá trị mặc định trong `Backend/.env`). Script này chỉ xử lý cờ `--down` và **không xử lý tham số `--target-db`**. Luôn truyền `$env:DB_NAME='...'` (trên PowerShell) hoặc `DB_NAME=...` (trên Bash) khi chạy `migrate.js` và `check-schema-readiness.js`.
@@ -27,13 +27,26 @@ Hướng dẫn vận hành chuẩn dành cho Kỹ sư Triển khai (Operator / D
 
 ---
 
-## 2. Quy Trình Sao Lưu & Áp Dụng Migration Trên `nexus_hrms` (Maintenance Window)
+## 2. Quy Trình Sao Lưu Đồng Bộ (PostgreSQL + File Storage) & Áp Dụng Migration (`R44`)
 
-### Bước 1: Tạo bản sao lưu đầy đủ (`pg_dump`)
+### Bước 1: Tạo bản sao lưu đầy đủ (`pg_dump` + `notice_attachments` `.bin`/`.meta.json`)
+Cơ sở dữ liệu `company_notices.attachments` lưu tham chiếu tới các tệp vật lý `.bin` và `.meta.json` tại `NOTICE_ATTACHMENTS_DIR` (`Backend/storage/notice_attachments` trên host hoặc volume `nexus-storage-data` gắn vào `/app/storage` trong Docker). **Bắt buộc sao lưu cả hai nguồn cùng thời điểm**:
+
 ```powershell
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+New-Item -ItemType Directory -Force -Path "docs/remediation/backups" | Out-Null
+
+# 1A. Sao lưu PostgreSQL
 & "C:\Users\tavin\pgsql\bin\pg_dump.exe" -h 127.0.0.1 -p 5432 -U postgres -Fc -f "docs/remediation/backups/nexus_hrms-pre-cutover-$timestamp.dump" nexus_hrms
 & "C:\Users\tavin\pgsql\bin\pg_restore.exe" --list "docs/remediation/backups/nexus_hrms-pre-cutover-$timestamp.dump" | Select-Object -First 25
+
+# 1B. Sao lưu kho tệp đính kèm thông báo (.bin + .meta.json) trên Host
+if (Test-Path "Backend/storage/notice_attachments") {
+  Compress-Archive -Path "Backend/storage/notice_attachments\*" -DestinationPath "docs/remediation/backups/notice_attachments-pre-cutover-$timestamp.zip" -Force
+}
+
+# 1C. (Nếu chạy Docker) Sao lưu persistent volume `nexus-storage-data`
+# docker run --rm -v nexus-storage-data:/source:ro -v "${PWD}/docs/remediation/backups:/backup" alpine tar czf "/backup/nexus-storage-data-$timestamp.tar.gz" -C /source .
 ```
 
 ### Bước 2: Chạy Migration `010` và `011`
@@ -52,12 +65,25 @@ $env:DB_NAME='nexus_hrms'; node Backend/scripts/check-schema-readiness.js
 
 ---
 
-## 3. Quy Trình Khôi Phục Khẩn Cấp (Rollback Procedure)
+## 3. Quy Trình Khôi Phục Khẩn Cấp (Rollback Procedure — DB + File Storage)
 
 Nếu phát hiện bất kỳ sự cố nào trong khung giờ bảo trì:
-1. Dừng dịch vụ Backend.
-2. Khôi phục từ file `.dump` vừa tạo ở Bước 1:
+1. Dừng dịch vụ Backend để ngắt các giao dịch ghi mới.
+2. Khôi phục cơ sở dữ liệu từ file `.dump` vừa tạo ở Bước 1A:
    ```powershell
    & "C:\Users\tavin\pgsql\bin\pg_restore.exe" -h 127.0.0.1 -p 5432 -U postgres --clean --if-exists -d nexus_hrms "docs/remediation/backups/nexus_hrms-pre-cutover-$timestamp.dump"
    ```
-3. Chạy `node Backend/scripts/check-phase-a-baseline.js` để xác minh toàn bộ bảng và số dòng đã trở về trạng thái ban đầu.
+3. Khôi phục kho lưu trữ tệp đính kèm thông báo từ bản nén ở Bước 1B/1C:
+   ```powershell
+   if (Test-Path "docs/remediation/backups/notice_attachments-pre-cutover-$timestamp.zip") {
+     New-Item -ItemType Directory -Force -Path "Backend/storage/notice_attachments" | Out-Null
+     Expand-Archive -Path "docs/remediation/backups/notice_attachments-pre-cutover-$timestamp.zip" -DestinationPath "Backend/storage/notice_attachments" -Force
+   }
+   # (Nếu chạy Docker):
+   # docker run --rm -v nexus-storage-data:/target -v "${PWD}/docs/remediation/backups:/backup:ro" alpine sh -c "rm -rf /target/* && tar xzf /backup/nexus-storage-data-$timestamp.tar.gz -C /target"
+   ```
+4. Chạy đối soát đồng bộ trạng thái file (`reconcileAttachmentStorage`) và kiểm tra baseline:
+   ```powershell
+   $env:DB_NAME='nexus_hrms'; node -e "const s = require('./Backend/src/modules/notices/service'); const db = require('./Backend/src/config/db'); s.reconcileAttachmentStorage(db).then(r => { console.log(r); db.pool.end(); });"
+   node Backend/scripts/check-phase-a-baseline.js
+   ```

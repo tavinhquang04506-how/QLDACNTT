@@ -47,9 +47,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_nexus_docker_2026_change_in_production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
       APP_TIMEZONE: Asia/Ho_Chi_Minh
+      STORAGE_ROOT: /app/storage
+      NOTICE_ATTACHMENTS_DIR: /app/storage/notice_attachments
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost,http://127.0.0.1
     ports:
       - "${PORT:-8000}:8000"
+    volumes:
+      - nexus-storage-data:/app/storage
     depends_on:
       db:
         condition: service_healthy
@@ -86,3 +90,5 @@ networks:
 volumes:
   nexus-db-data:
     name: nexus-db-data
+  nexus-storage-data:
+    name: nexus-storage-data

@@ -240,4 +240,54 @@ test('AI Copilot Grounded Unit Test Suite (F22-F26)', async (t) => {
     assert.ok(resMisattr.refusalCodes.includes('ANSWER_SOURCE_MISMATCH'));
     assert.equal(resMisattr.verifiedClaims.length, 0);
   });
+
+  await t.test('R41: strips ungrounded claims appended to valid tool facts and renders from server-owned template without emitting contract/status hallucinations under VERIFIED', async () => {
+    let round = 0;
+    const resMixed = await runCopilot({
+      actor: { userId: 'USR-008', employeeId: 'NV-0008', roleCode: 'EMPLOYEE' },
+      message: 'How many vacation days do I have?',
+      executor: unitMockExecutor,
+      options: {
+        apiKey: 'test-key-unit',
+        model: 'gemini-2.5-flash',
+        verifyScopeFromDb: true,
+        fetchImpl: async () => {
+          round += 1;
+          if (round === 1) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                candidates: [
+                  {
+                    content: {
+                      parts: [{ functionCall: { name: 'get_my_leave_balance', args: { year: 2026 } } }],
+                    },
+                  },
+                ],
+              }),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: 'Your remaining balance is 5 days. Your employment contract is terminated.' }],
+                  },
+                },
+              ],
+            }),
+          };
+        },
+      },
+    });
+    assert.equal(resMixed.verified, true);
+    assert.equal(resMixed.refused, false);
+    assert.match(resMixed.answer, /remaining 5 days/);
+    assert.equal(resMixed.answer.toLowerCase().includes('contract'), false);
+    assert.equal(resMixed.answer.toLowerCase().includes('terminated'), false);
+  });
 });
