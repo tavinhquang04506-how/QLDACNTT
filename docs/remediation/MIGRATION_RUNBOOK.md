@@ -1,129 +1,211 @@
-# MIGRATION RUNBOOK — NEXUS HRMS (`R16` & `R23`: Schema Readiness, Backup, Clone Rehearsal & Safe Forward Migration)
+# MIGRATION RUNBOOK — NEXUS HRMS (`R16` & `R23`: Schema Readiness, Pre-Migration Backup, Restore Rehearsal & Safe Forward Migration)
 
-- **Ngày lập / Cập nhật**: 2026-10-21
-- **Phạm vi**: Chuẩn bị, diễn tập (rehearsal) trên DB bản sao độc lập, kiểm chứng bảo toàn nội dung dữ liệu bằng SHA-256 checksum, và quy trình nâng cấp an toàn CSDL ứng dụng `nexus_hrms` lên migration `010` và `011`.
-- **Trạng thái hiện tại của DB ứng dụng (`nexus_hrms`)**: **`DEPLOYMENT_PENDING`**
+- **Ngày lập / Cập nhật**: `2026-10-25`
+- **Phạm vi**: Chuẩn bị bản sao lưu mới sau khi dừng luồng ghi, diễn tập phục hồi vào database tạm có tên duy nhất (`nexus_hrms_restore_staging_<timestamp>`), đối chiếu `32/32` bảng bằng SHA-256 checksum, và quy trình nâng cấp / khôi phục tuần tự có kiểm soát lỗi cho CSDL chính `nexus_hrms` lên migration `010` và `011`.
+- **Trạng thái hiện tại của DB chính (`nexus_hrms`)**: **`DEPLOYMENT_PENDING`**
   - Đã áp dụng: `9 / 11` migrations (`001`..`009`).
   - Đang chờ triển khai:
     1. `010_payroll_policy_snapshot_and_holidays.sql` (`public_holidays`, `payroll_periods.policy_snapshot`, 4 khóa cấu hình lương trong `system_settings`).
     2. `011_system_policy_versions.sql` (`system_policy_versions` lưu lịch sử phiên bản chính sách theo kỳ `effective_from`).
-  - **Cam kết an toàn**: Không reset, không seed đè, không drop và không tự động chạy migration trên `nexus_hrms` trong bước phát triển/kiểm thử.
+  - **Cam kết an toàn**: Không reset, không seed đè, không `DROP` bất kỳ database nào có sẵn và không chạy migration hay đổi tên `nexus_hrms` khi chưa có xác nhận của người vận hành.
 
 ---
 
-## 1. Phân biệt Bằng chứng Diễn tập Bản sao (Clone Rehearsal) và Timeline Bảo toàn DB Gốc (`R23`)
+## 1. Phân biệt Bằng chứng Diễn tập và Timeline Bảo toàn DB Chính (`R23`)
 
-Để đảm bảo tính minh bạch tuyệt đối trong hồ sơ nghiệm thu:
-
-1. **Phạm vi của `docs/remediation/evidence/r16-migration-rehearsal.log`**:
-   - Chứng minh trong phạm vi phiên chạy `rehearse-r16-migration.js` (từ `2026-10-21T07:17:45Z` đến `07:17:50Z`), 31/31 bảng của `nexus_hrms` được đọc qua kết nối `default_transaction_read_only=on`, sao lưu sang `nexus_hrms_rehearsal_test`, nâng cấp từ `9/11` lên `11/11` migrations trên bản sao, và SHA-256 content hash của `nexus_hrms` trước/sau bước rehearsal không đổi.
-2. **Sự cố chạm `nexus_hrms` trước khi có guard (`2026-10-21T07:08:31Z` – `07:15:42Z`)**:
-   - Lúc `2026-10-21T07:08:31Z` (`14:08:31+07:00`), lệnh `node --test Backend/tests/api/r16-r19-review-fixes.test.js` được gọi trực tiếp không kèm `NODE_ENV=test` trước khi `Backend/src/config/env.js` có cơ chế tự phát hiện `NODE_TEST_CONTEXT`. Lần chạy này đã tạo các bản ghi fixture `NV-T*` và cập nhật `system_settings` (`updated_at = 2026-10-21 14:08:31.59202+07`) trên `nexus_hrms`.
-   - Lúc `2026-10-21T07:15:42Z` (`14:15:42+07:00`), script một lần `cleanup-orphan-nvt.js` đã được chạy để xóa các dòng nhân sự `NV-T*` mồ côi nhưng còn để lại `1` dòng `audit_logs` (`id = 23`, `action = 'LOCK_PAYROLL'`, `record_id = '999901'`) và dấu vết `system_settings.updated_at` / sequence.
-   - **Biện pháp khắc phục (`R23`)**:
-     - Giữ nguyên hiện trạng `nexus_hrms`, **tuyệt đối không tự ý chạy thêm bất kỳ lệnh xóa/sửa thủ công nào trên `nexus_hrms`**.
-     - Đã bổ sung chốt chặn cứng `Backend/src/utils/testDbGuard.js` (`assertTestDatabaseName` và `assertSafeTestDatabase` kiểm tra trực tiếp `SELECT current_database()`) vào `env.js`, `db.js`, toàn bộ `Backend/tests/helpers/*` và các script `test-setup.js`, `seed-demo.js`, `truncate-all-data.js`, `reset-seed-50.js`. Kể cả khi `DB_NAME_TEST=nexus_hrms` bị cấu hình nhầm, hệ thống lập tức ném lỗi `TEST_DB_GUARD_FORBIDDEN` trước khi bất kỳ câu lệnh DML nào được thực thi.
+1. **Diễn tập nâng cấp trên bản sao (`docs/remediation/evidence/r16-migration-rehearsal.log`)**:
+   - Đã kiểm chứng nâng cấp từ `9/11` lên `11/11` migrations trên database bản sao độc lập `nexus_hrms_rehearsal_test` mà không làm thay đổi nội dung 31 bảng nghiệp vụ.
+2. **Diễn tập sao lưu sau khi dừng luồng ghi & phục hồi vào database tạm tên riêng (`docs/remediation/evidence/pre-migration-backup-restore-rehearsal.log` — `2026-10-25`)**:
+   - Đã dừng tiến trình Backend (`PORT_8000_LISTENING=false`), tạo bản sao lưu mới `docs/remediation/evidence/backups/nexus_hrms_pre_r16_20261025_102100.sql` (`pg_dump` exit code `0`, `361,385 bytes`, SHA-256 `bf69320dacb294d909784204c3c859d332540cfefb94560e3f2a6af7b7bda389`), phục hồi vào database tạm tên riêng `nexus_hrms_restore_staging_20261025_102100` (không chạy `DROP DATABASE`), xác nhận trạng thái dự kiến `9/11` migrations (`DEPLOYMENT_PENDING`) và đối chiếu khớp 100% cả `32/32` bảng với `nexus_hrms`.
+3. **Chốt bảo vệ cứng (`Backend/src/utils/testDbGuard.js` & `Backend/scripts/migrate.js`)**:
+   - Mọi script kiểm thử chỉ được phép chạy trên database có hậu tố `_test`.
+   - `Backend/scripts/migrate.js` từ chối chạy trên `nexus_hrms` (`MIGRATION_PRODUCTION_GUARD`) nếu thiếu cờ tường minh `--target-db=nexus_hrms --confirm-production-db=nexus_hrms`.
 
 ---
 
-## 2. Kiểm tra Readiness / Preflight (Read-Only)
+## 2. Cơ Chế Kiểm Tra Readiness (`check-schema-readiness.js`) — Dùng `DB_NAME` & Khôi Phục Biến Môi Trường
 
-Hệ thống cung cấp cơ chế kiểm tra schema readiness không ghi dữ liệu (read-only) tại:
 - Module: `Backend/src/utils/schemaReadiness.js` (`checkSchemaReadiness`)
-- HTTP Endpoint: `GET /api/health/ready` (trả về `200 OK` kèm `"status": "READY"` khi đủ 11 migrations và cấu trúc bảng/cột; trả về `503 Service Unavailable` kèm `"status": "DEPLOYMENT_PENDING"` khi thiếu migration hoặc bảng/cột bắt buộc).
-- CLI Script: `Backend/scripts/check-schema-readiness.js` (hỗ trợ `--target-db=<name>` và `--report-only`).
+- HTTP Endpoint: `GET /api/health/ready` (trả về `200 OK` kèm `"status": "READY"` khi đủ `11/11` migrations; trả về `503 Service Unavailable` kèm `"status": "DEPLOYMENT_PENDING"` khi mới có `9/11` migrations).
+- CLI Script: `Backend/scripts/check-schema-readiness.js`
+  - **Lưu ý quan trọng**: `Backend/scripts/check-schema-readiness.js` **không hỗ trợ tham số `--target-db`**. Script đọc tên database từ biến môi trường `process.env.DB_NAME` (khi `NODE_ENV` không phải `test`) và hỗ trợ cờ `--report-only` (trả về exit code `0` khi báo cáo `DEPLOYMENT_PENDING`; nếu không có `--report-only` sẽ trả về exit code `2` khi chưa `READY`).
+  - Sau mỗi lần kiểm tra, bắt buộc kiểm tra trường `"database"` trong JSON kết quả khớp đúng DB mục tiêu và khôi phục lại biến môi trường `DB_NAME` / `NODE_ENV`.
 
-### Lệnh kiểm tra nhanh:
+### Hàm PowerShell chuẩn để kiểm tra Readiness cho một Database bất kỳ:
 ```powershell
-# Chế độ báo cáo (exit code 0, in JSON chi tiết):
-node Backend/scripts/check-schema-readiness.js --target-db=nexus_hrms --report-only
+function Invoke-SchemaReadinessCheck {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetDb,
+    [switch]$ReportOnly
+  )
+  $prevNodeEnv = $env:NODE_ENV
+  $prevDbName  = $env:DB_NAME
+  try {
+    Remove-Item Env:\NODE_ENV -ErrorAction SilentlyContinue
+    $env:DB_NAME = $TargetDb
+    $argsList = @("Backend/scripts/check-schema-readiness.js")
+    if ($ReportOnly) { $argsList += "--report-only" }
 
-# Chế độ CI/Preflight nghiêm ngặt (exit code 1 nếu chưa READY):
-npm run db:preflight --prefix Backend
+    $rawJson = & node @argsList
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+      throw "check-schema-readiness.js exited with code $exitCode for $TargetDb"
+    }
+    $parsed = $rawJson | ConvertFrom-Json
+    if ($parsed.database -ne $TargetDb) {
+      throw "Readiness target mismatch: expected '$TargetDb', got '$($parsed.database)'"
+    }
+    return $parsed
+  } finally {
+    if ($null -eq $prevNodeEnv) { Remove-Item Env:\NODE_ENV -ErrorAction SilentlyContinue } else { $env:NODE_ENV = $prevNodeEnv }
+    if ($null -eq $prevDbName)  { Remove-Item Env:\DB_NAME  -ErrorAction SilentlyContinue } else { $env:DB_NAME  = $prevDbName  }
+  }
+}
 ```
 
 ---
 
-## 3. Cơ chế CLI của `Backend/scripts/migrate.js` (`R16` & `R23`)
+## 3. Cơ Chế CLI của `Backend/scripts/migrate.js` (`R16` & `R23`)
 
-`Backend/scripts/migrate.js` đã được chuẩn hóa để hỗ trợ đầy đủ tham số CLI và kiểm tra an toàn kết nối:
-- Hỗ trợ `--target-db=<db_name>` (hoặc biến môi trường `DB_NAME`).
-- Trước khi áp dụng bất kỳ migration nào, `runMigrations()` truy vấn `SELECT current_database() AS current_db` và đối chiếu khớp chính xác với `targetDb`.
-- **Bảo vệ DB gốc `nexus_hrms`**: Nếu `current_database() === 'nexus_hrms'` (hoặc không có hậu tố `_test`), CLI sẽ **từ chối thực thi** (`MIGRATION_PRODUCTION_GUARD`) trừ khi người vận hành chủ động truyền cờ xác nhận tường minh:
+Khác với `check-schema-readiness.js`, script `Backend/scripts/migrate.js` hỗ trợ tham số CLI `--target-db=<db_name>` và `--confirm-production-db=<db_name>`:
+- Trước khi áp dụng bất kỳ migration nào, `runMigrations()` truy vấn `SELECT current_database() AS db_name` và đối chiếu khớp với `expectedDatabase`.
+- Để chạy trên database chính `nexus_hrms`, bắt buộc truyền đủ hai tham số:
   ```powershell
   node Backend/scripts/migrate.js --target-db=nexus_hrms --confirm-production-db=nexus_hrms
   ```
 
 ---
 
-## 4. Diễn tập Migration trên Bản sao Độc lập (`nexus_hrms_rehearsal_test`)
+## 4. Quy Trình Triển Khai Chuẩn Trên `nexus_hrms` (Dừng Luồng Ghi -> Backup Mới -> Diễn Tập Restore -> Nâng Cấp)
 
-Script tự động diễn tập toàn trình: `Backend/scripts/rehearse-r16-migration.js` (`npm run db:rehearse-r16 --prefix Backend`).
-
-### Lệnh chạy lại diễn tập bất kỳ lúc nào:
+### Bước 1: Dừng toàn bộ luồng ghi từ ứng dụng (`PORT 8000`)
+Trước khi tạo bản sao lưu để nâng cấp, bắt buộc dừng tiến trình Backend đang kết nối vào `nexus_hrms` và xác nhận cổng `8000` không còn lắng nghe:
 ```powershell
-npm run db:rehearse-r16 --prefix Backend
-```
-Bằng chứng log nguyên văn: `docs/remediation/evidence/r16-migration-rehearsal.log`.
-
----
-
-## 5. Quy trình Triển khai Thật trên `nexus_hrms` (Dành cho Người vận hành khi nghiệm thu)
-
-> **LƯU Ý QUAN TRỌNG**: Không dùng lại file backup cũ từ bước rehearsal nếu sau thời điểm đó ứng dụng có phát sinh ghi dữ liệu. Bắt buộc thực hiện backup mới trong cửa sổ bảo trì (maintenance window) sau khi đã ngắt luồng ghi của ứng dụng.
-
-### Bước 1: Mở cửa sổ bảo trì (Maintenance Window) & Tạm dừng kết nối ghi từ ứng dụng
-Dừng tiến trình Backend API đang kết nối vào `nexus_hrms` để đảm bảo không có giao dịch ghi mới trong lúc sao lưu và nâng cấp.
-
-### Bước 2: Tạo bản sao lưu vật lý mới (Fresh Backup) và kiểm tra tính toàn vẹn
-```powershell
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-New-Item -ItemType Directory -Force -Path "backups" | Out-Null
-
-# Tạo bản sao lưu SQL plain-text (kèm kiểm tra SHA-256)
-& "C:\Users\tavin\pgsql\bin\pg_dump.exe" -h localhost -p 5432 -U postgres -d nexus_hrms --no-owner --no-acl -f "backups/nexus_hrms_pre_r16_$timestamp.sql"
-Get-FileHash "backups/nexus_hrms_pre_r16_$timestamp.sql" -Algorithm SHA256
+$conns = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+if ($conns) {
+  foreach ($c in $conns) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }
+}
+Start-Sleep -Milliseconds 500
+if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) {
+  throw "Cổng 8000 vẫn đang hoạt động. Bắt buộc dừng Backend trước khi tạo backup."
+}
 ```
 
-### Bước 3: Chạy Forward Migration (`010` & `011`) với cờ xác nhận tường minh
+### Bước 2: Tạo bản sao lưu vật lý mới (`pg_dump`) và kiểm tra Exit Code, Dung lượng, SHA-256
+```powershell
+$timestamp = "20261025_102100" # Hoặc: Get-Date -Format "yyyyMMdd_HHmmss"
+$backupDir = "docs/remediation/evidence/backups"
+New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+$backupFile = "$backupDir/nexus_hrms_pre_r16_$timestamp.sql"
+
+& "C:\Users\tavin\pgsql\bin\pg_dump.exe" -h 127.0.0.1 -p 5432 -U postgres -d nexus_hrms --no-owner --no-acl -f $backupFile
+if ($LASTEXITCODE -ne 0) {
+  throw "pg_dump thất bại với exit code $LASTEXITCODE"
+}
+
+$fileInfo = Get-Item $backupFile
+if ($fileInfo.Length -le 100000) {
+  throw "Dung lượng file backup bất thường: $($fileInfo.Length) bytes"
+}
+$backupHash = (Get-FileHash $backupFile -Algorithm SHA256).Hash
+Write-Host "BACKUP_OK: file=$backupFile size=$($fileInfo.Length) sha256=$backupHash"
+```
+
+### Bước 3: Thử phục hồi (`Restore Rehearsal`) vào Database tạm có tên riêng (Không `DROP` database có sẵn)
+> **LƯU Ý QUAN TRỌNG**:
+> - Tuyệt đối **không dùng `DROP DATABASE IF EXISTS`** lên bất kỳ database staging nào có sẵn. Luôn tạo database tạm có hậu tố thời gian riêng `$stagingDb = "nexus_hrms_restore_staging_$timestamp"` sau khi kiểm tra tên đó chưa tồn tại.
+> - Bản sao lưu được chụp **trước khi nâng cấp** nên trạng thái dự kiến của `$stagingDb` sau khi restore phải là **`DEPLOYMENT_PENDING` (`9/11` migrations, thiếu `010` và `011`)** — tuyệt đối không yêu cầu bản backup trước nâng cấp đạt `11/11`.
+
+```powershell
+$stagingDb = "nexus_hrms_restore_staging_$timestamp"
+
+# 1. Xác nhận tên DB tạm chưa tồn tại (không DROP DB nào có sẵn)
+$existsCount = (& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -t -A -c "SELECT COUNT(*) FROM pg_database WHERE datname = '$stagingDb';").Trim()
+if ($existsCount -ne "0") {
+  throw "Database tạm $stagingDb đã tồn tại. Dừng lại để không ghi đè hoặc xóa DB hiện có."
+}
+
+# 2. Tạo DB tạm mới và nạp bản backup vừa tạo
+& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE `"$stagingDb`";"
+if ($LASTEXITCODE -ne 0) { throw "CREATE DATABASE $stagingDb thất bại ($LASTEXITCODE)" }
+
+& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d $stagingDb -v ON_ERROR_STOP=1 -f $backupFile
+if ($LASTEXITCODE -ne 0) { throw "Restore vào $stagingDb thất bại ($LASTEXITCODE)" }
+
+# 3. Kiểm tra readiness trên $stagingDb bằng DB_NAME (trạng thái dự kiến của backup trước nâng cấp là 9/11 DEPLOYMENT_PENDING)
+$stagingReadiness = Invoke-SchemaReadinessCheck -TargetDb $stagingDb -ReportOnly
+if ($stagingReadiness.database -ne $stagingDb -or $stagingReadiness.appliedMigrationsCount -ne 9 -or $stagingReadiness.status -ne "DEPLOYMENT_PENDING") {
+  throw "Trạng thái schema của $stagingDb không khớp baseline 9/11 trước nâng cấp"
+}
+```
+
+### Bước 4: Thực thi Forward Migration (`010` & `011`) trên `nexus_hrms` (Chỉ chạy sau khi Người vận hành xác nhận)
 ```powershell
 node Backend/scripts/migrate.js --target-db=nexus_hrms --confirm-production-db=nexus_hrms
-```
+if ($LASTEXITCODE -ne 0) {
+  throw "Migration trên nexus_hrms thất bại với exit code $LASTEXITCODE"
+}
 
-### Bước 4: Kiểm tra Preflight trên `nexus_hrms` & Chạy Suite Kiểm thử trên `nexus_hrms_test`
-```powershell
-# 1. Xác minh nexus_hrms đã đạt trạng thái READY (11/11 migrations):
-node Backend/scripts/check-schema-readiness.js --target-db=nexus_hrms
-
-# 2. Chạy bộ kiểm thử schema/ràng buộc trên DB kiểm thử độc lập (nexus_hrms_test):
-npm run db:test --prefix Backend
+# Kiểm tra sau nâng cấp: phải đạt READY (11/11 migrations, exit code 0 không cần --report-only)
+$postReadiness = Invoke-SchemaReadinessCheck -TargetDb "nexus_hrms"
+if (-not $postReadiness.ready -or $postReadiness.appliedMigrationsCount -ne 11) {
+  throw "nexus_hrms chưa đạt READY 11/11 sau migration"
+}
 ```
-Lệnh (1) phải trả về exit code `0` với `"status": "READY"`, `"appliedMigrationsCount": 11`, `"missingStructures": []`.
 
 ---
 
-## 6. Quy trình Phục hồi An toàn (Non-Destructive Rollback) nếu có sự cố
+## 5. Quy Trình Khôi Phục Bằng Đổi Tên Tuần Tự Có Kiểm Soát Lỗi (`Controlled Two-Step Sequential Rename`)
 
-> **NGUYÊN TẮC AN TOÀN**: Tuyệt đối **KHÔNG** chạy `DROP DATABASE nexus_hrms` trực tiếp trước khi bản sao phục hồi được nạp xong và kiểm tra toàn vẹn 100%.
+> **NGUYÊN TẮC KỸ THUẬT & AN TOÀN**:
+> 1. Trong PostgreSQL, lệnh `ALTER DATABASE ... RENAME TO ...` không chạy được bên trong một transaction (`BEGIN ... COMMIT`). Do đó, việc đổi tên `nexus_hrms` sang tên lưu trữ lỗi (`$failedDb`) rồi đổi tên `$stagingDb` sang `nexus_hrms` là **hai bước tuần tự (`Two-Step Sequential Rename`)**, **không phải một thao tác nguyên tử (`Atomic Swap`)**.
+> 2. **Giữ Backend dừng hoàn toàn** (`PORT 8000` tắt) trong suốt quá trình khôi phục để không phát sinh kết nối mới làm cản trở bước đổi tên thứ hai.
+> 3. **Xử lý lỗi khi Bước 1 thành công nhưng Bước 2 thất bại**: Nếu lệnh đổi tên thứ nhất (`nexus_hrms` -> `$failedDb`) đã thành công mà lệnh đổi tên thứ hai (`$stagingDb` -> `nexus_hrms`) gặp lỗi, script phải lập tức ngắt kết nối trên `$stagingDb` để thử lại; nếu vẫn lỗi thì phải chạy ngay lệnh hoàn trả (`ALTER DATABASE "$failedDb" RENAME TO nexus_hrms`) để `nexus_hrms` không bao giờ bị mất tên.
+> 4. **Chỉ thực hiện khi Người vận hành yêu cầu khôi phục** — không tự động đổi tên database chính.
 
-Nếu quá trình nâng cấp tại Bước 3 gặp sự cố cần quay lui:
-
-### Bước 1: Khởi tạo DB phục hồi tạm `nexus_hrms_restore_staging` và nạp từ file backup vừa tạo ở Bước 2
+### Kịch bản PowerShell khôi phục tuần tự có bù trừ lỗi (`Compensating Recovery`):
 ```powershell
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS nexus_hrms_restore_staging;"
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE nexus_hrms_restore_staging;"
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d nexus_hrms_restore_staging -v ON_ERROR_STOP=1 -f "backups/nexus_hrms_pre_r16_<timestamp>.sql"
-```
+# Sử dụng đúng bản backup mới và database staging đã kiểm chứng ở Bước 2 & Bước 3:
+$backupFile = "docs/remediation/evidence/backups/nexus_hrms_pre_r16_20261025_102100.sql"
+$stagingDb  = "nexus_hrms_restore_staging_20261025_102100"
+$failedDb   = "nexus_hrms_failed_upgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
-### Bước 2: Kiểm tra số bảng và dữ liệu trên `nexus_hrms_restore_staging` trước khi hoán đổi
-```powershell
-node Backend/scripts/check-schema-readiness.js --target-db=nexus_hrms_restore_staging --report-only
-```
+# 1. Đảm bảo Backend trên cổng 8000 đang dừng hoàn toàn
+if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) {
+  throw "Bắt buộc dừng Backend trên cổng 8000 trước khi thực hiện đổi tên khôi phục."
+}
 
-### Bước 3: Hoán đổi tên DB nguyên tử (Atomic Swap) — Giữ lại DB lỗi dưới tên `_failed_upgrade` để điều tra
-```powershell
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('nexus_hrms', 'nexus_hrms_restore_staging') AND pid <> pg_backend_pid();"
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE nexus_hrms RENAME TO nexus_hrms_failed_upgrade;"
-& "C:\Users\tavin\pgsql\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE nexus_hrms_restore_staging RENAME TO nexus_hrms;"
+# 2. Xác nhận $stagingDb tồn tại và khớp baseline 9/11 trước khi đổi tên
+$stagingCheck = Invoke-SchemaReadinessCheck -TargetDb $stagingDb -ReportOnly
+if ($stagingCheck.database -ne $stagingDb -or $stagingCheck.appliedMigrationsCount -ne 9) {
+  throw "Database phục hồi $stagingDb chưa sẵn sàng hoặc không khớp baseline 9/11."
+}
+
+# 3. Ngắt các kết nối hiện có tới nexus_hrms và $stagingDb
+& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('nexus_hrms', '$stagingDb') AND pid <> pg_backend_pid();"
+if ($LASTEXITCODE -ne 0) { throw "Không thể ngắt kết nối tới nexus_hrms / $stagingDb" }
+
+# 4. Bước đổi tên 1: nexus_hrms -> $failedDb
+& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE nexus_hrms RENAME TO `"$failedDb`";"
+if ($LASTEXITCODE -ne 0) {
+  throw "Bước 1 (đổi tên nexus_hrms -> $failedDb) thất bại. Database nexus_hrms vẫn giữ nguyên tên gốc."
+}
+
+# 5. Bước đổi tên 2: $stagingDb -> nexus_hrms (kèm cơ chế thử lại & hoàn trả nếu thất bại)
+& "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$stagingDb' AND pid <> pg_backend_pid(); ALTER DATABASE `"$stagingDb`" RENAME TO nexus_hrms;"
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "Bước 2 ($stagingDb -> nexus_hrms) thất bại! Đang thực hiện hoàn trả $failedDb -> nexus_hrms..."
+  & "C:\Users\tavin\pgsql\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$failedDb' AND pid <> pg_backend_pid(); ALTER DATABASE `"$failedDb`" RENAME TO nexus_hrms;"
+  if ($LASTEXITCODE -ne 0) {
+    throw "CRITICAL: Hoàn trả $failedDb -> nexus_hrms thất bại. Cần kiểm tra trực tiếp trên postgres."
+  }
+  throw "Đã hoàn trả $failedDb về lại nexus_hrms an toàn do Bước 2 gặp lỗi."
+}
+
+# 6. Xác minh nexus_hrms sau khôi phục
+$restoredCheck = Invoke-SchemaReadinessCheck -TargetDb "nexus_hrms" -ReportOnly
+if ($restoredCheck.database -ne "nexus_hrms" -or $restoredCheck.appliedMigrationsCount -ne 9) {
+  throw "Xác minh nexus_hrms sau khôi phục không khớp trạng thái dự kiến."
+}
+Write-Host "RESTORE_SWAP_OK: nexus_hrms đã được khôi phục từ $stagingDb (bản lỗi lưu tại $failedDb)"
 ```
-Nhờ quy trình hoán đổi này, tại mọi thời điểm dữ liệu gốc đều có ít nhất 2 bản lưu (file dump + DB đổi tên) và không bao giờ bị mất trắng nếu lệnh restore gặp lỗi giữa chừng.
