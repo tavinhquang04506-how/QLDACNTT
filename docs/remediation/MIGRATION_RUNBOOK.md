@@ -2,7 +2,7 @@
 
 - **Ngày lập / Cập nhật**: `2026-10-25`
 - **Phạm vi**: Chuẩn bị bản sao lưu mới sau khi dừng luồng ghi, diễn tập phục hồi vào database tạm có tên duy nhất (`nexus_hrms_restore_staging_<timestamp>`), đối chiếu `32/32` bảng bằng SHA-256 checksum, và quy trình nâng cấp / khôi phục tuần tự có kiểm soát lỗi cho CSDL chính `nexus_hrms` lên migration `010` và `011`.
-- **Trạng thái hiện tại của DB chính (`nexus_hrms`)**: **`DEPLOYMENT_PENDING`**
+- **Trạng thái hiện tại của DB chính (`nexus_hrms`)**: **`READY` (`11 / 11` migrations đã áp dụng thành công ngày `2026-10-25`, bằng chứng tại `docs/remediation/evidence/primary-db-migration-execution.log`)**
   - Đã áp dụng: `9 / 11` migrations (`001`..`009`).
   - Đang chờ triển khai:
     1. `010_payroll_policy_snapshot_and_holidays.sql` (`public_holidays`, `payroll_periods.policy_snapshot`, 4 khóa cấu hình lương trong `system_settings`).
