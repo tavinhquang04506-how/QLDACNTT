@@ -227,4 +227,17 @@ describe('R35, R36, R39 & Phase B — AI Copilot UI State, Notice Attachment & L
     assert.equal(modalSource.includes('data-testid="ai-nav-action"'), true);
     assert.equal(modalSource.includes('sessionGenerationRef'), true);
   });
+
+  it('Final UAT (BUG-UAT-02): DashboardPage.jsx only calls payrollService.getPeriods() when role is HR_DIRECTOR or CEO', () => {
+    const dashboardSource = fs.readFileSync(
+      path.join(__dirname, '../src/pages/DashboardPage.jsx'),
+      'utf8'
+    );
+    assert.equal(
+      dashboardSource.includes(
+        "(currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO') ? payrollService.getPeriods()"
+      ),
+      true
+    );
+  });
 });
