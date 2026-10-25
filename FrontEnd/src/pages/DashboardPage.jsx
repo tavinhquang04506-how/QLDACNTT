@@ -64,7 +64,7 @@ export default function DashboardPage() {
         dashboardService.getStats(),
         projectService.getAll(),
         projectService.getSquads(),
-        payrollService.getPeriods(),
+        (currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO') ? payrollService.getPeriods() : Promise.resolve({ success: true, data: [] }),
         attendanceService.getLogs({ limit: 5 }),
       ]);
 
