@@ -32,7 +32,7 @@ export default function TimesheetMatrixModal({ isOpen, onClose }) {
 
   // Chỉ HR và CEO được xem bảng công của nhân viên khác.
   // Nhân viên và Trưởng phòng chỉ xem bảng công của chính mình.
-  const isHrOrCeo = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const isHrOrCeo = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'ADMIN';
   const isPersonalView = !isHrOrCeo;
   const myId = user?.employeeId || currentRole?.id || '';
 

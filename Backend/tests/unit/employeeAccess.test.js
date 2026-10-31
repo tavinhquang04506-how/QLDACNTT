@@ -10,8 +10,8 @@ const row = {
 };
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
-test('CEO and HR_DIRECTOR see every sensitive field, but never face_encoding', () => {
-  for (const roleCode of ['CEO', 'HR_DIRECTOR']) {
+test('CEO, ADMIN and HR_DIRECTOR see every sensitive field, but never face_encoding', () => {
+  for (const roleCode of ['CEO', 'HR_DIRECTOR', 'ADMIN']) {
     const out = shapeEmployee(row, { roleCode, employeeId: 'NV-9' });
     for (const f of SENSITIVE_EMPLOYEE_FIELDS) assert.ok(has(out, f), f);
     assert.equal(has(out, 'face_encoding'), false);
@@ -26,7 +26,7 @@ test('the owner sees their own sensitive fields whatever their role', () => {
 });
 
 test('everyone else loses the sensitive fields but keeps public ones', () => {
-  for (const roleCode of ['EMPLOYEE', 'LINE_MANAGER', 'ADMIN', 'KIOSK']) {
+  for (const roleCode of ['EMPLOYEE', 'LINE_MANAGER', 'KIOSK']) {
     const out = shapeEmployee(row, { roleCode, employeeId: 'NV-9' });
     for (const f of SENSITIVE_EMPLOYEE_FIELDS) assert.equal(has(out, f), false, `${roleCode} ${f}`);
     assert.equal(out.full_name, 'A');

@@ -64,7 +64,7 @@ export default function DashboardPage() {
         dashboardService.getStats(),
         projectService.getAll(),
         projectService.getSquads(),
-        (currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO') ? payrollService.getPeriods() : Promise.resolve({ success: true, data: [] }),
+        (currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN') ? payrollService.getPeriods() : Promise.resolve({ success: true, data: [] }),
         attendanceService.getLogs({ limit: 5 }),
       ]);
 
@@ -94,7 +94,7 @@ export default function DashboardPage() {
   const isStaff = currentRole?.key === 'EMPLOYEE';
   const isManager = currentRole?.key === 'LINE_MANAGER';
   const isHr = currentRole?.key === 'HR_DIRECTOR';
-  const isCeo = currentRole?.key === 'CEO';
+  const isCeo = currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN';
 
   const totalActive = stats?.overview?.total_active ?? 0;
   const presentToday = stats?.overview?.present_today ?? 0;

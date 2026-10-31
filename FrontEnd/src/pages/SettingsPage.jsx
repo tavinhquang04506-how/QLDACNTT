@@ -50,7 +50,7 @@ export default function SettingsPage() {
   const [defaultAllowances, setDefaultAllowances] = useState('');
   const [policyEffectiveFrom, setPolicyEffectiveFrom] = useState('');
 
-  const canEditSettings = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const canEditSettings = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'ADMIN';
   const canSaveNow = canSubmitSettingsSave({
     canEditSettings,
     saving,

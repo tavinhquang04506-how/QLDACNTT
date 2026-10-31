@@ -54,7 +54,7 @@ const departmentManagerUser = async (executor, departmentId) => {
   return rows[0] ?? null;
 };
 
-const ROLE_LABEL = { CEO: 'CEO', HR_DIRECTOR: 'HR', LINE_MANAGER: 'Trưởng phòng' };
+const ROLE_LABEL = { CEO: 'CEO', ADMIN: 'Admin', HR_DIRECTOR: 'HR', LINE_MANAGER: 'Trưởng phòng' };
 
 /** A line manager may only act on plans of employees in their own department, and never on their own plan. */
 async function assertDepartmentAccess(executor, actor, scope, plan) {

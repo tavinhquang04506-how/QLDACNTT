@@ -1,6 +1,6 @@
 const { SENSITIVE_EMPLOYEE_FIELDS } = require('../../utils/redact');
 
-const HR_ROLES = ['CEO', 'HR_DIRECTOR'];
+const HR_ROLES = ['CEO', 'HR_DIRECTOR', 'ADMIN'];
 const JOINED_SENSITIVE_FIELDS = [
   'contract_salary',
   'contract_no',

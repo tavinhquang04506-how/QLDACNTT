@@ -563,7 +563,7 @@ export default function LeaveManagementPage() {
   // ==========================================
   // VIEW 3: CẤP 1 (CEO) - GIÁM SÁT & KIỂM TOÁN LỊCH SỬ ĐÃ DUYỆT (MONTHLY COUNTER AUTO-RESET)
   // ==========================================
-  if (currentRole.key === 'CEO') {
+  if (currentRole.key === 'CEO' || currentRole.key === 'ADMIN') {
     const ceoSubordinateRequests = apiLeaves
       .filter(l => (l.job_title?.includes('Trưởng') || l.job_title?.includes('Giám Đốc') || Number(l.total_days) > 3) && l.stage !== 'DA_PHE_DUYET' && l.stage !== 'TU_CHOI' && !approvedList.includes(l.id))
       .map(l => ({

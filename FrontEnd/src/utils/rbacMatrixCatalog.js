@@ -149,8 +149,8 @@ const HRD_PROTECTED = ['CEO', 'ADMIN'];
  * Mirrors Backend/src/modules/users/roleRules.js -> canAssignRole
  */
 export function canAssignRole(actorRole, targetRole) {
-  if (actorRole === 'CEO') return true;
-  if (actorRole === 'HR_DIRECTOR' || actorRole === 'ADMIN') {
+  if (actorRole === 'CEO' || actorRole === 'ADMIN') return true;
+  if (actorRole === 'HR_DIRECTOR') {
     return LIMITED_ASSIGNABLE.includes(targetRole);
   }
   return false;
@@ -160,9 +160,8 @@ export function canAssignRole(actorRole, targetRole) {
  * Mirrors Backend/src/modules/users/roleRules.js -> canManageUserWithRole
  */
 export function canManageUserWithRole(actorRole, subjectRole) {
-  if (actorRole === 'CEO') return true;
+  if (actorRole === 'CEO' || actorRole === 'ADMIN') return true;
   if (actorRole === 'HR_DIRECTOR') return !HRD_PROTECTED.includes(subjectRole);
-  if (actorRole === 'ADMIN') return LIMITED_ASSIGNABLE.includes(subjectRole);
   return false;
 }
 

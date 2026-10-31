@@ -97,7 +97,7 @@ export default function AiAnalyticsPage() {
   const isStaff = roleKey === 'EMPLOYEE';
   const isManager = roleKey === 'LINE_MANAGER';
   const isHr = roleKey === 'HR_DIRECTOR';
-  const isCeo = roleKey === 'CEO';
+  const isCeo = roleKey === 'CEO' || roleKey === 'ADMIN';
   const isExec = isHr || isCeo;
   const myId = user?.employeeId || currentRole?.id;
 

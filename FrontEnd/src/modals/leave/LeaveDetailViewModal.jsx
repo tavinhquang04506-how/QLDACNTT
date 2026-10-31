@@ -24,7 +24,7 @@ import { useAuth } from '../../context/AuthContext';
 export default function LeaveDetailViewModal({ isOpen, onClose, payload, onApprove, onReject }) {
   const { currentRole } = useAuth();
   const isStaff = currentRole?.key === 'EMPLOYEE';
-  const isApprover = currentRole?.key === 'LINE_MANAGER' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO';
+  const isApprover = currentRole?.key === 'LINE_MANAGER' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN';
 
   const [managerNote, setManagerNote] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);

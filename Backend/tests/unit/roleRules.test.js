@@ -8,9 +8,10 @@ test('CEO can assign any role', () => {
   }
 });
 
-test('ADMIN (a technical role) can only assign EMPLOYEE, LINE_MANAGER, KIOSK', () => {
-  for (const target of ['EMPLOYEE', 'LINE_MANAGER', 'KIOSK']) assert.equal(canAssignRole('ADMIN', target), true, target);
-  for (const target of ['CEO', 'ADMIN', 'HR_DIRECTOR']) assert.equal(canAssignRole('ADMIN', target), false, target);
+test('ADMIN has full role assignment privileges like CEO', () => {
+  for (const target of ['CEO', 'ADMIN', 'HR_DIRECTOR', 'LINE_MANAGER', 'EMPLOYEE', 'KIOSK']) {
+    assert.equal(canAssignRole('ADMIN', target), true, target);
+  }
 });
 
 test('HR_DIRECTOR can only assign EMPLOYEE, LINE_MANAGER, KIOSK', () => {
@@ -33,7 +34,7 @@ test('HR_DIRECTOR cannot manage CEO or ADMIN accounts but can manage the rest', 
   assert.equal(canManageUserWithRole('HR_DIRECTOR', 'EMPLOYEE'), true);
   assert.equal(canManageUserWithRole('CEO', 'ADMIN'), true);
   assert.equal(canManageUserWithRole('ADMIN', 'EMPLOYEE'), true);
-  for (const subject of ['CEO', 'ADMIN', 'HR_DIRECTOR']) assert.equal(canManageUserWithRole('ADMIN', subject), false, subject);
+  for (const subject of ['CEO', 'ADMIN', 'HR_DIRECTOR']) assert.equal(canManageUserWithRole('ADMIN', subject), true, subject);
   assert.equal(canManageUserWithRole('EMPLOYEE', 'EMPLOYEE'), false);
 });
 

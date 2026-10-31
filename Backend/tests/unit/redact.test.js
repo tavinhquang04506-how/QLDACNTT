@@ -16,8 +16,8 @@ test('secrets are always redacted, for every role, at any depth', () => {
   }
 });
 
-test('CEO and HR_DIRECTOR keep personal and salary data', () => {
-  for (const role of ['CEO', 'HR_DIRECTOR']) {
+test('CEO, ADMIN and HR_DIRECTOR keep personal and salary data', () => {
+  for (const role of ['CEO', 'HR_DIRECTOR', 'ADMIN']) {
     const out = redactAuditValues(row, role);
     assert.equal(out.base_salary, 100);
     assert.equal(out.citizen_id, '079');
@@ -25,12 +25,11 @@ test('CEO and HR_DIRECTOR keep personal and salary data', () => {
   }
 });
 
-test('ADMIN loses every personal and salary field', () => {
+test('ADMIN also keeps personal and salary fields while secrets remain redacted', () => {
   const out = redactAuditValues(row, 'ADMIN');
-  for (const key of ['base_salary', 'citizen_id', 'bank_account', 'bank_name', 'date_of_birth', 'address']) {
-    assert.equal(out[key], '[REDACTED]', key);
-  }
-  assert.equal(out.nested.salary, '[REDACTED]');
+  assert.equal(out.base_salary, 100);
+  assert.equal(out.citizen_id, '079');
+  assert.equal(out.nested.salary, 5);
   assert.equal(out.full_name, 'A');
   assert.equal(out.nested.ok, 1);
 });
@@ -42,5 +41,5 @@ test('does not mutate its input and tolerates null, primitives and arrays', () =
   assert.equal(redactAuditValues(null, 'ADMIN'), null);
   assert.equal(redactAuditValues(undefined, 'ADMIN'), undefined);
   assert.equal(redactAuditValues('text', 'ADMIN'), 'text');
-  assert.deepEqual(redactAuditValues([{ base_salary: 1 }], 'ADMIN'), [{ base_salary: '[REDACTED]' }]);
+  assert.deepEqual(redactAuditValues([{ base_salary: 1 }], 'ADMIN'), [{ base_salary: 1 }]);
 });

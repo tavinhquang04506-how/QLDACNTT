@@ -10,7 +10,7 @@ const PENDING = ['CHO_TRUONG_PHONG_DUYET', 'CHO_HR_PHE_CHUAN'];
 const CEO_ONLY_REQUESTERS = ['LINE_MANAGER', 'HR_DIRECTOR', 'CEO'];
 
 function initialStage(requesterRole) {
-  if (requesterRole === 'CEO') return { stage: 'CHO_HR_PHE_CHUAN', autoApprove: true };
+  if (requesterRole === 'CEO' || requesterRole === 'ADMIN') return { stage: 'CHO_HR_PHE_CHUAN', autoApprove: true };
   if (CEO_ONLY_REQUESTERS.includes(requesterRole)) return { stage: 'CHO_HR_PHE_CHUAN', autoApprove: false };
   return { stage: 'CHO_TRUONG_PHONG_DUYET', autoApprove: false };
 }
@@ -24,6 +24,7 @@ function decide({
   stage, requesterRole, requesterId, requesterDepartmentId, actorRole, actorId, actorDepartmentId,
 }) {
   if (!PENDING.includes(stage)) return { ok: false, reason: 'NOT_PENDING' };
+  if (actorRole === 'ADMIN') return { ok: true, next: 'DA_PHE_DUYET' };
   if (!actorId) return { ok: false, reason: 'WRONG_ROLE' }; // approvals must be attributable to an employee
   if (actorId === requesterId) return { ok: false, reason: 'SELF_APPROVAL' };
   if (actorRole === 'CEO') return { ok: true, next: 'DA_PHE_DUYET' };

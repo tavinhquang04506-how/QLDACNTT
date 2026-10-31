@@ -24,7 +24,7 @@ export default function Modal6A_LeaveCalendar({ isOpen, onClose, payload }) {
 
   const isStaff = currentRole?.key === 'EMPLOYEE';
   const isManager = currentRole?.key === 'LINE_MANAGER';
-  const isHrOrCeo = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const isHrOrCeo = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'ADMIN';
 
   // Real leaves mapped to calendar events
   const allLeaveEvents = dbLeaves.map(l => {

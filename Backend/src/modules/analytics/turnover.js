@@ -4,7 +4,7 @@ const { parsePagination, paginationMeta } = require('../../utils/pagination');
 const { departmentOf } = require('../projects/access');
 const { computeTurnoverRisk } = require('./risk');
 
-const HR_ROLES = ['CEO', 'HR_DIRECTOR'];
+const HR_ROLES = ['CEO', 'HR_DIRECTOR', 'ADMIN'];
 
 const METRICS_SQL = `
   SELECT e.id AS employee_id, e.full_name, e.job_title, e.avatar_url, e.department_id, d.name AS department_name, p.name AS position_name, e.status,

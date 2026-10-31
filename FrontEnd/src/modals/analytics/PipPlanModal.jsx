@@ -26,7 +26,7 @@ import {
 export default function Modal8C_PipPlan({ isOpen, onClose, payload }) {
   const { currentRole, user } = useAuth();
   const roleKey = currentRole?.key;
-  const isExec = roleKey === 'CEO' || roleKey === 'HR_DIRECTOR';
+  const isExec = roleKey === 'CEO' || roleKey === 'HR_DIRECTOR' || roleKey === 'ADMIN';
   const isManager = roleKey === 'LINE_MANAGER';
   const canCreate = isExec || isManager;
   const myId = user?.employeeId || currentRole?.id;

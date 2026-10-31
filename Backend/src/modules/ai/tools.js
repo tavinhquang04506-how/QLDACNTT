@@ -586,7 +586,7 @@ async function resolveLatestPublishedPayslipPeriods(actor, limit = 2, executor =
 async function getScopedDashboard(actor, args = {}, executor = db) {
   const clock = getCurrentClock(actor?.now || args?.__now);
   const nowIso = clock.iso;
-  if (!actor || !['CEO', 'HR_DIRECTOR', 'LINE_MANAGER'].includes(actor.roleCode)) {
+  if (!actor || !['CEO', 'HR_DIRECTOR', 'LINE_MANAGER', 'ADMIN'].includes(actor.roleCode)) {
     return {
       ok: false,
       errorCode: 'FORBIDDEN_SCOPE',
@@ -656,7 +656,7 @@ async function getScopedDashboard(actor, args = {}, executor = db) {
 async function getScopedPerformance(actor, args = {}, executor = db) {
   const clock = getCurrentClock(actor?.now || args?.__now);
   const nowIso = clock.iso;
-  if (!actor || ['ADMIN', 'KIOSK'].includes(actor.roleCode)) {
+  if (!actor || ['KIOSK'].includes(actor.roleCode)) {
     return {
       ok: false,
       errorCode: 'FORBIDDEN_SCOPE',

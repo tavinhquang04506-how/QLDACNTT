@@ -15,7 +15,7 @@ import { useAuth } from '../../context/AuthContext';
 
 export default function AttendanceAppealModal({ isOpen, onClose, payload }) {
   const { user, currentRole } = useAuth();
-  const isReviewer = currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'LINE_MANAGER' || user?.roleCode === 'HR_MANAGER' || user?.roleCode === 'DEPARTMENT_HEAD';
+  const isReviewer = currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'LINE_MANAGER' || user?.roleCode === 'HR_MANAGER' || user?.roleCode === 'DEPARTMENT_HEAD';
 
   const [activeTab, setActiveTab] = useState(isReviewer ? 'list' : 'create'); // 'create' | 'list'
   const [appeals, setAppeals] = useState([]);

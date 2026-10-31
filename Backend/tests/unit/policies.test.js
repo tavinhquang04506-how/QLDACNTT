@@ -47,7 +47,7 @@ test('requirePermission: no req.user -> 401 error', () => {
 test('requirePermission: disallowed role -> 403 with allowed roles in details', () => {
   const err = run(requirePermission('employee.create'), { user: { roleCode: 'EMPLOYEE' } });
   assert.equal(err.status, 403);
-  assert.deepEqual(err.details.sort(), ['CEO', 'HR_DIRECTOR']);
+  assert.deepEqual(err.details.sort(), ['ADMIN', 'CEO', 'HR_DIRECTOR']);
 });
 
 test('requirePermission: allowed role passes and sets req.scope', () => {
