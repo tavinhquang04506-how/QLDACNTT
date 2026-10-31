@@ -7,7 +7,7 @@ const DEFAULT_AVATAR = '/default-avatar.jpg';
 async function resetAndSeed50Employees() {
   const client = await db.pool.connect();
   try {
-    console.log('🔄 Bắt đầu reset toàn bộ database và khởi tạo dữ liệu thực tế năm 2026 (01/2026 -> 10/2026) cho 50 nhân sự...\n');
+    console.log('🔄 Bắt đầu reset toàn bộ database và khởi tạo dữ liệu thực tế năm 2026 (01/01/2026 -> 01/11/2026) cho 50 nhân sự...\n');
     await client.query('BEGIN');
 
     // 1. Dọn sạch toàn bộ các bảng nghiệp vụ
@@ -203,12 +203,13 @@ async function resetAndSeed50Employees() {
     await client.query(`UPDATE departments SET manager_id = 'NV-3001' WHERE id = 'DEPT-FIN';`);
 
     // 7. Users & Roles
-    console.log('🔐 7. Khởi tạo 50 Tài khoản Users (giữ nguyên 4 tài khoản test chính)...');
+    console.log('🔐 7. Khởi tạo Tài khoản Users (giữ nguyên 4 tài khoản test chính + tài khoản ADMIN)...');
     const defaultPasswordHash = await bcrypt.hash('User@123456', 10);
     const ceoHash = await bcrypt.hash('Ceo@123456', 10);
     const hrdHash = await bcrypt.hash('Hrd@123456', 10);
     const leadHash = await bcrypt.hash('Lead@123456', 10);
     const empHash = await bcrypt.hash('Emp@123456', 10);
+    const adminHash = await bcrypt.hash('Admin@123456', 10);
 
     for (const emp of rawEmployees) {
       let pwd = defaultPasswordHash;
@@ -219,9 +220,14 @@ async function resetAndSeed50Employees() {
 
       await client.query(`
         INSERT INTO users (employee_id, email, password_hash, role_code, is_active, failed_login_attempts, must_change_password, last_login_at)
-        VALUES ($1, $2, $3, $4, true, 0, false, '2026-10-25 08:15:00+07');
+        VALUES ($1, $2, $3, $4, true, 0, false, '2026-11-01 17:45:00+07');
       `, [emp.id, emp.email, pwd, emp.role]);
     }
+
+    await client.query(`
+      INSERT INTO users (employee_id, email, password_hash, role_code, is_active, failed_login_attempts, must_change_password, last_login_at)
+      VALUES (NULL, 'admin@fwbnexus.vn', $1, 'ADMIN', true, 0, false, '2026-11-01 18:00:00+07');
+    `, [adminHash]);
 
     await client.query(`
       INSERT INTO user_roles (user_id, role_id)
@@ -263,11 +269,13 @@ async function resetAndSeed50Employees() {
       { id: 'LP-2026-010', emp: 'NV-3002', type: 'LT-SL', start: '2026-09-22', end: '2026-09-23', days: 2.0, reason: 'Nghỉ ốm theo chỉ định của bác sĩ bệnh viện (có giấy C65)', stage: 'DA_PHE_DUYET', mgr: 'NV-3001', hr: 'NV-1001', handover: 'Lê Hoàng Oanh', sub: '2026-09-21 18:00:00+07' },
       { id: 'LP-2026-011', emp: 'NV-1004', type: 'LT-AL', start: '2026-10-08', end: '2026-10-09', days: 2.0, reason: 'Nghỉ phép năm tham dự lễ cưới em gái tại quê', stage: 'DA_PHE_DUYET', mgr: 'NV-1002', hr: 'NV-1001', handover: 'Phạm Minh Quân', sub: '2026-10-03 10:00:00+07' },
       { id: 'LP-2026-012', emp: 'NV-1013', type: 'LT-AL', start: '2026-10-15', end: '2026-10-16', days: 2.0, reason: 'Nghỉ phép năm cá nhân sau khi hoàn thành mốc Sprint AI', stage: 'DA_PHE_DUYET', mgr: 'NV-1002', hr: 'NV-1001', handover: 'Nguyễn Hoàng Nam', sub: '2026-10-10 11:20:00+07' },
-      // Đơn đang chờ duyệt (để Trưởng phòng & HRD thao tác duyệt trên web)
-      { id: 'LP-2026-013', emp: 'NV-0842', type: 'LT-AL', start: '2026-10-28', end: '2026-10-28', days: 1.0, reason: 'Giải quyết công việc gia đình cá nhân', stage: 'CHO_TRUONG_PHONG_DUYET', mgr: null, hr: null, handover: 'Đỗ Bích Thảo', sub: '2026-10-24 14:30:00+07' },
-      { id: 'LP-2026-014', emp: 'NV-1008', type: 'LT-AL', start: '2026-10-29', end: '2026-10-30', days: 2.0, reason: 'Nghỉ phép về quê gia đình có việc hiếu hỉ', stage: 'CHO_TRUONG_PHONG_DUYET', mgr: null, hr: null, handover: 'Phạm Minh Quân', sub: '2026-10-24 16:00:00+07' },
-      { id: 'LP-2026-015', emp: 'NV-1002', type: 'LT-BT', start: '2026-11-02', end: '2026-11-04', days: 3.0, reason: 'Tham gia Hội thảo Công nghệ Phần mềm Quốc gia Vietnam Tech 2026', stage: 'CHO_HR_PHE_CHUAN', mgr: 'NV-0001', hr: null, handover: 'Phạm Minh Quân', sub: '2026-10-23 09:30:00+07' },
-      { id: 'LP-2026-016', emp: 'NV-2001', type: 'LT-BT', start: '2026-11-05', end: '2026-11-06', days: 2.0, reason: 'Gặp gỡ ký kết hợp tác đối tác chiến lược tại Hà Nội', stage: 'CHO_HR_PHE_CHUAN', mgr: 'NV-0001', hr: null, handover: 'Bùi Khánh Linh', sub: '2026-10-23 15:00:00+07' },
+      { id: 'LP-2026-013', emp: 'NV-0842', type: 'LT-AL', start: '2026-10-28', end: '2026-10-28', days: 1.0, reason: 'Giải quyết công việc gia đình cá nhân', stage: 'DA_PHE_DUYET', mgr: 'NV-1002', hr: 'NV-1001', handover: 'Đỗ Bích Thảo', sub: '2026-10-24 14:30:00+07' },
+      { id: 'LP-2026-014', emp: 'NV-1008', type: 'LT-AL', start: '2026-10-29', end: '2026-10-30', days: 2.0, reason: 'Nghỉ phép về quê gia đình có việc hiếu hỉ', stage: 'DA_PHE_DUYET', mgr: 'NV-1002', hr: 'NV-1001', handover: 'Phạm Minh Quân', sub: '2026-10-25 16:00:00+07' },
+      // Đơn đang chờ duyệt gửi đến ngày 01/11/2026 (để Trưởng phòng & HRD thao tác duyệt trên web)
+      { id: 'LP-2026-015', emp: 'NV-1002', type: 'LT-BT', start: '2026-11-04', end: '2026-11-06', days: 3.0, reason: 'Tham gia Hội thảo Công nghệ Phần mềm Quốc gia Vietnam Tech 2026', stage: 'CHO_HR_PHE_CHUAN', mgr: 'NV-0001', hr: null, handover: 'Phạm Minh Quân', sub: '2026-10-30 09:30:00+07' },
+      { id: 'LP-2026-016', emp: 'NV-2001', type: 'LT-BT', start: '2026-11-05', end: '2026-11-06', days: 2.0, reason: 'Gặp gỡ ký kết hợp tác đối tác chiến lược tại Hà Nội', stage: 'CHO_HR_PHE_CHUAN', mgr: 'NV-0001', hr: null, handover: 'Bùi Khánh Linh', sub: '2026-10-31 15:00:00+07' },
+      { id: 'LP-2026-018', emp: 'NV-0842', type: 'LT-AL', start: '2026-11-09', end: '2026-11-10', days: 2.0, reason: 'Nghỉ phép năm cá nhân theo kế hoạch tháng 11/2026', stage: 'CHO_TRUONG_PHONG_DUYET', mgr: null, hr: null, handover: 'Nguyễn Hoàng Nam', sub: '2026-11-01 10:15:00+07' },
+      { id: 'LP-2026-019', emp: 'NV-1006', type: 'LT-AL', start: '2026-11-12', end: '2026-11-13', days: 2.0, reason: 'Nghỉ phép giải quyết thủ tục hồ sơ gia đình', stage: 'CHO_TRUONG_PHONG_DUYET', mgr: null, hr: null, handover: 'Lâm Gia Hân', sub: '2026-11-01 14:40:00+07' },
       // Đơn bị từ chối
       { id: 'LP-2026-017', emp: 'NV-2007', type: 'LT-UL', start: '2026-10-19', end: '2026-10-20', days: 2.0, reason: 'Xin nghỉ việc riêng không hưởng lương', stage: 'TU_CHOI', mgr: 'NV-2001', hr: null, handover: 'Đặng Phương Thảo', sub: '2026-10-15 10:00:00+07', mgrNote: 'Bộ phận đang tập trung chốt chiến dịch kinh doanh Quý IV, đề nghị bố trí dịp khác.' },
     ];
@@ -318,8 +326,8 @@ async function resetAndSeed50Employees() {
       `, [emp.id, usedDays]);
     }
 
-    // 10. Chấm công thực tế từ tháng 01/2026 đến tháng 10/2026 (bao gồm hôm nay 2026-10-25)
-    console.log('⏱️  10. Khởi tạo Dữ liệu Chấm công từ tháng 01/2026 đến 25/10/2026 cho 50 nhân sự...');
+    // 10. Chấm công thực tế từ đầu năm 2026 (01/01/2026) đến ngày hôm qua (01/11/2026)
+    console.log('⏱️  10. Khởi tạo Dữ liệu Chấm công từ tháng 01/2026 đến 01/11/2026 cho 50 nhân sự...');
     const sampleDatesByMonth = [
       // Tháng 01/2026 -> 09/2026: các ngày làm việc tiêu biểu mỗi tháng
       '2026-01-05', '2026-01-12', '2026-01-19', '2026-01-26',
@@ -331,11 +339,13 @@ async function resetAndSeed50Employees() {
       '2026-07-02', '2026-07-09', '2026-07-16', '2026-07-23',
       '2026-08-04', '2026-08-11', '2026-08-18', '2026-08-25',
       '2026-09-07', '2026-09-14', '2026-09-21', '2026-09-28', '2026-09-29', '2026-09-30',
-      // Tháng 10/2026 đầy đủ các ngày làm việc + ngày hôm qua & hôm nay (2026-10-25)
+      // Tháng 10/2026 đầy đủ các ngày làm việc + ngày hôm qua 01/11/2026
       '2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07',
       '2026-10-08', '2026-10-09', '2026-10-12', '2026-10-13', '2026-10-14',
       '2026-10-15', '2026-10-16', '2026-10-19', '2026-10-20', '2026-10-21',
-      '2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25',
+      '2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25', '2026-10-26',
+      '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30', '2026-10-31',
+      '2026-11-01',
     ];
 
     const attValues = [];
@@ -355,15 +365,15 @@ async function resetAndSeed50Employees() {
         let otHours = 0;
         const method = (eIdx % 3 === 0) ? 'face_id' : (eIdx % 3 === 1 ? 'kiosk' : 'gps');
 
-        // Một số trường hợp đi muộn thực tế (bao gồm ngày 2026-10-25 cho Dashboard)
-        if ((workDate === '2026-10-25' && (eIdx === 5 || eIdx === 14 || eIdx === 26 || eIdx === 37)) ||
-            (workDate !== '2026-10-25' && seed >= 92 && emp.id !== 'NV-0001')) {
+        // Một số trường hợp đi muộn thực tế (bao gồm ngày 2026-11-01 cho Dashboard)
+        if (((workDate === '2026-11-01' || workDate === '2026-10-30') && (eIdx === 5 || eIdx === 14 || eIdx === 26 || eIdx === 37)) ||
+            (workDate !== '2026-11-01' && seed >= 92 && emp.id !== 'NV-0001')) {
           status = 'DI_MUON';
           lateMinutes = 12 + (seed % 25);
           checkInHour = 8;
           checkInMin = lateMinutes;
           workHours = 7.75;
-        } else if (seed === 45 && emp.id !== 'NV-0001' && workDate !== '2026-10-25') {
+        } else if (seed === 45 && emp.id !== 'NV-0001' && workDate !== '2026-11-01') {
           status = 'VE_SOM';
           workHours = 7.5;
         } else if (seed >= 20 && seed <= 24 && eIdx % 5 === 0) {
@@ -414,8 +424,9 @@ async function resetAndSeed50Employees() {
         ('EXP-2026-001', 'NV-0842', 'Phạm Minh Quân', 'Phòng Kỹ thuật Phần mềm', '2026-03-18', 'Quên chấm công ra', 'Đi họp trực tiếp với khách hàng tại Quận 1 đến 18h30 nên quên check-out tại Kiosk', 'DA_DUYET', 'Xác nhận lịch họp với khách hàng hợp lệ', 'NV-1002', 'Vũ Đình Khang', '2026-03-19 08:30:00', '2026-03-19 10:15:00'),
         ('EXP-2026-002', 'NV-1004', 'Đặng Quỳnh Anh', 'Phòng Kỹ thuật Phần mềm', '2026-06-16', 'Đi muộn do sự cố giao thông', 'Kẹt xe nghiêm trọng tại cầu Sài Gòn do mưa lớn buổi sáng', 'DA_DUYET', 'Đồng ý ghi nhận công chuẩn', 'NV-1002', 'Vũ Đình Khang', '2026-06-16 09:10:00', '2026-06-16 14:00:00'),
         ('EXP-2026-003', 'NV-2005', 'Lương Văn Phú', 'Phòng Kinh doanh & Tiếp thị', '2026-09-14', 'Công tác ngoài văn phòng', 'Đi quay TVC quảng cáo tại phim trường Thủ Đức từ 07:30 sáng', 'DA_DUYET', 'Đã đối chiếu lịch sản xuất Marketing', 'NV-2001', 'Đỗ Minh Trí', '2026-09-14 11:00:00', '2026-09-14 16:30:00'),
-        ('EXP-2026-004', 'NV-1008', 'Đỗ Bích Thảo', 'Phòng Kỹ thuật Phần mềm', '2026-10-21', 'Lỗi nhận diện Kiosk', 'Kiosk sảnh A1 đang cập nhật firmware lúc 07:55 nên hệ thống ghi nhận trễ 14 phút', 'CHO_DUYET', NULL, NULL, NULL, '2026-10-21 09:00:00', NULL),
-        ('EXP-2026-005', 'NV-2007', 'Trương Tấn Phát', 'Phòng Kinh doanh & Tiếp thị', '2026-10-22', 'Đi muộn cá nhân', 'Hỏng xe trên đường đi làm lúc 07:50 sáng', 'CHO_DUYET', NULL, NULL, NULL, '2026-10-22 09:20:00', NULL);
+        ('EXP-2026-004', 'NV-1008', 'Đỗ Bích Thảo', 'Phòng Kỹ thuật Phần mềm', '2026-10-21', 'Lỗi nhận diện Kiosk', 'Kiosk sảnh A1 đang cập nhật firmware lúc 07:55 nên hệ thống ghi nhận trễ 14 phút', 'DA_DUYET', 'Đã kiểm tra log Kiosk và xác nhận hợp lệ', 'NV-1002', 'Vũ Đình Khang', '2026-10-21 09:00:00', '2026-10-26 10:00:00'),
+        ('EXP-2026-005', 'NV-2007', 'Trương Tấn Phát', 'Phòng Kinh doanh & Tiếp thị', '2026-10-30', 'Đi muộn cá nhân', 'Hỏng xe trên đường đi làm lúc 07:50 sáng', 'CHO_DUYET', NULL, NULL, NULL, '2026-10-30 09:20:00', NULL),
+        ('EXP-2026-006', 'NV-1014', 'Ngô Thảo Trang', 'Phòng Kỹ thuật Phần mềm', '2026-11-01', 'Quên chấm công ra', 'Trực hỗ trợ kiểm thử hệ thống cuối tuần ngày 01/11/2026 nên quên bấm check-out lúc 17:45', 'CHO_DUYET', NULL, NULL, NULL, '2026-11-01 18:15:00', NULL);
     `);
 
     await client.query(`
@@ -428,8 +439,9 @@ async function resetAndSeed50Employees() {
         ('OT-2026-002', 'NV-1005', '2026-05-19', '18:00', '21:00', 3.0, 'Nâng cấp cụm cơ sở dữ liệu PostgreSQL Production', 'DA_PHE_DUYET', 'NV-1002', '2026-05-19 16:30:00+07', 'Đồng ý bảo trì hạ tầng', 'NV-1001', '2026-05-20 09:30:00+07', 'Đã tính phụ cấp OT 150%', '2026-05-19 14:00:00+07'),
         ('OT-2026-003', 'NV-3002', '2026-07-16', '18:00', '20:00', 2.0, 'Hoàn tất báo cáo quyết toán tài chính bán niên H1/2026', 'DA_PHE_DUYET', 'NV-3001', '2026-07-16 17:15:00+07', 'Xác nhận khối lượng báo cáo H1', 'NV-1001', '2026-07-17 08:45:00+07', 'Đã phê chuẩn OT', '2026-07-16 15:30:00+07'),
         ('OT-2026-004', 'NV-1013', '2026-09-28', '18:00', '21:00', 3.0, 'Huấn luyện và kiểm thử mô hình Grounded AI Copilot V1', 'DA_PHE_DUYET', 'NV-1002', '2026-09-28 17:00:00+07', 'Đồng ý tăng ca dự án AI', 'NV-1001', '2026-09-29 09:00:00+07', 'Đã đưa vào lương tháng 09/2026', '2026-09-28 15:00:00+07'),
-        ('OT-2026-005', 'NV-0842', '2026-10-23', '18:00', '20:00', 2.0, 'Kiểm thử nghiệm thu UAT giao diện Portal và AI Copilot', 'CHO_TRUONG_PHONG_DUYET', NULL, NULL, NULL, NULL, NULL, NULL, '2026-10-23 16:30:00+07'),
-        ('OT-2026-006', 'NV-1003', '2026-10-24', '18:00', '20:30', 2.5, 'Tối ưu hiệu năng truy vấn API Dashboard & Payroll', 'CHO_HR_PHE_CHUAN', 'NV-1002', '2026-10-24 17:30:00+07', 'Trưởng phòng Kỹ thuật đã xác nhận', NULL, NULL, NULL, '2026-10-24 16:00:00+07');
+        ('OT-2026-005', 'NV-0842', '2026-10-28', '18:00', '20:30', 2.5, 'Kiểm thử nghiệm thu UAT giao diện Portal và AI Copilot', 'DA_PHE_DUYET', 'NV-1002', '2026-10-28 17:30:00+07', 'Xác nhận hoàn thành UAT', 'NV-1001', '2026-10-29 09:00:00+07', 'Đã tổng hợp vào kỳ lương tháng 10/2026', '2026-10-28 16:30:00+07'),
+        ('OT-2026-006', 'NV-1003', '2026-10-31', '18:00', '20:30', 2.5, 'Tối ưu hiệu năng truy vấn API Dashboard & Payroll cuối tháng 10', 'CHO_HR_PHE_CHUAN', 'NV-1002', '2026-10-31 17:30:00+07', 'Trưởng phòng Kỹ thuật đã xác nhận', NULL, NULL, NULL, '2026-10-31 16:00:00+07'),
+        ('OT-2026-007', 'NV-0842', '2026-11-01', '09:00', '12:00', 3.0, 'Rà soát dữ liệu chốt công tháng 10/2026 và trực vận hành hệ thống ngày 01/11/2026', 'CHO_TRUONG_PHONG_DUYET', NULL, NULL, NULL, NULL, NULL, NULL, '2026-11-01 13:30:00+07');
     `);
 
     await client.query(`
@@ -439,7 +451,7 @@ async function resetAndSeed50Employees() {
       ) VALUES
         ('MED-2026-001', 'NV-3002', '2026-09-23', 1850000, 'Bệnh viện Đa khoa Quốc tế Vinmec Central Park', 'Khám và điều trị sốt siêu vi theo chế độ BHXH + Bảo hiểm sức khỏe công ty', 'LP-2026-010', 'DA_PHE_DUYET', 'NV-3001', '2026-09-24 09:00:00+07', 'NV-1001', '2026-09-24 14:00:00+07', 'Đã duyệt chi trả cùng kỳ lương tháng 09/2026', '2026-09-23 16:00:00+07'),
         ('MED-2026-002', 'NV-1004', '2026-06-12', 1200000, 'Bệnh viện Đại học Y Dược TP.HCM', 'Khám chuyên khoa mắt và cấp thuốc điều trị hội chứng thị giác màn hình', NULL, 'DA_PHE_DUYET', 'NV-1002', '2026-06-13 10:00:00+07', 'NV-1001', '2026-06-13 15:30:00+07', 'Hóa đơn GTGT hợp lệ theo hạn mức phúc lợi', '2026-06-12 17:00:00+07'),
-        ('MED-2026-003', 'NV-0842', '2026-10-20', 950000, 'Phòng khám Đa khoa Quốc tế Victoria Healthcare', 'Khám kiểm tra sức khỏe định kỳ bổ sung và xét nghiệm sinh hóa', NULL, 'CHO_HR_PHE_CHUAN', 'NV-1002', '2026-10-21 09:30:00+07', NULL, NULL, NULL, '2026-10-20 15:45:00+07');
+        ('MED-2026-003', 'NV-0842', '2026-10-30', 950000, 'Phòng khám Đa khoa Quốc tế Victoria Healthcare', 'Khám kiểm tra sức khỏe định kỳ bổ sung và xét nghiệm sinh hóa cuối tháng 10/2026', NULL, 'CHO_HR_PHE_CHUAN', 'NV-1002', '2026-10-31 09:30:00+07', NULL, NULL, NULL, '2026-10-30 15:45:00+07');
     `);
 
     // 12. Bảng lương & Phiếu lương trọn vẹn 10 kỳ từ Tháng 01/2026 -> Tháng 10/2026 (500 phiếu lương)
@@ -454,7 +466,7 @@ async function resetAndSeed50Employees() {
       { period: '2026-07', status: 'DA_CHUYEN_KHOAN', paidDate: '2026-08-05', stdDays: 23, lockedAt: '2026-08-03 17:00:00+07', note: 'Bảng lương tháng 07/2026 — Đã tất toán chuyển khoản' },
       { period: '2026-08', status: 'DA_CHUYEN_KHOAN', paidDate: '2026-09-05', stdDays: 21, lockedAt: '2026-09-03 17:00:00+07', note: 'Bảng lương tháng 08/2026 — Đã giải ngân quyết toán thành công qua Vietcombank' },
       { period: '2026-09', status: 'DA_CHUYEN_KHOAN', paidDate: '2026-10-05', stdDays: 22, lockedAt: '2026-10-03 17:00:00+07', note: 'Bảng lương tháng 09/2026 & thưởng Quý III/2026 — Đã giải ngân chuyển khoản' },
-      { period: '2026-10', status: 'DU_THAO',         paidDate: null,         stdDays: 22, lockedAt: null,                     note: 'Bảng lương tổng hợp tháng 10/2026 đang đối soát dữ liệu chấm công (Dự thảo)' },
+      { period: '2026-10', status: 'DU_THAO',         paidDate: null,         stdDays: 22, lockedAt: null,                     note: 'Bảng lương tổng hợp tháng 10/2026 (đã chốt dữ liệu chấm công đến hết 31/10 - cập nhật ngày 01/11/2026)' },
     ];
 
     for (let mIdx = 0; mIdx < periodsConfig.length; mIdx++) {
@@ -565,14 +577,14 @@ async function resetAndSeed50Employees() {
         ('TSK-01', 'PRJ-01', 'Thiết kế kiến trúc RBAC 4 cấp & Refresh Token xoay vòng', 'Bảo mật toàn diện phiên đăng nhập và phân quyền theo phòng ban', 'NV-1003', 'NV-1002', '2026-03-15', 'Cao', 30, 40, 100, 'done', 'Đã bàn giao toàn bộ middleware auth và unit tests', 'Đạt yêu cầu bảo mật 100%', 'NV-1002', '2026-03-14 16:00:00+07'),
         ('TSK-02', 'PRJ-02', 'Tối ưu thuật toán Haversine GPS 150m & Kiosk QR TOTP', 'Chống giả mạo tọa độ và xác thực mã QR động 30 giây tại sảnh', 'NV-1013', 'NV-1002', '2026-07-20', 'Cao', 30, 36, 100, 'done', 'Độ trễ nhận diện < 0.25s, chính xác 99.6%', 'Nghiệm thu xuất sắc', 'NV-1002', '2026-07-19 17:30:00+07'),
         ('TSK-03', 'PRJ-03', 'Xây dựng giao diện Employee Portal & AI Copilot Drawer', 'Tích hợp trợ lý AI HR có kiểm chứng dữ liệu phép, lương, quy chế', 'NV-0842', 'NV-1002', '2026-10-20', 'Khẩn cấp', 35, 48, 100, 'done', 'Đã hoàn thành giao diện Portal và vượt qua 18/18 kịch bản AI Live Eval', 'Hoàn thành xuất sắc', 'NV-1002', '2026-10-20 18:00:00+07'),
-        ('TSK-04', 'PRJ-03', 'Đồng bộ dữ liệu 50 nhân sự & 10 kỳ lương năm 2026', 'Chuẩn hóa hồ sơ, hợp đồng, chấm công và phiếu lương từ tháng 01/2026 đến 10/2026', 'NV-0842', 'NV-1002', '2026-10-25', 'Cao', 30, 24, 100, 'done', 'Đã nạp đầy đủ 500 phiếu lương và dữ liệu chấm công thực tế', 'Dữ liệu khớp 100%', 'NV-1002', '2026-10-25 10:00:00+07'),
-        ('TSK-05', 'PRJ-03', 'Kiểm thử toàn diện 11 màn hình & đối soát phân quyền RBAC', 'Thực hiện UAT trên trình duyệt thực tế cho cả 4 cấp tài khoản', 'NV-1006', 'NV-1002', '2026-10-28', 'Khẩn cấp', 25, 30, 85, 'review', 'Đã hoàn tất báo cáo UAT, chờ Trưởng phòng ký duyệt chốt sprint', NULL, NULL, NULL),
-        ('TSK-06', 'PRJ-03', 'Tối ưu hóa bộ nhớ đệm Dashboard & cảnh báo biến động nhân sự', 'Cập nhật thuật toán tính điểm rủi ro nghỉ việc và ma trận 9-Box', 'NV-1005', 'NV-1002', '2026-11-05', 'Cao', 25, 32, 75, 'in_progress', NULL, NULL, NULL, NULL),
+        ('TSK-04', 'PRJ-03', 'Đồng bộ dữ liệu 50 nhân sự & 10 kỳ lương năm 2026', 'Chuẩn hóa hồ sơ, hợp đồng, chấm công và phiếu lương từ 01/01/2026 đến 01/11/2026', 'NV-0842', 'NV-1002', '2026-11-01', 'Cao', 30, 24, 100, 'done', 'Đã nạp đầy đủ 500 phiếu lương và dữ liệu chấm công thực tế đến ngày 01/11/2026', 'Dữ liệu khớp 100%', 'NV-1002', '2026-11-01 16:00:00+07'),
+        ('TSK-05', 'PRJ-03', 'Kiểm thử toàn diện 11 màn hình & đối soát phân quyền RBAC', 'Thực hiện UAT trên trình duyệt thực tế cho cả 4 cấp tài khoản', 'NV-1006', 'NV-1002', '2026-11-03', 'Khẩn cấp', 25, 30, 90, 'review', 'Đã hoàn tất báo cáo UAT ngày 01/11/2026, chờ Trưởng phòng ký duyệt chốt sprint', NULL, NULL, NULL),
+        ('TSK-06', 'PRJ-03', 'Tối ưu hóa bộ nhớ đệm Dashboard & cảnh báo biến động nhân sự', 'Cập nhật thuật toán tính điểm rủi ro nghỉ việc và ma trận 9-Box', 'NV-1005', 'NV-1002', '2026-11-08', 'Cao', 25, 32, 80, 'in_progress', NULL, NULL, NULL, NULL),
         ('TSK-07', 'PRJ-04', 'Tổng hợp kết quả đánh giá năng lực Quý III/2026 toàn công ty', 'Rà soát điểm hiệu suất và tiềm năng của 50 nhân viên các phòng ban', 'NV-1102', 'NV-1001', '2026-10-15', 'Cao', 30, 28, 100, 'done', 'Đã cập nhật 100 bản đánh giá Q2 & Q3 lên hệ thống 9-Box', 'Đã phê duyệt kết quả', 'NV-1001', '2026-10-14 15:00:00+07'),
-        ('TSK-08', 'PRJ-04', 'Triển khai kế hoạch kèm cặp PIP Quý IV/2026 cho nhân sự cần hỗ trợ', 'Thiết lập mục tiêu cải thiện hiệu suất 60 ngày cùng Quản lý trực tiếp', 'NV-1101', 'NV-1001', '2026-11-10', 'Trung bình', 20, 20, 65, 'in_progress', NULL, NULL, NULL, NULL),
-        ('TSK-09', 'PRJ-05', 'Tổ chức hội thảo khách hàng HR Tech Enterprise Summit 2026', 'Giới thiệu tính năng Grounded AI Copilot cho 120 Giám đốc Nhân sự đối tác', 'NV-2002', 'NV-2001', '2026-10-30', 'Cao', 25, 36, 80, 'review', 'Đã chốt danh sách 135 khách mời B2B và kịch bản demo', NULL, NULL, NULL),
-        ('TSK-10', 'PRJ-05', 'Chạy chiến dịch truyền thông thương hiệu tuyển dụng Quý IV/2026', 'Quảng bá môi trường làm việc số hóa hiện đại tại NEXUS', 'NV-2005', 'NV-2001', '2026-11-15', 'Trung bình', 20, 24, 50, 'in_progress', NULL, NULL, NULL, NULL),
-        ('TSK-11', 'PRJ-06', 'Đối soát bảng lương tháng 09/2026 và chuẩn bị dự thảo tháng 10/2026', 'Kiểm tra khớp nối BHXH, BHYT, BHTN và thuế TNCN lũy tiến của 50 nhân sự', 'NV-3002', 'NV-3001', '2026-10-27', 'Cao', 30, 28, 90, 'review', 'Đã hoàn thành bảng đối soát 50 nhân sự kỳ 2026-10', NULL, NULL, NULL),
+        ('TSK-08', 'PRJ-04', 'Triển khai kế hoạch kèm cặp PIP Quý IV/2026 cho nhân sự cần hỗ trợ', 'Thiết lập mục tiêu cải thiện hiệu suất 60 ngày cùng Quản lý trực tiếp', 'NV-1101', 'NV-1001', '2026-11-15', 'Trung bình', 20, 20, 75, 'in_progress', NULL, NULL, NULL, NULL),
+        ('TSK-09', 'PRJ-05', 'Tổ chức hội thảo khách hàng HR Tech Enterprise Summit 2026', 'Giới thiệu tính năng Grounded AI Copilot cho 120 Giám đốc Nhân sự đối tác', 'NV-2002', 'NV-2001', '2026-11-05', 'Cao', 25, 36, 85, 'review', 'Đã chốt danh sách 135 khách mời B2B và kịch bản demo ngày 01/11/2026', NULL, NULL, NULL),
+        ('TSK-10', 'PRJ-05', 'Chạy chiến dịch truyền thông thương hiệu tuyển dụng Quý IV/2026', 'Quảng bá môi trường làm việc số hóa hiện đại tại NEXUS', 'NV-2005', 'NV-2001', '2026-11-20', 'Trung bình', 20, 24, 60, 'in_progress', NULL, NULL, NULL, NULL),
+        ('TSK-11', 'PRJ-06', 'Đối soát bảng lương tháng 10/2026 và chuẩn bị giải ngân đầu tháng 11', 'Kiểm tra khớp nối BHXH, BHYT, BHTN và thuế TNCN lũy tiến của 50 nhân sự đến 01/11/2026', 'NV-3002', 'NV-3001', '2026-11-03', 'Cao', 30, 28, 95, 'review', 'Đã hoàn thành bảng đối soát 50 nhân sự kỳ 2026-10 vào ngày 01/11/2026', NULL, NULL, NULL),
         ('TSK-12', 'PRJ-03', 'Soạn thảo tài liệu hướng dẫn vận hành Migration & Docker Production', 'Cập nhật README và tài liệu bàn giao kỹ thuật', 'NV-1016', 'NV-1002', '2026-11-12', 'Thấp', 15, 16, 30, 'todo', NULL, NULL, NULL, NULL);
     `);
 
@@ -583,10 +595,10 @@ async function resetAndSeed50Employees() {
         ('TSK-01', 'NV-1002', 'APPROVED', 'review', 'done', 'Nghiệm thu hoàn tất module bảo mật Core Auth', '2026-03-14 16:00:00+07'),
         ('TSK-03', 'NV-0842', 'STAGE_CHANGE', 'in_progress', 'review', 'Gửi nghiệm thu giao diện Portal & Grounded AI Copilot V1', '2026-10-19 17:00:00+07'),
         ('TSK-03', 'NV-1002', 'APPROVED', 'review', 'done', 'Phê duyệt hoàn thành xuất sắc 100% tiêu chí', '2026-10-20 18:00:00+07'),
-        ('TSK-04', 'NV-0842', 'APPROVED', 'review', 'done', 'Hoàn thành đồng bộ dữ liệu 50 nhân sự năm 2026', '2026-10-25 10:00:00+07'),
-        ('TSK-05', 'NV-1006', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Đính kèm biên bản kiểm thử UAT toàn hệ thống', '2026-10-24 16:30:00+07'),
-        ('TSK-09', 'NV-2002', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Trình duyệt kế hoạch sự kiện B2B Summit', '2026-10-23 14:20:00+07'),
-        ('TSK-11', 'NV-3002', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Trình Kế toán trưởng duyệt dự thảo lương tháng 10/2026', '2026-10-24 17:10:00+07');
+        ('TSK-04', 'NV-0842', 'APPROVED', 'review', 'done', 'Hoàn thành đồng bộ dữ liệu 50 nhân sự từ 01/01/2026 đến 01/11/2026', '2026-11-01 16:00:00+07'),
+        ('TSK-05', 'NV-1006', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Đính kèm biên bản kiểm thử UAT toàn hệ thống cập nhật ngày 01/11/2026', '2026-11-01 15:30:00+07'),
+        ('TSK-09', 'NV-2002', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Trình duyệt kế hoạch sự kiện B2B Summit tháng 11/2026', '2026-10-31 14:20:00+07'),
+        ('TSK-11', 'NV-3002', 'SUBMIT_REVIEW', 'in_progress', 'review', 'Trình Kế toán trưởng duyệt dự thảo lương tháng 10/2026 sau khi khóa sổ công 31/10', '2026-11-01 17:10:00+07');
     `);
 
     await client.query(`
@@ -617,11 +629,11 @@ async function resetAndSeed50Employees() {
     await client.query(`
       INSERT INTO squad_messages (squad_id, sender_id, content, sent_at, is_system_notice)
       VALUES
-        ('SQ-01', 'NV-0842', 'Chào anh em Squad 01, tính năng Grounded AI Copilot V1 và dữ liệu 10 kỳ lương 2026 đã đồng bộ xong lên môi trường chính nhé!', '2026-10-25 09:00:00+07', false),
-        ('SQ-01', 'NV-1013', 'Tuyệt vời! Bộ 18 kịch bản kiểm thử Gemini 3.5 Flash-Lite vừa chạy đạt 18/18 PASS, phản hồi tiếng Việt rất chuẩn.', '2026-10-25 09:05:00+07', false),
-        ('SQ-01', 'NV-1006', 'Đội QA cũng đã kiểm tra chéo phân quyền RBAC trên cả 4 vai trò CEO, HRD, Trưởng phòng và Nhân viên, không có lỗi tồn đọng.', '2026-10-25 09:12:00+07', false),
-        ('SQ-02', 'NV-1005', 'Cụm PostgreSQL 16 và Kiosk chấm công sảnh chính sáng nay hoạt động ổn định 100%, độ trễ truy vấn < 30ms.', '2026-10-25 08:30:00+07', false),
-        ('SQ-03', 'NV-2002', 'Chiến dịch B2B Quý IV đã đạt 80% chỉ tiêu khách hàng đăng ký trải nghiệm bản demo NEXUS HRMS v2.0!', '2026-10-24 16:45:00+07', false);
+        ('SQ-01', 'NV-0842', 'Chào anh em Squad 01, dữ liệu chấm công và 10 kỳ lương từ 01/01/2026 đến hết ngày 01/11/2026 đã đồng bộ xong lên môi trường chính nhé!', '2026-11-01 16:30:00+07', false),
+        ('SQ-01', 'NV-1013', 'Tuyệt vời! Bộ 18 kịch bản kiểm thử Grounded AI Copilot vừa chạy đạt 18/18 PASS, phản hồi tiếng Việt rất chuẩn.', '2026-11-01 16:35:00+07', false),
+        ('SQ-01', 'NV-1006', 'Đội QA cũng đã kiểm tra chéo phân quyền RBAC trên cả vai trò CEO, ADMIN, HRD, Trưởng phòng và Nhân viên, không có lỗi tồn đọng.', '2026-11-01 16:42:00+07', false),
+        ('SQ-02', 'NV-1005', 'Cụm PostgreSQL 16 và Kiosk chấm công sảnh chính đến hết ngày 01/11/2026 hoạt động ổn định 100%, độ trễ truy vấn < 30ms.', '2026-11-01 15:30:00+07', false),
+        ('SQ-03', 'NV-2002', 'Chiến dịch B2B Quý IV tính đến 01/11/2026 đã đạt 85% chỉ tiêu khách hàng đăng ký trải nghiệm bản demo NEXUS HRMS v2.0!', '2026-11-01 14:45:00+07', false);
     `);
 
     // 14. Đánh giá năng lực 9-Box (performance_reviews) cho Q2/2026 & Q3/2026 + Kế hoạch PIP (pip_plans)
@@ -811,7 +823,7 @@ async function resetAndSeed50Employees() {
         ('NOT-01', 'QUYẾT ĐỊNH KHEN THƯỞNG TẬP THỂ & CÁ NHÂN XUẤT SẮC QUÝ III/2026', 'Tổng Giám Đốc biểu dương và trao thưởng cho các tập thể phòng ban và cá nhân xuất sắc đã hoàn thành vượt mức các chỉ tiêu công tác Quý III/2026 và triển khai thành công nền tảng NEXUS HRMS v2.0.', 'general', 'high', 'NV-0001', TRUE, TRUE, '2026-10-05 09:00:00+07'),
         ('NOT-02', 'THÔNG BÁO RA MẮT TRỢ LÝ AI NHÂN SỰ (GROUNDED AI COPILOT V1)', 'Từ tháng 10/2026, toàn thể cán bộ nhân viên có thể sử dụng Trợ lý AI HR ngay trên Cổng Nhân Viên (Portal) để tra cứu nhanh số dư phép năm, chi tiết phiếu lương, so sánh lương 2 kỳ gần nhất và hỏi đáp quy chế công ty.', 'policy', 'high', 'NV-1001', TRUE, TRUE, '2026-10-18 08:30:00+07'),
         ('NOT-03', 'KẾ HOẠCH TỔ CHỨC KHÁM SỨC KHỎE ĐỊNH KỲ TOÀN CÔNG TY NĂM 2026', 'Phòng Quản trị Nhân sự phối hợp cùng Bệnh viện Đa khoa Quốc tế tổ chức khám sức khỏe tổng quát định kỳ năm 2026 cho toàn thể 50 cán bộ nhân viên từ ngày 26/10/2026 đến 31/10/2026.', 'event', 'normal', 'NV-1001', FALSE, TRUE, '2026-10-12 10:00:00+07'),
-        ('NOT-04', 'HƯỚNG DẪN ĐỐI SOÁT CÔNG & CHỐT BẢNG LƯƠNG THÁNG 10/2026', 'Đề nghị toàn thể nhân viên kiểm tra lại bảng chấm công tháng 10/2026 và hoàn tất gửi đơn giải trình / đơn OT trước 17:00 ngày 28/10/2026 để Phòng Nhân sự và Kế toán chốt kỳ lương 2026-10.', 'urgent', 'high', 'NV-1001', FALSE, TRUE, '2026-10-22 14:00:00+07'),
+        ('NOT-04', 'THÔNG BÁO HOÀN TẤT CHỐT CÔNG THÁNG 10 & KẾ HOẠCH CÔNG TÁC THÁNG 11/2026', 'Phòng Quản trị Nhân sự thông báo đã hoàn tất tổng hợp dữ liệu chấm công từ 01/10/2026 đến 01/11/2026. Các đơn giải trình phát sinh cuối tháng sẽ được xử lý trước khi giải ngân kỳ lương 2026-10.', 'urgent', 'high', 'NV-1001', TRUE, TRUE, '2026-11-01 09:00:00+07'),
         ('NOT-05', 'BÁO CÁO TỔNG KẾT HOẠT ĐỘNG BÁN NIÊN H1/2026 & ĐỊNH HƯỚNG H2/2026', 'Tổng kết 6 tháng đầu năm 2026, công ty đạt mức tăng trưởng doanh thu B2B 142% so với kế hoạch và hoàn tất 100% lộ trình chuyển đổi số quản trị nhân sự.', 'general', 'normal', 'NV-0001', FALSE, TRUE, '2026-07-02 09:00:00+07');
     `);
 
@@ -847,11 +859,11 @@ async function resetAndSeed50Employees() {
         ),
         (
           'NOTIF-NOT-04', NULL, NULL, 'ceo_directive', 'Thông báo công ty',
-          'HƯỚNG DẪN ĐỐI SOÁT CÔNG & CHỐT BẢNG LƯƠNG THÁNG 10/2026',
-          'Đề nghị nhân viên kiểm tra lại bảng chấm công tháng 10/2026 và hoàn tất gửi đơn giải trình trước ngày 28/10/2026.',
+          'THÔNG BÁO HOÀN TẤT CHỐT CÔNG THÁNG 10 & KẾ HOẠCH CÔNG TÁC THÁNG 11/2026',
+          'Phòng Quản trị Nhân sự thông báo đã hoàn tất tổng hợp dữ liệu chấm công đến ngày 01/11/2026 để chuẩn bị giải ngân kỳ lương 2026-10.',
           'Trần Mai Hương', 'Giám Đốc Nhân Sự (HRD)', $1, 'urgent', FALSE, 'notice_popup',
-          '{"id":"NOT-04","title":"HƯỚNG DẪN ĐỐI SOÁT CÔNG & CHỐT BẢNG LƯƠNG THÁNG 10/2026","content":"Đề nghị toàn thể nhân viên kiểm tra lại bảng chấm công tháng 10/2026 và hoàn tất gửi đơn giải trình / đơn OT trước 17:00 ngày 28/10/2026 để Phòng Nhân sự và Kế toán chốt kỳ lương 2026-10.","category":"urgent","priority":"high","isPinned":false,"date":"22/10/2026","signer":"Trần Mai Hương - Giám Đốc Nhân Sự (HRD)","docNumber":"Số: 112/2026/TB-HR"}'::jsonb,
-          '2026-10-22 14:00:00+07'
+          '{"id":"NOT-04","title":"THÔNG BÁO HOÀN TẤT CHỐT CÔNG THÁNG 10 & KẾ HOẠCH CÔNG TÁC THÁNG 11/2026","content":"Phòng Quản trị Nhân sự thông báo đã hoàn tất tổng hợp dữ liệu chấm công từ 01/10/2026 đến 01/11/2026. Các đơn giải trình phát sinh cuối tháng sẽ được xử lý trước khi giải ngân kỳ lương 2026-10.","category":"urgent","priority":"high","isPinned":true,"date":"01/11/2026","signer":"Trần Mai Hương - Giám Đốc Nhân Sự (HRD)","docNumber":"Số: 115/2026/TB-HR"}'::jsonb,
+          '2026-11-01 09:00:00+07'
         );
     `, [DEFAULT_AVATAR]);
 
@@ -873,6 +885,19 @@ async function resetAndSeed50Employees() {
       FROM users u;
     `, [DEFAULT_AVATAR]);
 
+    // 17. Nhật ký kiểm toán hệ thống (audit_logs) từ 01/2026 đến 01/11/2026
+    console.log('🛡️  17. Khởi tạo Nhật ký kiểm toán hệ thống (audit_logs) đến ngày 01/11/2026...');
+    await client.query(`
+      INSERT INTO audit_logs (user_id, employee_id, action, table_name, record_id, old_values, new_values, ip_address, user_agent, created_at)
+      VALUES
+        ((SELECT id FROM users WHERE email = 'ceo@fwbnexus.vn'), 'NV-0001', 'CREATE_POLICY_VERSION', 'system_policy_versions', '2026-01', NULL, '{"effective_from":"2026-01","standard_work_days":22}'::jsonb, '10.10.1.10', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-01-05 08:30:00+07'),
+        ((SELECT id FROM users WHERE email = 'hrd@fwbnexus.vn'), 'NV-1001', 'LOCK_PAYROLL_PERIOD', 'payroll_periods', '2026-06', '{"status":"DU_THAO"}'::jsonb, '{"status":"DA_CHUYEN_KHOAN"}'::jsonb, '10.10.1.25', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-07-03 17:00:00+07'),
+        ((SELECT id FROM users WHERE email = 'hrd@fwbnexus.vn'), 'NV-1001', 'LOCK_PAYROLL_PERIOD', 'payroll_periods', '2026-09', '{"status":"DU_THAO"}'::jsonb, '{"status":"DA_CHUYEN_KHOAN"}'::jsonb, '10.10.1.25', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-10-03 17:00:00+07'),
+        ((SELECT id FROM users WHERE email = 'ceo@fwbnexus.vn'), 'NV-0001', 'UPDATE_RBAC_MATRIX', 'roles', 'RBAC_MATRIX', '{"LINE_MANAGER":{"approve_leave":true}}'::jsonb, '{"CEO":{"all":true},"ADMIN":{"all":true}}'::jsonb, '10.10.1.10', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-10-28 10:15:00+07'),
+        ((SELECT id FROM users WHERE email = 'hrd@fwbnexus.vn'), 'NV-1001', 'APPROVE_LEAVE_REQUEST', 'leave_requests', 'LP-2026-014', '{"stage":"CHO_HR_PHE_CHUAN"}'::jsonb, '{"stage":"DA_PHE_DUYET"}'::jsonb, '10.10.1.25', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-10-29 14:20:00+07'),
+        ((SELECT id FROM users WHERE email = 'hrd@fwbnexus.vn'), 'NV-1001', 'SYNC_ATTENDANCE_SUMMARY', 'attendance_logs', '2026-10', '{"synced_through":"2026-10-25"}'::jsonb, '{"synced_through":"2026-11-01","total_employees":50}'::jsonb, '10.10.1.25', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0', '2026-11-01 17:30:00+07');
+    `);
+
     // Làm mới Materialized View nếu tồn tại
     try {
       await client.query(`REFRESH MATERIALIZED VIEW mv_dashboard_stats;`);
@@ -881,13 +906,13 @@ async function resetAndSeed50Employees() {
     await client.query('COMMIT');
     console.log('\n======================================================');
     console.log('🎉 THÀNH CÔNG: DATABASE ĐÃ ĐƯỢC RESET VÀ KHỞI TẠO ĐẦY ĐỦ DỮ LIỆU NĂM 2026!');
-    console.log('📊 Thống kê dữ liệu thực tế đã nạp (01/2026 -> 10/2026):');
+    console.log('📊 Thống kê dữ liệu thực tế đã nạp (01/01/2026 -> 01/11/2026):');
     console.log('   - 50 Nhân sự chính thức (Avatar đồng bộ: /default-avatar.jpg)');
     console.log('   - 5 Phòng ban (Ban Điều Hành, IT, HR, Marketing, Tài chính - Kế toán)');
-    console.log('   - 50 Tài khoản đăng nhập (Giữ nguyên 4 tài khoản test chính)');
+    console.log('   - 51 Tài khoản đăng nhập (Giữ nguyên 4 tài khoản test chính + tài khoản ADMIN)');
     console.log('   - 50 Hợp đồng lao động chính thức & 50 Quỹ phép năm 2026');
-    console.log('   - 2.850+ bản ghi Chấm công thực tế trải dài từ 01/2026 đến 25/10/2026');
-    console.log('   - 17 Đơn nghỉ phép, 5 Giải trình công, 6 Đơn OT, 3 Hồ sơ y tế C65');
+    console.log('   - 3.200+ bản ghi Chấm công thực tế trải dài từ 01/01/2026 đến 01/11/2026');
+    console.log('   - 19 Đơn nghỉ phép, 6 Giải trình công, 7 Đơn OT, 3 Hồ sơ y tế C65');
     console.log('   - 10 Kỳ lương (2026-01 -> 2026-10) với 500 Phiếu lương chi tiết');
     console.log('   - 6 Dự án, 12 Nhiệm vụ Kanban, 8 Task Logs, 3 Squads & Chat');
     console.log('   - 100 Đánh giá năng lực 9-Box (Q2 & Q3/2026) & 3 Kế hoạch PIP');
