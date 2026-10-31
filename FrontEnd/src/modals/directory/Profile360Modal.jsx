@@ -73,7 +73,7 @@ export default function Profile360Modal({ isOpen, onClose, payload }) {
 
   const isStaff = currentRole?.key === 'EMPLOYEE';
   const isManager = currentRole?.key === 'LINE_MANAGER';
-  const isCeo = currentRole?.key === 'CEO';
+  const isCeo = currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN';
   const isHrd = currentRole?.key === 'HR_DIRECTOR';
   const isOwner = Boolean(actorEmpId && emp.id && String(actorEmpId) === String(emp.id));
 

@@ -32,7 +32,7 @@ export default function Modal8D_NineBoxDetail({ isOpen, onClose, payload }) {
 
   const cellNo = Number(payload?.cell) || null;
   const meta = cellNo ? CELL_META[cellNo] : null;
-  const isExecRole = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const isExecRole = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'ADMIN';
   const isManager = currentRole?.key === 'LINE_MANAGER';
   const canPip = payload?.canPip ?? (isExecRole || isManager);
   const myId = user?.employeeId || currentRole?.id;

@@ -6,7 +6,7 @@ const { scopeCondition } = require('../../utils/scope');
 const { departmentOf } = require('../projects/access');
 const { cellOf, CELLS } = require('./nineBox');
 
-const HR_ROLES = ['CEO', 'HR_DIRECTOR'];
+const HR_ROLES = ['CEO', 'HR_DIRECTOR', 'ADMIN'];
 const COLS = `r.id, r.employee_id, r.period, r.reviewer_id, r.performance_score, r.potential_score, r.nine_box_cell, r.comments, r.created_at, r.updated_at,
   e.full_name, e.department_id, rv.full_name AS reviewer_name`;
 const FROM = `FROM performance_reviews r JOIN employees e ON e.id = r.employee_id LEFT JOIN employees rv ON rv.id = r.reviewer_id`;

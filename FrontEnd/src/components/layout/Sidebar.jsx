@@ -52,6 +52,7 @@ export default function Sidebar() {
   const getMenuItems = () => {
     switch (currentRole.key) {
       case 'CEO':
+      case 'ADMIN':
         return [
           { name: 'Tổng quan điều hành', path: '/dashboard', icon: LayoutDashboard },
           { name: 'Dự án và Tiến độ công việc', path: '/tasks', icon: FolderKanban },
@@ -86,12 +87,6 @@ export default function Sidebar() {
           { name: 'Phiếu lương của tôi', path: '/payroll', icon: Wallet },
           { name: 'Đánh giá hiệu suất nhân sự', path: '/ai-analytics', icon: BarChart3 },
           { name: 'Bàn làm việc của tôi', path: '/portal', icon: UserSquare2 },
-        ];
-      case 'ADMIN':
-        return [
-          { name: 'Người dùng và quyền hạn', path: '/permissions', icon: ShieldCheck },
-          { name: 'Danh bạ nhân sự', path: '/directory', icon: Users },
-          { name: 'Quản trị tài khoản & Hệ thống', path: '/settings', icon: Settings },
         ];
       case 'EMPLOYEE':
       default:

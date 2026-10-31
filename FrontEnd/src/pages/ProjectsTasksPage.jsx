@@ -52,7 +52,7 @@ export default function ProjectsTasksPage() {
   const navigate = useNavigate();
   const [isChatOpen, setIsChatOpen] = useState(false);
   const roleKey = currentRole?.key || 'EMPLOYEE';
-  const isCeo = roleKey === 'CEO';
+  const isCeo = roleKey === 'CEO' || roleKey === 'ADMIN';
   const isHrd = roleKey === 'HR_DIRECTOR';
   const isLineManager = roleKey === 'LINE_MANAGER';
   const isManager = isLineManager || isCeo || isHrd;

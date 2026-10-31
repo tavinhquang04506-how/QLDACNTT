@@ -94,7 +94,7 @@ export default function PayrollPage() {
   // Tab for CEO and HRD: 'company' | 'personal'
   const [adminTab, setAdminTab] = useState('company');
 
-  const canManageCompanyPayroll = roleKey === 'CEO' || roleKey === 'HR_DIRECTOR';
+  const canManageCompanyPayroll = roleKey === 'CEO' || roleKey === 'HR_DIRECTOR' || roleKey === 'ADMIN';
   const canViewPersonalPayslip =
     roleKey === 'EMPLOYEE' || roleKey === 'LINE_MANAGER' || canManageCompanyPayroll;
 
@@ -842,7 +842,7 @@ export default function PayrollPage() {
   // ==========================================
   // VIEW FOR CEO & HR DIRECTOR: ADMIN VIEW + PERSONAL TAB SWITCHER
   // ==========================================
-  const isCeo = roleKey === 'CEO';
+  const isCeo = roleKey === 'CEO' || roleKey === 'ADMIN';
   const pageTitle = isCeo ? 'Quản Trị Bảng Lương & Quyết Toán Toàn Công Ty' : 'Xử Lý Tiền Lương Và Quyết Toán';
 
   return (

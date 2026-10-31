@@ -30,7 +30,6 @@ export default function Page1_Login() {
   const resolveLandingPath = (roleKey) => {
     const normalized = String(roleKey || '').toUpperCase();
     if (normalized === 'EMPLOYEE') return '/portal';
-    if (normalized === 'ADMIN') return '/directory';
     if (normalized === 'KIOSK') return '/kiosk';
     return '/dashboard';
   };

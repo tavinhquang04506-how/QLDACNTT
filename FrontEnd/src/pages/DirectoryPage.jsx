@@ -56,7 +56,7 @@ export default function DirectoryPage() {
 
   const isStaff = currentRole?.key === 'EMPLOYEE';
   const isManager = currentRole?.key === 'LINE_MANAGER';
-  const canManagePersonnel = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR';
+  const canManagePersonnel = currentRole?.key === 'CEO' || currentRole?.key === 'HR_DIRECTOR' || currentRole?.key === 'ADMIN';
 
   const loadDepartments = useCallback(async () => {
     try {

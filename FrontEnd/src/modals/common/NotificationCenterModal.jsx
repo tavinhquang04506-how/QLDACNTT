@@ -27,7 +27,7 @@ export default function NotificationCenterModal({ isOpen, onClose }) {
   const { openModal } = useModal();
 
   const roleKey = currentRole?.key || currentRole?.roleCode || 'EMPLOYEE';
-  const canManageNotice = roleKey === 'HR_DIRECTOR' || roleKey === 'CEO' || currentRole?.isHR || currentRole?.isCEO;
+  const canManageNotice = roleKey === 'HR_DIRECTOR' || roleKey === 'CEO' || roleKey === 'ADMIN' || currentRole?.isHR || currentRole?.isCEO;
 
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(false);

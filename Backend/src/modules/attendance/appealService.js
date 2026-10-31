@@ -113,7 +113,7 @@ async function getAppeals(filter = {}, actor = null, scope = null) {
     const actorEmpId = actor.employeeId || actor.employee_id || null;
     const effScope =
       scope ||
-      (['CEO', 'HR_DIRECTOR'].includes(roleCode)
+      (['CEO', 'HR_DIRECTOR', 'ADMIN'].includes(roleCode)
         ? 'all'
         : roleCode === 'LINE_MANAGER'
         ? 'department'
@@ -206,7 +206,7 @@ async function reviewAppeal(id, reviewData = {}, actor = null, scope = null, req
       const roleCode = actor.roleCode || actor.role || '';
       const effScope =
         scope ||
-        (['CEO', 'HR_DIRECTOR'].includes(roleCode)
+        (['CEO', 'HR_DIRECTOR', 'ADMIN'].includes(roleCode)
           ? 'all'
           : roleCode === 'LINE_MANAGER'
           ? 'department'

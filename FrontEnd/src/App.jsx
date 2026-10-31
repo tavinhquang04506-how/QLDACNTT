@@ -24,8 +24,6 @@ export default function App() {
   const defaultHome =
     currentRole?.key === 'EMPLOYEE'
       ? '/portal'
-      : currentRole?.key === 'ADMIN'
-      ? '/permissions'
       : currentRole?.key === 'KIOSK'
       ? '/kiosk'
       : '/dashboard';

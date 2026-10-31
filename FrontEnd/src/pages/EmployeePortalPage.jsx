@@ -43,7 +43,7 @@ export default function EmployeePortalPage() {
   const empDepartment = currentRole?.department || 'Phòng ban';
   const empAvatar = currentRole?.avatar || null;
   const roleKey = currentRole?.key || currentRole?.roleCode || 'EMPLOYEE';
-  const canManageNotice = roleKey === 'HR_DIRECTOR' || roleKey === 'CEO' || currentRole?.isHR || currentRole?.isCEO;
+  const canManageNotice = roleKey === 'HR_DIRECTOR' || roleKey === 'CEO' || roleKey === 'ADMIN' || currentRole?.isHR || currentRole?.isCEO;
 
   useEffect(() => {
     let isMounted = true;

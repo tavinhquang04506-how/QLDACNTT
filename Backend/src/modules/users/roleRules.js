@@ -7,16 +7,15 @@ const HRD_PROTECTED = ['CEO', 'ADMIN'];
 
 /** May `actorRole` give an account the role `targetRole`? */
 function canAssignRole(actorRole, targetRole) {
-  if (actorRole === 'CEO') return true;
-  if (actorRole === 'HR_DIRECTOR' || actorRole === 'ADMIN') return LIMITED_ASSIGNABLE.includes(targetRole);
+  if (actorRole === 'CEO' || actorRole === 'ADMIN') return true;
+  if (actorRole === 'HR_DIRECTOR') return LIMITED_ASSIGNABLE.includes(targetRole);
   return false;
 }
 
 /** May `actorRole` edit / reset / unlock an existing account whose role is `subjectRole`? */
 function canManageUserWithRole(actorRole, subjectRole) {
-  if (actorRole === 'CEO') return true;
+  if (actorRole === 'CEO' || actorRole === 'ADMIN') return true;
   if (actorRole === 'HR_DIRECTOR') return !HRD_PROTECTED.includes(subjectRole);
-  if (actorRole === 'ADMIN') return LIMITED_ASSIGNABLE.includes(subjectRole);
   return false;
 }
 

@@ -90,7 +90,7 @@ export default function AttendancePage() {
   const isStaff = currentRole?.key === 'EMPLOYEE';
   const isManager = currentRole?.key === 'LINE_MANAGER';
   const isHr = currentRole?.key === 'HR_DIRECTOR';
-  const isCeo = currentRole?.key === 'CEO';
+  const isCeo = currentRole?.key === 'CEO' || currentRole?.key === 'ADMIN';
 
   const pageTitle = 'Chấm công và ca làm';
 
